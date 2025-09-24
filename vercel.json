@@ -2,22 +2,25 @@
   "version": 2,
   "builds": [
     {
-      "src": "index.js",
+      "src": "server.js",
       "use": "@vercel/node"
     }
   ],
   "routes": [
     {
-      "src": "/(.*)",
-      "dest": "/index.js"
+      "src": "/api/(.*)",
+      "dest": "/server.js"
+    },
+    {
+      "src": "/",
+      "dest": "/server.js"
     }
   ],
   "env": {
-    "MONGO_URI": "mongodb+srv://<username>:<password>@cluster0.mongodb.net/fruitveg?retryWrites=true&w=majority",
+    "MONGO_URI": "mongodb+srv://Qurilo:root%401234@admin.dosckv6.mongodb.net/viafarm",
     "JWT_SECRET": "your_secret_key",
     "CLOUDINARY_CLOUD_NAME": "dppe3ni5z",
     "CLOUDINARY_API_KEY": "568216858376623",
-    "CLOUDINARY_API_SECRET": "OOvfM-6pzXeFK50lcKvjgRie6qU",
-    "PORT": "5000"
+    "CLOUDINARY_API_SECRET": "OOvfM-6pzXeFK50lcKvjgRie6qU"
   }
 }
