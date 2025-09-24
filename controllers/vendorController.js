@@ -5,7 +5,7 @@ const Category = require('../models/Category');
 const { upload } = require('../services/cloudinaryService');
 
 // -------------------------
-// Dashboard Analytics
+// Dashboard Anala
 // -------------------------
 exports.getDashboardData = async (req, res) => {
   const vendorId = req.user.id;
