@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "builds": [
+    {
+      "src": "index.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/index.js"
+    }
+  ],
+  "env": {
+    "MONGO_URI": "mongodb+srv://<username>:<password>@cluster0.mongodb.net/fruitveg?retryWrites=true&w=majority",
+    "JWT_SECRET": "your_secret_key",
+    "CLOUDINARY_CLOUD_NAME": "dppe3ni5z",
+    "CLOUDINARY_API_KEY": "568216858376623",
+    "CLOUDINARY_API_SECRET": "OOvfM-6pzXeFK50lcKvjgRie6qU",
+    "PORT": "5000"
+  }
+}
