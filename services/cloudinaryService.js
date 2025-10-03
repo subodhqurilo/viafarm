@@ -1,5 +1,3 @@
-// services/cloudinaryService.js
-
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const multer = require('multer');
@@ -7,22 +5,29 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-// Configure Cloudinary with your credentials
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Configure Multer to use Cloudinary as storage
 const storage = new CloudinaryStorage({
-  cloudinary: cloudinary,
+  cloudinary,
   params: {
-    folder: 'farm-ecomm-products', // Folder name in your Cloudinary account
+    folder: 'farm-ecomm-products',
     allowed_formats: ['jpg', 'png', 'jpeg'],
   },
 });
 
-const upload = multer({ storage: storage });
+const upload = multer({ storage }); // For routes
 
-module.exports = { cloudinary, upload };
+// Helper functions for controller usage
+const cloudinaryUpload = (filePath, folder = 'farm-ecomm-products') => {
+  return cloudinary.uploader.upload(filePath, { folder });
+};
+
+const cloudinaryDestroy = (publicId) => {
+  return cloudinary.uploader.destroy(publicId);
+};
+
+module.exports = { cloudinary, upload, cloudinaryUpload, cloudinaryDestroy };

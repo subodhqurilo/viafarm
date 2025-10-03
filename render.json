@@ -1,0 +1,34 @@
+{
+  "services": [
+    {
+      "type": "web",
+      "name": "viafarm-backend",
+      "env": "node",
+      "plan": "free",
+      "buildCommand": "npm install",
+      "startCommand": "node server.js",
+      "envVars": [
+        {
+          "key": "MONGO_URI",
+          "value": "mongodb+srv://Qurilo:root%401234@admin.dosckv6.mongodb.net/viafarm"
+        },
+        {
+          "key": "JWT_SECRET",
+          "value": "your_secret_key"
+        },
+        {
+          "key": "CLOUDINARY_CLOUD_NAME",
+          "value": "dppe3ni5z"
+        },
+        {
+          "key": "CLOUDINARY_API_KEY",
+          "value": "568216858376623"
+        },
+        {
+          "key": "CLOUDINARY_API_SECRET",
+          "value": "OOvfM-6pzXeFK50lcKvjgRie6qU"
+        }
+      ]
+    }
+  ]
+}

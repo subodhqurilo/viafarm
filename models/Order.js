@@ -1,35 +1,76 @@
-// models/Order.js
-
 const mongoose = require('mongoose');
-const OrderItemSchema = require('./OrderItem');
 
-const OrderSchema = new mongoose.Schema({
-  user: {
+const orderSchema = new mongoose.Schema({
+  orderId: {
+    type: String,
+    required: true,
+    unique: true,
+  },
+  buyer: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
   },
-  orderItems: [OrderItemSchema],
-  shippingAddress: {
-    address: { type: String, required: true },
-    city: { type: String, required: true },
-    postalCode: { type: String, required: true },
+  vendor: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
   },
-  paymentMethod: {
+  products: [
+    {
+      product: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Product',
+        required: true,
+      },
+      quantity: {
+        type: Number,
+        required: true,
+      },
+      price: {
+        type: Number,
+        required: true,
+      },
+      vendor: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      }
+    },
+  ],
+  totalPrice: {
+    type: Number,
+    required: true,
+  },
+  orderType: {
     type: String,
-    enum: ['COD', 'Card'],
+    enum: ['Delivery', 'Pickup'],
     required: true,
   },
   orderStatus: {
     type: String,
-    enum: ['Pending', 'Processing', 'Shipped', 'Delivered', 'Cancelled'],
+    enum: ['Pending', 'Confirmed', 'Completed', 'Cancelled'],
     default: 'Pending',
   },
-  totalPrice: {
+  shippingAddress: {
+    type: Object, // embedded shipping address object
+  },
+  pickupSlot: {
+    type: Date,
+  },
+  paymentMethod: {
+    type: String,
+    default: 'UPI',
+  },
+  transactionId: {
+    type: String,
+  },
+  comments: {
+    type: String,
+  },
+  donation: {
     type: Number,
-    required: true,
     default: 0,
   },
 }, { timestamps: true });
 
-module.exports = mongoose.model('Order', OrderSchema);
+module.exports = mongoose.model('Order', orderSchema);
