@@ -1,5 +1,3 @@
-// models/Banner.js
-
 const mongoose = require('mongoose');
 
 const BannerSchema = new mongoose.Schema({

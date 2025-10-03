@@ -1,15 +1,17 @@
-// models/Product.js
-
 const mongoose = require('mongoose');
 
-const ProductSchema = new mongoose.Schema({
+const productSchema = new mongoose.Schema({
   name: {
     type: String,
     required: true,
   },
-  category: {
+  vendor: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Category',
+    ref: 'User',
+    required: true,
+  },
+  category: {
+    type: String,
     required: true,
   },
   variety: {
@@ -25,21 +27,39 @@ const ProductSchema = new mongoose.Schema({
     required: true,
   },
   unit: {
-    type: String, // e.g., "kg", "dozen", "pack"
+    type: String,
     required: true,
   },
+  description: String,
+  nutritionalValue: {
+  servingSize: String,
+  nutrients: [{
+    name: String,
+    amount: String
+  }],
+  additionalNote: String
+},
+
   images: [{
     type: String,
     required: true,
   }],
-  description: {
+  status: {
     type: String,
+    enum: ['In Stock', 'Out of Stock'],
+    default: 'In Stock',
   },
-  vendor: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true,
+  allIndiaDelivery: {
+    type: Boolean,
+    default: false,
+  },
+  datePosted: {
+    type: Date,
+    default: Date.now,
   },
 }, { timestamps: true });
 
-module.exports = mongoose.model('Product', ProductSchema);
+// --- ADD THIS: TEXT INDEX ---
+productSchema.index({ name: 'text', category: 'text', description: 'text' });
+
+module.exports = mongoose.model('Product', productSchema);

@@ -1,31 +1,85 @@
-// models/User.js
-
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs'); // <-- add bcrypt
 
-const UserSchema = new mongoose.Schema({
-  name: { type: String },
-  mobileNumber: {
-    type: String,
-    required: [true,],
-    unique: true,
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: false },
+
+  mobileNumber: { type: String, required: function() { return this.role !== 'Admin'; }, unique: true, sparse: true },
+  email: { type: String, required: function() { return this.role === 'Admin'; }, unique: true, sparse: true },
+  passwordResetToken: { type: String },
+  passwordResetExpires: { type: Date },
+
+  isVerified: { type: Boolean, default: false },
+  password: { type: String, required: false },
+  role: { type: String, enum: ['Buyer', 'Vendor', 'Admin'], required: true },
+  otp: { type: String },
+  otpExpiry: { type: Date },
+  profilePicture: { type: String },
+  language: { type: String, default: 'English' },
+  address: {
+    street: String,
+    city: String,
+    state: String,
+    zip: String,
+    pinCode: String,
+    houseNumber: String,
+    locality: String,
+    district: String,
+    latitude: String,
+    longitude: String,
   },
-  password: { type: String },
-  role: {
-    type: String,
-    enum: ['buyer', 'vendor','admin'],
+  location: {
+    type: { type: String, enum: ["Point"], default: "Point" },
+    coordinates: { type: [Number] },
   },
-  otp: String,
-  otpExpiry: Date,
-  isVerified: {
-    type: Boolean,
-    default: false,
+  upiId: { type: String },
+  status: { type: String, enum: ['Active', 'Inactive', 'Blocked'], default: 'Active' },
+  vendorDetails: {
+    location: String,
+    contactNo: String,
+    totalOrders: { type: Number, default: 0 },
   },
-  profileImage: { type: String },
-  email: { type: String },
-  socialMedia: {
-    linkedin: String,
-    dribbble: String,
-  },
+  notificationSettings: {
+    newVendorRegistration: { type: Boolean, default: true },
+    newBuyerRegistration: { type: Boolean, default: true },
+    newProductRegistration: { type: Boolean, default: true },
+    newOrderPlaced: { type: Boolean, default: true }
+},
+  totalOrdersAsBuyer: { type: Number, default: 0 },
 }, { timestamps: true });
 
-module.exports = mongoose.model('User', UserSchema);
+// 2dsphere index for Vendors
+userSchema.index({ location: "2dsphere" });
+
+// Pre-save hook to fix location for non-vendors
+userSchema.pre('save', function (next) {
+  if (this.role !== 'Vendor') {
+    this.location = undefined;
+  } else {
+    if (!this.location || !Array.isArray(this.location.coordinates)) {
+      this.location = { type: "Point", coordinates: [0, 0] };
+    }
+  }
+  next();
+});
+
+// ---------------------------
+// Password handling
+// ---------------------------
+
+// Hash password before saving
+userSchema.pre('save', async function(next) {
+  if (!this.isModified('password')) return next();
+  if (this.password) {
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+  }
+  next();
+});
+
+// Compare entered password with hashed password
+userSchema.methods.matchPassword = async function(enteredPassword) {
+  return await bcrypt.compare(enteredPassword, this.password);
+};
+
+module.exports = mongoose.model('User', userSchema);
