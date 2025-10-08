@@ -29,7 +29,7 @@ router.get('/buyers', adminController.getBuyers);
 router.get('/buyer/:id', adminController.getBuyerDetails);
 
 // Banners & Pages
-router.get('/manage-app/banners', adminController.getBanners);
+router.get('/public/manage-app/banners', adminController.getBanners);
 router.get('/manage-app/:pageName', adminController.getStaticPageContent);
 // User Notification Settings (New Routes)
 router.get('/settings/user-notifications', adminController.getuserNotificationSettings);

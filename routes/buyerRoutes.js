@@ -13,8 +13,8 @@ getReviewsForProduct,
   deleteReview,
 applyCouponToCart,
     getOrderDetails, 
-   startCheckout,
-verifyPayment,
+   startCheckout,getHighlightedCoupon,getPickupLocationDetails,selectPickupSlot,
+verifyPayment,getProductsByCategory,getVendorProfileForBuyer,getProductReviews,getAvailableCouponsForBuyer,getCouponsByProductId,
 addAddress,getFreshAndPopularProducts ,getLocalBestProducts,getAllAroundIndiaProducts,getSmartPicks,
 getAddresses,setDefaultAddress,getHomePageData,getProductDetails,getFilteredProducts,getVendorsNearYou,searchProducts,generateUpiPaymentUrl
 } = require('../controllers/buyerController');
@@ -30,11 +30,19 @@ router.use(authorizeRoles('Buyer'));
 router.get('/home',   getHomePageData);
 router.get('/products/filters', getFilteredProducts);
 router.get('/products/search', searchProducts); 
+
+router.get('/products/by-category', getProductsByCategory);
 router.get('/products/:id', getProductDetails);
+// Vendor Details
+router.get('/vendor/:vendorId', getVendorProfileForBuyer);
+router.get('/products/:productId/reviews', getProductReviews);
+
+
 router.get('/fresh-and-popular', getFreshAndPopularProducts);
 router.get('/local-best', getLocalBestProducts);
 router.get('/all-around-india', getAllAroundIndiaProducts);
 router.get('/smart-picks', getSmartPicks);
+
 
 router.get('/public/static-page/:pageName', getStaticPageContent); 
 
@@ -55,7 +63,9 @@ router.get('/checkout',  startCheckout);
 router.post('/orders/verify-payment', verifyPayment);
 // Generate UPI payment URL
 router.post('/upi-url', generateUpiPaymentUrl);
-
+router.get('/coupons/available', getAvailableCouponsForBuyer);
+router.get('/coupons/product/:productId', getCouponsByProductId);
+router.get('/coupons/highlighted', getHighlightedCoupon);
 
 // Wishlist
 router.get('/wishlist',   getWishlist);
@@ -76,6 +86,8 @@ router.get('/addresses', getAddresses);
 
 
 router.put('/addresses/:id/default', setDefaultAddress);
+router.get('/pickup/:vendorId',  getPickupLocationDetails);
+router.post("/pickup-slot/select",  selectPickupSlot);
 
 
 // Profile & Settings

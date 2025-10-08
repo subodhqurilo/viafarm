@@ -14,7 +14,8 @@ const {
   adminLogin,
   adminSignup,
   adminrequestPasswordReset,
-  adminresetPassword
+  adminresetPassword,
+  logout,
 } = require('../controllers/authController');
 
 router.post('/signup', signup);
@@ -30,6 +31,7 @@ router.post('/admin-login', adminLogin);
 router.post('/admin-signup', adminSignup);
 router.post('/request-password-reset', adminrequestPasswordReset);
 router.post('/reset-password/:token', adminresetPassword);
+router.post('/logout', logout);
 
 
 module.exports = router;

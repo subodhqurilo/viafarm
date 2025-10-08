@@ -21,13 +21,23 @@ const couponSchema = new mongoose.Schema({
   },
   appliesTo: {
     type: String,
-    enum: ['All Products', 'Specific Product', 'Specific Category', 'Specific Vendor'],
+    enum: ['All Products', 'Fruits',  'Vegetables',
+        'Plants',
+        'Seeds',
+        'Handicrafts'],
     required: [true, 'Applies to field is required.'],
   },
-  // Store the ID of the product, category, or vendor the coupon applies to
   applicableId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Product' || 'Category' || 'User', // Reference based on appliesTo type
+    type: mongoose.Schema.Types.Mixed, // ObjectId or string
+    default: null,
+  },
+  appliesToRef: {
+    type: String,
+    enum: ['Product', 'User'],
+    default: null,
+  },
+  category: {
+    type: String,
     default: null,
   },
   startDate: {
@@ -42,17 +52,14 @@ const couponSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
-  // Total usage count across all users
   totalUsageLimit: {
     type: Number,
     default: 0,
   },
-  // How many times a single user can use the coupon
   usageLimitPerUser: {
     type: Number,
     default: 1,
   },
-  // Keep track of how many times the coupon has been used
   usedCount: {
     type: Number,
     default: 0,
@@ -61,6 +68,16 @@ const couponSchema = new mongoose.Schema({
     type: String,
     enum: ['Active', 'Expired', 'Disabled'],
     default: 'Active',
+  },
+  vendor: {
+    type: mongoose.Schema.Types.ObjectId,
+    required: true,
+    ref: 'User', // or Vendor model
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    required: true,
+    ref: 'User',
   },
 }, { timestamps: true });
 

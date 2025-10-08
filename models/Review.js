@@ -16,19 +16,26 @@ const reviewSchema = new mongoose.Schema({
     ref: 'Order',
     required: true,
   },
+  orderItem: {
+    type: String, // unique key like `${orderId}-${productId}`
+    required: true,
+    unique: true
+  },
   rating: {
     type: Number,
     required: true,
     min: 1,
     max: 5,
   },
-  reviewText: {
+  comment: {
     type: String,
-    required: false,
+    required: false, // optional comment
   },
-  images: [{
-    type: String,
-  }],
+  images: [
+    {
+      type: String, // Cloudinary URLs
+    }
+  ],
 }, { timestamps: true });
 
 module.exports = mongoose.model('Review', reviewSchema);

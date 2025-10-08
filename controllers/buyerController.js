@@ -12,6 +12,7 @@ const Review = require('../models/Review');
 const { upload, cloudinary } = require('../services/cloudinaryService');
 const Coupon = require('../models/Coupon');
 const { calculateOrderSummary } = require('../utils/orderUtils');
+const QRCode = require('qrcode');
 
 // -----------------------------
 // Home & Product Discovery
@@ -22,14 +23,7 @@ const { calculateOrderSummary } = require('../utils/orderUtils');
 // @access  Private/Buyer
 
 // Add this at the top or above your controller function
-const generateUpiUrl = (upiId, name, amount, orderId) => {
-    const payeeVpa = encodeURIComponent(upiId);
-    const payeeName = encodeURIComponent(name);
-    const transactionNote = encodeURIComponent(`Payment for Order ID(s): ${orderId}`);
-    const encodedAmount = encodeURIComponent(amount.toFixed(2));
 
-    return `upi://pay?pa=${payeeVpa}&pn=${payeeName}&am=${encodedAmount}&tn=${transactionNote}&cu=INR`;
-};
 
 const getHomePageData = asyncHandler(async (req, res) => {
     const categories = await Product.distinct('category');
@@ -90,26 +84,76 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
 const getProductDetails = asyncHandler(async (req, res) => {
     const { id } = req.params;
 
-    // Check for valid MongoDB ObjectId
     if (!mongoose.Types.ObjectId.isValid(id)) {
         return res.status(400).json({ success: false, message: "Invalid product ID." });
     }
 
-    // Find product by ID and populate vendor details
+    // 1️⃣ Fetch Product with Vendor
     const product = await Product.findById(id)
-        .populate('vendor', 'name address mobileNumber');
+        .populate('vendor', 'name address mobileNumber rating location');
 
     if (!product) {
         return res.status(404).json({ success: false, message: "Product not found." });
     }
 
-    // Fetch reviews
-    const reviews = await Review.find({ product: id })
-        .populate('user', 'name profileImage')
-        .sort({ createdAt: -1 });
+    // 2️⃣ Fetch Nutritional Value
+    let nutritionalInfo = product.nutritionalValue || await NutritionalValue.findOne({ product: id });
 
-    res.status(200).json({ success: true, product, reviews });
+    // 3️⃣ Fetch Reviews (include comment & images)
+    const reviewsRaw = await Review.find({ product: id })
+        .populate('user', 'name profilePicture')
+        .select('rating comment images createdAt updatedAt')
+        .sort({ createdAt: -1 })
+        .limit(5);
+
+    const reviews = reviewsRaw.map(r => ({
+        _id: r._id,
+        user: r.user,
+        rating: r.rating,
+        comment: r.comment || '',  
+        images: r.images,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt
+    }));
+
+    // 4️⃣ Recommended Products
+    const recommendedProducts = await Product.find({
+        category: product.category,
+        _id: { $ne: product._id },
+        status: 'In Stock'
+    })
+    .sort({ rating: -1 })
+    .limit(3);
+
+    // 5️⃣ Response
+    res.status(200).json({
+        success: true,
+        data: {
+            product: {
+                ...product.toObject(),
+                nutritionalValue: nutritionalInfo
+            },
+            vendor: {
+                id: product.vendor._id,
+                name: product.vendor.name,
+                mobileNumber: product.vendor.mobileNumber,
+                rating: product.vendor.rating || 0,
+                address: product.vendor.address || {}, // full address object
+                location: product.vendor.location || {} // coordinates and type
+            },
+            reviews: {
+                totalCount: await Review.countDocuments({ product: id }),
+                list: reviews
+            },
+            recommendedProducts
+        }
+    });
 });
+
+
+
+
+
 
 
 const getFreshAndPopularProducts = asyncHandler(async (req, res) => {
@@ -248,6 +292,27 @@ const getSmartPicks = asyncHandler(async (req, res) => {
 });
 
 
+// @desc    Get all products grouped by category for the logged-in vendor
+// @route   GET /api/vendor/products/by-category
+// @access  Private/Vendor
+const getProductsByCategory = asyncHandler(async (req, res) => {
+    const { category } = req.query;
+
+    if (!category) {
+        return res.status(400).json({ success: false, message: "Category is required" });
+    }
+
+    const products = await Product.find({ category }).populate("vendor", "name");
+
+    res.status(200).json({
+        success: true,
+        count: products.length,
+        data: products,
+    });
+});
+
+
+
 const getStaticPageContent = asyncHandler(async (req, res) => {
     const page = await StaticPage.findOne({ pageName: req.params.pageName });
     if (!page) return res.status(404).json({ success: false, message: 'Page not found.' });
@@ -312,16 +377,50 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
 // @route   GET /api/buyer/cart
 // @access  Private/Buyer
 const getCartItems = asyncHandler(async (req, res) => {
-    const cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
+    const userId = req.user._id;
 
-    if (!cart) {
-        return res.json({ success: true, data: { items: [], summary: { totalMRP: 0, discount: 0, deliveryCharge: 0, totalAmount: 0 } } });
+    // 1. Fetch Cart and Populate Products
+    const cart = await Cart.findOne({ user: userId }).populate('items.product');
+
+    // Default empty state for the summary
+    const emptySummary = { totalMRP: 0, discount: 0, deliveryCharge: 0, totalAmount: 0 };
+
+    // 2. Handle Empty Cart Scenario
+    if (!cart || cart.items.length === 0) {
+        return res.json({ 
+            success: true, 
+            data: { items: [], summary: emptySummary } 
+        });
     }
 
+    // 3. Calculate Summary (including coupon validation if code is present)
     const summary = await calculateOrderSummary(cart, cart.couponCode);
 
-    res.json({ success: true, data: { items: cart.items, summary } });
+    // 4. Build Clean Response Data Structure
+    const filteredItems = cart.items
+        .filter(item => item.product) // Filter out items where the product might have been deleted
+        .map(item => ({
+            product: {
+                id: item.product._id,
+                name: item.product.name,
+                price: item.price, // Use price snapshot from cart
+                image: item.product.images ? item.product.images[0] : null,
+                unit: item.product.unit,
+                // Add any other core product fields needed for display (e.g., variety)
+            },
+            quantity: item.quantity,
+            vendor: item.vendor // Vendor ID
+        }));
+
+    res.json({ 
+        success: true, 
+        data: { 
+            items: filteredItems, 
+            summary: summary 
+        } 
+    });
 });
+
 
 
 // @desc    Add item to cart
@@ -334,48 +433,64 @@ const getCartItems = asyncHandler(async (req, res) => {
 const addItemToCart = asyncHandler(async (req, res) => {
     const { productId, quantity = 1 } = req.body;
 
-    if (!productId || !quantity || quantity < 1) {
+    if (!productId || quantity < 1) {
         return res.status(400).json({ success: false, message: 'Product ID and valid quantity are required.' });
     }
 
-    // find or create cart
+    // Find or create cart
     let cart = await Cart.findOne({ user: req.user._id });
-    if (!cart) {
-        cart = await Cart.create({ user: req.user._id, items: [] });
-    }
+    if (!cart) cart = await Cart.create({ user: req.user._id, items: [] });
 
-    // fetch product (ensure price & vendor)
-    const product = await Product.findById(productId).select('price vendor status');
+    // Fetch product and vendor info
+    const product = await Product.findById(productId).select('name price vendor status images unit');
     if (!product) return res.status(404).json({ success: false, message: 'Product not found.' });
-    if (product.status !== 'In Stock') {
-        return res.status(400).json({ success: false, message: 'Product is out of stock.' });
-    }
+    if (product.status !== 'In Stock') return res.status(400).json({ success: false, message: 'Product is out of stock.' });
 
-    // check existing item
+    // Check if product already exists in cart
     const itemIndex = cart.items.findIndex(i => i.product.toString() === productId);
     if (itemIndex > -1) {
         cart.items[itemIndex].quantity += Number(quantity);
-        // optionally update price snapshot to current price (or keep old snapshot)
-        cart.items[itemIndex].price = product.price;
+        cart.items[itemIndex].price = product.price; // update snapshot price
     } else {
         cart.items.push({
             product: product._id,
             quantity: Number(quantity),
             vendor: product.vendor,
-            price: product.price // snapshot price at add time
+            price: product.price
         });
     }
 
-    // persist
     await cart.save();
 
-    // populate for response and summary
+    // Populate products for response
     await cart.populate('items.product');
 
-    const summary = await calculateOrderSummary(cart, cart.couponCode);
+    // Calculate order summary (supports coupon)
+    const summary = await calculateOrderSummary(cart.items, cart.couponCode);
 
-    res.status(200).json({ success: true, message: 'Item added to cart', data: { cart, summary } });
+    // Format response for frontend
+    const items = cart.items
+        .filter(i => i.product)
+        .map(i => ({
+            product: {
+                id: i.product._id,
+                name: i.product.name,
+                price: i.price,
+                image: i.product.images?.[0] || null,
+                unit: i.product.unit
+            },
+            quantity: i.quantity,
+            vendorId: i.product.vendor?._id || null,
+            vendorName: i.product.vendor?.name || null
+        }));
+
+    res.status(200).json({
+        success: true,
+        message: 'Item added to cart',
+        data: { items, summary }
+    });
 });
+
 
 
 
@@ -449,6 +564,147 @@ const updateCartItemQuantity = asyncHandler(async (req, res) => {
 // @access  Private/Buyer
 
 
+// Haversine formula to calculate distance in km
+
+
+// Helper function to calculate distance (kept outside for cleanliness)
+
+// Assuming these models/utilities are available via imports
+// const User = require('../models/User'); 
+// const Product = require('../models/Product'); 
+// const Review = require('../models/Review'); 
+
+// Helper function to calculate distance between two GeoJSON points (Haversine formula in KM)
+
+
+
+// @desc    Get detailed vendor profile, location, reviews, and listed products for buyer view
+// @route   GET /api/buyer/vendors/:vendorId
+// @access  Private/Buyer
+const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
+    const { vendorId } = req.params;
+    const { buyerLat, buyerLng, category } = req.query;
+
+    // Fetch Vendor
+    const vendor = await User.findById(vendorId)
+        .where('role').equals('Vendor')
+        .where('status').equals('Active')
+        .select('name profilePicture address vendorDetails location rating mobileNumber');
+
+    if (!vendor) {
+        return res.status(404).json({ success: false, message: 'Vendor not found or inactive.' });
+    }
+
+    // Distance Calculation
+    let distanceKm = null;
+    if (buyerLat && buyerLng && vendor.location?.coordinates) {
+        try {
+            distanceKm = calculateDistance(
+                parseFloat(buyerLat),
+                parseFloat(buyerLng),
+                vendor.location.coordinates[1],
+                vendor.location.coordinates[0]
+            ).toFixed(1);
+        } catch (e) {
+            console.error("Distance calculation failed:", e);
+        }
+    }
+
+    // Fetch Reviews (from products listed by vendor)
+    const vendorProducts = await Product.find({ vendor: vendorId }).select('_id');
+    const productIds = vendorProducts.map(p => p._id);
+    const reviewsRaw = await Review.find({ product: { $in: productIds } })
+        .populate('user', 'name profilePicture')
+        .sort({ createdAt: -1 })
+        .limit(5);
+
+    // Map comment field
+    const reviews = reviewsRaw.map(r => ({
+        _id: r._id,
+        user: r.user,
+        rating: r.rating,
+        comment: r.comment, // ✅ ensures comment is in response
+        images: r.images,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt
+    }));
+
+    const reviewCount = await Review.countDocuments({ product: { $in: productIds } });
+
+    // Fetch Listed Products
+    const productFilter = { vendor: vendorId, status: 'In Stock' };
+    if (category) productFilter.category = category;
+
+    const listedProducts = await Product.find(productFilter)
+        .select('name category variety price quantity unit images rating')
+        .sort({ rating: -1 })
+        .limit(20);
+
+    res.status(200).json({
+        success: true,
+        data: {
+            vendor: {
+                id: vendor._id,
+                name: vendor.name,
+                mobileNumber: vendor.mobileNumber,
+                profilePicture: vendor.profilePicture,
+                locationText: vendor.address?.locality || vendor.address?.city || 'Unknown Location',
+                distance: distanceKm ? `${distanceKm} kms away` : null,
+                about: vendor.vendorDetails?.about || '', // ✅ sends saved about field
+                rating: vendor.rating || 0
+            },
+            reviews: {
+                count: reviewCount,
+                list: reviews
+            },
+            listedProducts,
+            availableCategories: await Product.distinct('category', { vendor: vendorId })
+        }
+    });
+});
+
+
+
+
+
+const getProductReviews = asyncHandler(async (req, res) => {
+    const { productId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+        return res.status(400).json({ success: false, message: "Invalid product ID." });
+    }
+
+    // 1. Fetch Product Name/Details for Context
+    const product = await Product.findById(productId).select('name variety category');
+    if (!product) {
+        return res.status(404).json({ success: false, message: "Product not found." });
+    }
+
+    // 2. Fetch all reviews for this product
+    const reviews = await Review.find({ product: productId })
+        .populate('user', 'name profilePicture') // Populate the buyer who wrote the review
+        .sort({ createdAt: -1 });
+
+    // 3. Calculate Average Rating (Optional but good for UI)
+    const averageRating = reviews.length > 0 
+        ? (reviews.reduce((sum, review) => sum + review.rating, 0) / reviews.length).toFixed(1) 
+        : 0;
+
+    res.status(200).json({
+        success: true,
+        data: {
+            product: {
+                id: product._id,
+                name: product.name,
+                variety: product.variety,
+                category: product.category,
+                totalReviews: reviews.length,
+                averageRating: parseFloat(averageRating)
+            },
+            reviews: reviews, // The full list of reviews
+        }
+    });
+});
 
 // @desc    Get all buyer's orders
 // @route   GET /api/buyer/orders
@@ -483,19 +739,154 @@ const reorder = asyncHandler(async (req, res) => {
     });
 });
 
+const generateUpiPaymentUrl = (upiId, name, amount, transactionId) => {
+  const payeeVpa = encodeURIComponent(upiId);
+  const payeeName = encodeURIComponent(name);
+  const transactionNote = encodeURIComponent(`Payment for Orders: ${transactionId}`);
+  const encodedAmount = encodeURIComponent(amount.toFixed(2));
+
+  return `upi://pay?pa=${payeeVpa}&pn=${payeeName}&am=${encodedAmount}&tn=${transactionNote}&tr=${transactionId}&cu=INR`;
+};
+
+/**
+ * @desc    Place multi-vendor order and generate UPI + QR Code dynamically
+ * @route   POST /api/buyer/orders/place
+ * @access  Private/Buyer
+ */
+const placeOrder = asyncHandler(async (req, res) => {
+  const { shippingAddressId, pickupSlot, orderType, couponCode, comments, donation } = req.body;
+  const userId = req.user._id;
+
+  // 1️⃣ Validation
+  if (!orderType || !['Delivery', 'Pickup'].includes(orderType)) {
+    return res.status(400).json({ success: false, message: 'Valid orderType is required (Delivery or Pickup).' });
+  }
+
+  const cart = await Cart.findOne({ user: userId }).populate('items.product');
+  if (!cart || cart.items.length === 0) {
+    return res.status(400).json({ success: false, message: 'Cart is empty.' });
+  }
+
+  const validItems = cart.items.filter(i => i.product);
+
+  // 2️⃣ Stock Check
+  for (const item of validItems) {
+    if (item.product.status !== 'In Stock' || item.quantity > item.product.quantity) {
+      return res.status(400).json({
+        success: false,
+        message: `Product "${item.product.name}" is out of stock or insufficient quantity.`,
+      });
+    }
+  }
+
+  // 3️⃣ Shipping/Pickup
+  let shippingAddress = null;
+  if (orderType === 'Delivery') {
+    shippingAddress = await Address.findById(shippingAddressId);
+    if (!shippingAddress)
+      return res.status(404).json({ success: false, message: 'Shipping address not found.' });
+  } else if (orderType === 'Pickup' && !pickupSlot) {
+    return res.status(400).json({ success: false, message: 'Pickup slot is required for Pickup orders.' });
+  }
+
+  // 4️⃣ Group by Vendor
+  const ordersByVendor = {};
+  validItems.forEach(item => {
+    const vendorId = item.product.vendor?.toString();
+    if (vendorId) {
+      if (!ordersByVendor[vendorId]) ordersByVendor[vendorId] = [];
+      ordersByVendor[vendorId].push(item);
+    }
+  });
+
+  const newOrders = [];
+  const createdOrderIds = [];
+  const payments = [];
+
+  // 5️⃣ Process each vendor
+  for (const vendorId in ordersByVendor) {
+    const vendorItems = ordersByVendor[vendorId];
+    const summary = await calculateOrderSummary(vendorItems, couponCode);
+
+    const orderProducts = vendorItems.map(item => ({
+      product: item.product._id,
+      quantity: item.quantity,
+      price: item.product.price,
+      vendor: item.product.vendor,
+    }));
+
+    const newOrder = await Order.create({
+      orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
+      buyer: userId,
+      vendor: vendorId,
+      products: orderProducts,
+      totalPrice: summary.totalAmount,
+      orderStatus: 'In-process',
+      orderType,
+      shippingAddress: shippingAddress || null,
+      pickupSlot,
+      comments,
+      donation,
+    });
+
+    newOrders.push(newOrder);
+    createdOrderIds.push(newOrder.orderId);
+
+    // 🧾 Deduct stock
+    for (const item of vendorItems) {
+      await Product.findByIdAndUpdate(item.product._id, { $inc: { quantity: -item.quantity } });
+    }
+
+    // 💳 Get vendor UPI info
+    const vendor = await User.findById(vendorId).select('name upiId');
+    const transactionRef = `TXN-${newOrder.orderId}-${Date.now()}`;
+
+    // 💰 Generate UPI Link + QR
+    const upiUrl = generateUpiPaymentUrl(vendor.upiId, vendor.name, summary.totalAmount, transactionRef);
+    const qrCodeDataUrl = await QRCode.toDataURL(upiUrl);
+
+    payments.push({
+      vendorId,
+      vendorName: vendor.name,
+      upiId: vendor.upiId,
+      amount: summary.totalAmount.toFixed(2),
+      upiUrl,
+      qrCode: qrCodeDataUrl,
+      transactionRef,
+    });
+  }
+
+  // 6️⃣ Clear cart
+  cart.items = [];
+  cart.couponCode = undefined;
+  await cart.save();
+
+  // 7️⃣ Respond
+  res.status(201).json({
+    success: true,
+    message: 'Orders placed successfully. Awaiting payment verification.',
+    orders: createdOrderIds,
+    payments,
+  });
+});
+
+
+
 
 
 
 
 const getBuyerOrders = asyncHandler(async (req, res) => {
-    // 1. Fetch orders
-    const orders = await Order.find({ buyer: req.user._id }).sort({ createdAt: -1 }).lean();
+    const buyerId = req.user._id;
 
-    // 2. Populate products and vendor manually
+    // 1. Fetch orders
+    const orders = await Order.find({ buyer: buyerId }).sort({ createdAt: -1 }).lean();
+
+    // 2. Deeply populate product and vendor details for each item
     const populatedOrders = await Promise.all(
         orders.map(async (order) => {
-            const items = Array.isArray(order.items) ? await Promise.all(
-                order.items.map(async (item) => {
+            const items = Array.isArray(order.products) ? await Promise.all( // Assuming 'products' field holds item array
+                order.products.map(async (item) => {
                     if (!item || !item.product) return null;
 
                     const product = await Product.findById(item.product)
@@ -504,7 +895,7 @@ const getBuyerOrders = asyncHandler(async (req, res) => {
                     if (!product) return null;
 
                     const vendor = await User.findById(product.vendor)
-                        .select('name address mobileNumber')
+                        .select('name') // Only need vendor name for list view
                         .lean();
 
                     return {
@@ -522,80 +913,299 @@ const getBuyerOrders = asyncHandler(async (req, res) => {
         })
     );
 
-
     res.status(200).json({ success: true, orders: populatedOrders });
 });
 
+const formatDeliveryDate = (date) => {
+    if (!date) return 'N/A';
+    const deliveryDate = new Date(date);
+    
+    // Add a consistent delivery buffer (e.g., 3 days)
+    deliveryDate.setDate(deliveryDate.getDate() + 3); 
+
+    const options = { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' };
+    
+    // Get the formatted date string (e.g., "Fri, Sep 20, 2025")
+    const formattedDate = deliveryDate.toLocaleDateString('en-US', options);
+
+    // Reformat to match your exact "Fri, 20 Sep 2025" style
+    const [weekday, month, day, year] = formattedDate.split(/[\s,]+/);
+
+    // Reorder: Fri, 20 Sep 2025
+    return `${weekday}, ${day} ${month} ${year}`;
+};
 
 
-
-
+/**
+ * @desc    Get detailed information for a single order, including vendor and shipping details.
+ * @route   GET /api/buyer/orders/:orderId
+ * @access  Private/Buyer
+ */
 const getOrderDetails = asyncHandler(async (req, res) => {
-    // 1. Find the order for the buyer
-    const order = await Order.findOne({ _id: req.params.orderId, buyer: req.user._id }).lean();
+    const { orderId } = req.params;
+    
+    // 1. Find the order for the authenticated buyer
+    const order = await Order.findOne({ _id: orderId, buyer: req.user._id }).lean(); 
 
     if (!order) {
         return res.status(404).json({ success: false, message: 'Order not found.' });
     }
 
-    // 2. Populate product and vendor for each item
+    // 2. Populate product and vendor details for each item
     const populatedItems = await Promise.all(
-        (order.items || []).map(async (item) => {
-            if (!item.product) return null; // skip deleted products
+        (order.products || []).map(async (item) => { 
+            if (!item.product) return null;
 
-            const product = await Product.findById(item.product)
-                .select('name images price vendor')
-                .lean();
+            const product = await Product.findById(item.product).select('name images variety price unit vendor').lean();
             if (!product) return null;
 
-            const vendor = await User.findById(product.vendor)
-                .select('name address mobileNumber')
-                .lean();
+            const vendor = await User.findById(product.vendor).select('name mobileNumber address profilePicture').lean();
 
             return {
                 ...item,
-                product,
-                vendor
+                product: product,
+                vendor: vendor
             };
         })
     );
 
-    // 3. Attach populated items to order
-    const populatedOrder = {
+    // 3. Format Item Data and Consolidate Primary Vendor Details
+    const finalItems = [];
+    let primaryVendorDetails = {};
+    let buyerShippingAddress = {};
+
+    for (const item of populatedItems.filter(Boolean)) {
+        finalItems.push({
+            name: item.product.name,
+            subtext: item.product.variety || item.product.category,
+            quantity: item.quantity,
+            image: item.product.images ? item.product.images[0] : null,
+            id: item.product._id,
+        });
+
+        if (item.vendor) {
+            primaryVendorDetails = {
+                name: item.vendor.name,
+                mobileNumber: item.vendor.mobileNumber,
+                location: item.vendor.address.locality || item.vendor.address.city || 'N/A',
+                profilePicture: item.vendor.profilePicture
+            };
+        }
+    }
+    
+    if (order.shippingAddress) {
+        buyerShippingAddress = order.shippingAddress;
+    }
+    
+    // 4. Final Response Structure - DYNAMICALLY CALCULATE DELIVERY DATE
+    const finalOrder = {
         ...order,
-        items: populatedItems.filter(Boolean)
+        vendorDetails: primaryVendorDetails,
+        items: finalItems,
+        shippingAddress: buyerShippingAddress,
+        deliveryDate: formatDeliveryDate(order.createdAt) // Using order creation date + buffer
     };
 
-    res.status(200).json({ success: true, order: populatedOrder });
+
+    res.status(200).json({ success: true, order: finalOrder });
 });
-
-
 
 const applyCouponToCart = asyncHandler(async (req, res) => {
     const { code } = req.body;
-    const cart = await Cart.findOne({ user: req.user._id });
-    const coupon = await Coupon.findOne({ code, status: 'Active' });
+    const userId = req.user._id;
+
+    // 1. Fetch Cart and Coupon
+    // Populate cart items to check coupon applicability later
+    const cart = await Cart.findOne({ user: userId }).populate('items.product');
+    
+    // Check status and validity dates in the query
+const coupon = await Coupon.findOne({
+    code,
+    status: 'Active',
+    validFrom: { $lte: new Date() }, // matches your field
+    validTill: { $gte: new Date() } // matches your field
+});
 
     if (!cart) {
         return res.status(404).json({ success: false, message: 'Cart not found.' });
     }
     if (!coupon) {
-        return res.status(404).json({ success: false, message: 'Invalid or expired coupon.' });
+        return res.status(400).json({ success: false, message: 'Invalid, expired, or inactive coupon code.' });
     }
 
-    const summary = await calculateOrderSummary(cart, code);
+    // 2. Usage Limit Check (Per User)
+    // Assuming you have a tracking mechanism (e.g., in a separate model or on the User model)
+    // For this implementation, we will assume a hypothetical Order.countDocuments check for simplicity.
+    const userUsageCount = await Order.countDocuments({ 
+        buyer: userId, 
+        couponCode: code, 
+        orderStatus: { $in: ['Confirmed', 'Completed'] } 
+    });
 
-    if (summary.totalMRP < coupon.minimumOrder) {
-        return res.status(400).json({ success: false, message: `Minimum order of ${coupon.minimumOrder} required.` });
+    if (userUsageCount >= coupon.usageLimitPerUser) {
+        return res.status(400).json({ success: false, message: 'This coupon has reached its usage limit for your account.' });
+    }
+    
+    // 3. Minimum Order Value Check (Must be done before final summary calculation)
+    const preliminarySummary = await calculateOrderSummary(cart, null); // Calculate total without the coupon first
+    
+    if (preliminarySummary.totalMRP < coupon.minimumOrder) {
+        return res.status(400).json({ success: false, message: `Minimum order value of ${coupon.minimumOrder} required to use this coupon.` });
     }
 
+    // 4. Applicability Check (e.g., Specific Product/Category/Vendor)
+    const isCouponApplicable = cart.items.some(item => {
+        // If the coupon applies to everything, it's immediately valid
+        if (coupon.appliesTo === 'All Products') {
+            return true;
+        }
+
+        // --- Custom Logic for specific targets ---
+        if (!coupon.applicableId) return false;
+
+        const targetId = coupon.applicableId.toString();
+
+        if (coupon.appliesTo === 'Specific Vendor' && item.vendor.toString() === targetId) {
+            return true;
+        }
+        // Add more logic here for Specific Product or Specific Category
+        // else if (coupon.appliesTo === 'Specific Category' && item.product.category === targetCategory) {}
+        
+        return false;
+    });
+
+    if (!isCouponApplicable) {
+        return res.status(400).json({ success: false, message: 'This coupon is not valid for any items in your cart.' });
+    }
+
+    // 5. Final Summary Calculation (with coupon code)
+    const finalSummary = await calculateOrderSummary(cart, code);
+
+    // 6. Apply Coupon to Cart (Persist code)
     cart.couponCode = code;
     await cart.save();
 
-    res.status(200).json({ success: true, message: 'Coupon applied successfully.', summary });
+    res.status(200).json({ success: true, message: 'Coupon applied successfully.', summary: finalSummary });
+});
+
+const getAvailableCouponsForBuyer = asyncHandler(async (req, res) => {
+    const now = new Date();
+
+    // The query filters for coupons that are:
+    // 1. Currently marked as 'Active'
+    // 2. Not yet expired (validTill > now)
+    // 3. Already valid (validFrom <= now)
+    const availableCoupons = await Coupon.find({
+        status: 'Active',
+        validTill: { $gte: now },
+        validFrom: { $lte: now }
+    })
+    .select('code discount appliesTo minimumOrder usageLimitPerUser startDate expiryDate applicableId')
+    .sort({ discount: -1, minimumOrder: 1 }); // Sort by highest discount, lowest minimum order
+
+    if (!availableCoupons || availableCoupons.length === 0) {
+        return res.status(200).json({
+            success: true,
+            message: 'No available coupons at this time.',
+            data: []
+        });
+    }
+
+    res.status(200).json({
+        success: true,
+        count: availableCoupons.length,
+        data: availableCoupons
+    });
 });
 
 
+const getCouponsByProductId = asyncHandler(async (req, res) => {
+    const { productId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+        return res.status(400).json({ success: false, message: "Invalid product ID." });
+    }
+
+    // Fetch product
+    const product = await Product.findById(productId)
+        .populate('vendor', '_id')
+        .select('_id category vendor');
+
+    if (!product) {
+        return res.status(404).json({ success: false, message: "Product not found." });
+    }
+
+    const now = new Date();
+
+    // Build coupon conditions
+    const orConditions = [
+        { appliesTo: 'All Products' },
+        { appliesTo: 'Specific Product', applicableId: product._id },
+        { appliesTo: 'Specific Vendor', applicableId: product.vendor._id },
+    ];
+
+    // Only add category filter if it's an ObjectId
+    if (mongoose.Types.ObjectId.isValid(product.category)) {
+        orConditions.push({ appliesTo: 'Specific Category', applicableId: product.category });
+    } else {
+        // If category is string, match coupons with string applicableId
+        orConditions.push({ appliesTo: 'Specific Category', applicableId: product.category });
+    }
+
+    const coupons = await Coupon.find({
+        status: 'Active',
+        startDate: { $lte: now },
+        expiryDate: { $gte: now },
+        $or: orConditions
+    })
+    .sort({ 'discount.value': -1, minimumOrder: 1 })
+    .select('-__v')
+    .lean();
+
+    res.status(200).json({
+        success: true,
+        count: coupons.length,
+        data: coupons
+    });
+});
+
+
+
+const getHighlightedCoupon = asyncHandler(async (req, res) => {
+    const now = new Date();
+
+    // 1️⃣ Find the best active coupon
+    // Sort by highest discount first, then lowest minimum order
+    const bestCoupon = await Coupon.findOne({
+        status: 'Active',
+        startDate: { $lte: now },
+        expiryDate: { $gte: now }
+    })
+    .sort({ 'discount.value': -1, minimumOrder: 1 })
+    .select('code discount minimumOrder appliesTo applicableId')
+    .lean();
+
+    // 2️⃣ Handle no coupon case
+    if (!bestCoupon) {
+        return res.status(200).json({
+            success: true,
+            message: 'No active coupons available at this time.',
+            data: null
+        });
+    }
+
+    // 3️⃣ Log the type of coupon for debugging
+    console.log(`Selected coupon: ${bestCoupon.code}`);
+    console.log(`Applies to: ${bestCoupon.appliesTo}`);
+    if (bestCoupon.applicableId) console.log(`Applicable ID: ${bestCoupon.applicableId}`);
+
+    // 4️⃣ Return response
+    res.status(200).json({
+        success: true,
+        message: 'Best active coupon retrieved successfully.',
+        data: bestCoupon
+    });
+});
 
 
 
@@ -604,67 +1214,244 @@ const applyCouponToCart = asyncHandler(async (req, res) => {
 // Wishlist
 // -----------------------------
 
+const calculateDistance = (lat1, lon1, lat2, lon2) => {
+    const toRad = angle => (angle * Math.PI) / 180;
+    const R = 6371; // Radius of Earth in km
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+};
 
 const getWishlist = asyncHandler(async (req, res) => {
+    const buyer = await User.findById(req.user._id);
+
+    if (!buyer) {
+        return res.status(404).json({ success: false, message: 'Buyer not found.' });
+    }
+
     const wishlist = await Wishlist.findOne({ user: req.user._id }).populate('items.product');
 
-    if (!wishlist) {
-        return res.json({ success: true, data: { items: [] } });
+    if (!wishlist || !wishlist.items.length) {
+        return res.status(200).json({ success: true, data: { items: [] } });
     }
 
-    const uniqueItems = [];
-    const seen = new Set();
+    const items = await Promise.all(
+        wishlist.items.map(async (item) => {
+            const product = item.product;
+            if (!product) return null;
 
-    for (const item of wishlist.items) {
-        if (!item.product) continue; // ✅ skip null products
-        const id = item.product._id.toString();
-        if (!seen.has(id)) {
-            uniqueItems.push(item);
-            seen.add(id);
-        }
-    }
+            const vendor = await User.findById(product.vendor)
+                .where('role').equals('Vendor')
+                .where('status').equals('Active')
+                .select('name profilePicture mobileNumber vendorDetails location address rating');
 
-    res.json({ success: true, data: { ...wishlist.toObject(), items: uniqueItems } });
+            // Calculate distance if buyer and vendor coordinates exist
+            let distance = 'Unknown distance';
+            if (buyer.location?.coordinates && vendor?.location?.coordinates) {
+                distance = `${calculateDistance(
+                    buyer.location.coordinates[1],
+                    buyer.location.coordinates[0],
+                    vendor.location.coordinates[1],
+                    vendor.location.coordinates[0]
+                ).toFixed(1)} kms away`;
+            }
+
+            return {
+                id: product._id,
+                name: product.name,
+                category: product.category,
+                variety: product.variety,
+                rating: product.rating || 0,
+                image: product.images?.[0] || null,
+                price: product.price,
+                unit: product.unit,
+                vendor: vendor
+                    ? {
+                          id: vendor._id,
+                          name: vendor.name,
+                          mobileNumber: vendor.mobileNumber || null,
+                          profilePicture: vendor.profilePicture || null,
+                          locationText: vendor.address?.locality || vendor.address?.city || 'Unknown Location',
+                          distance,
+                          about: vendor.vendorDetails?.about || '',
+                          rating: vendor.rating || 0,
+                      }
+                    : null,
+            };
+        })
+    );
+
+    res.status(200).json({
+        success: true,
+        data: {
+            items: items.filter(i => i !== null), // remove null items if any
+        },
+    });
 });
 
 
 
+
+
+
+/**
+ * @desc    Add an item to the buyer's wishlist.
+ * @route   POST /api/buyer/wishlist/add
+ * @access  Private/Buyer
+ */
 
 const addToWishlist = asyncHandler(async (req, res) => {
     const { productId } = req.body;
-    let wishlist = await Wishlist.findOne({ user: req.user._id });
+    const userId = req.user._id;
 
+    if (!productId) {
+        return res.status(400).json({ success: false, message: 'Product ID is required.' });
+    }
+
+    // 1. Check if product exists
+    const product = await Product.findById(productId).populate('vendor', 'name profilePicture mobileNumber vendorDetails location address rating');
+    if (!product) {
+        return res.status(404).json({ success: false, message: 'Product not found.' });
+    }
+
+    // 2. Find or create the wishlist
+    let wishlist = await Wishlist.findOne({ user: userId });
     if (!wishlist) {
-        wishlist = await Wishlist.create({ user: req.user._id, items: [] });
+        wishlist = await Wishlist.create({ user: userId, items: [] });
     }
 
-    wishlist.items = wishlist.items || [];
-
-    // Check if product already exists
-    if (wishlist.items.some(item => item.product.toString() === productId)) {
-        return res.status(400).json({ success: false, message: 'Already in wishlist' });
+    // 3. Check if product already exists
+    const alreadyExists = wishlist.items.some(item => item.product.toString() === productId);
+    if (alreadyExists) {
+        return res.status(200).json({
+            success: true,
+            message: 'Product is already in your wishlist.',
+            data: {
+                product: {
+                    id: product._id,
+                    name: product.name,
+                    category: product.category,
+                    variety: product.variety,
+                    rating: product.rating || 0,
+                    image: product.images?.[0] || null,
+                    price: product.price,
+                    unit: product.unit,
+                    vendor: product.vendor ? {
+                        id: product.vendor._id,
+                        name: product.vendor.name,
+                        mobileNumber: product.vendor.mobileNumber || null,
+                        profilePicture: product.vendor.profilePicture || null,
+                        locationText: product.vendor.address?.locality || product.vendor.address?.city || 'Unknown Location',
+                        about: product.vendor.vendorDetails?.about || '',
+                        rating: product.vendor.rating || 0
+                    } : null,
+                    status: 'existing'
+                }
+            }
+        });
     }
 
+    // 4. Add the product to wishlist
     wishlist.items.push({ product: productId });
     await wishlist.save();
 
-    res.json({ success: true, message: 'Added to wishlist', data: wishlist });
+    res.status(201).json({
+        success: true,
+        message: 'Product successfully added to wishlist.',
+        data: {
+            product: {
+                id: product._id,
+                name: product.name,
+                category: product.category,
+                variety: product.variety,
+                rating: product.rating || 0,
+                image: product.images?.[0] || null,
+                price: product.price,
+                unit: product.unit,
+                vendor: product.vendor ? {
+                    id: product.vendor._id,
+                    name: product.vendor.name,
+                    mobileNumber: product.vendor.mobileNumber || null,
+                    profilePicture: product.vendor.profilePicture || null,
+                    locationText: product.vendor.address?.locality || product.vendor.address?.city || 'Unknown Location',
+                    about: product.vendor.vendorDetails?.about || '',
+                    rating: product.vendor.rating || 0
+                } : null,
+                status: 'added'
+            }
+        }
+    });
 });
 
+module.exports = { addToWishlist };
 
 
+
+/**
+ * @desc    Remove an item from the buyer's wishlist.
+ * @route   DELETE /api/buyer/wishlist/:id
+ * @access  Private/Buyer
+ */
 
 const removeFromWishlist = asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const wishlist = await Wishlist.findOne({ user: req.user._id });
-    if (!wishlist) return res.status(404).json({ success: false, message: 'Wishlist not found' });
+    const { id } = req.params; // Product ID to remove
+    const userId = req.user._id;
 
-    // Filter out the product
-    wishlist.items = wishlist.items.filter((item) => item.product.toString() !== id);
+    // 1. Find the user's wishlist
+    const wishlist = await Wishlist.findOne({ user: userId });
+    if (!wishlist) {
+        return res.status(404).json({ success: false, message: 'Wishlist not found.' });
+    }
+
+    // 2. Find product details (optional, for response)
+    const product = await Product.findById(id).populate('vendor', 'name profilePicture mobileNumber vendorDetails address rating');
+    if (!product) {
+        return res.status(404).json({ success: false, message: 'Product not found.' });
+    }
+
+    const initialLength = wishlist.items.length;
+
+    // 3. Remove product from wishlist
+    wishlist.items = wishlist.items.filter(item => item.product.toString() !== id);
+
+    if (wishlist.items.length === initialLength) {
+        return res.status(404).json({ success: false, message: 'Item not found in wishlist.' });
+    }
 
     await wishlist.save();
-    res.json({ success: true, message: 'Removed from wishlist', data: wishlist });
+
+    // 4. Return detailed response
+    res.json({
+        success: true,
+        message: 'Removed from wishlist successfully.',
+        data: {
+            product: {
+                id: product._id,
+                name: product.name,
+                category: product.category,
+                variety: product.variety,
+                rating: product.rating || 0,
+                image: product.images?.[0] || null,
+                price: product.price,
+                unit: product.unit,
+                vendor: product.vendor ? {
+                    id: product.vendor._id,
+                    name: product.vendor.name,
+                    mobileNumber: product.vendor.mobileNumber || null,
+                    profilePicture: product.vendor.profilePicture || null,
+                    locationText: product.vendor.address?.locality || product.vendor.address?.city || 'Unknown Location',
+                    about: product.vendor.vendorDetails?.about || '',
+                    rating: product.vendor.rating || 0
+                } : null
+            }
+        }
+    });
 });
+
 
 
 // -----------------------------
@@ -675,28 +1462,25 @@ const removeFromWishlist = asyncHandler(async (req, res) => {
 
 
 const writeReview = asyncHandler(async (req, res) => {
-    const { productId } = req.params; // ✅ from URL now
+    const { productId } = req.params;
     const { rating, comment, orderId } = req.body;
 
     if (!rating || rating < 1 || rating > 5) {
         return res.status(400).json({ success: false, message: 'Rating is required (1-5).' });
     }
 
-    // Fetch order
-    const order = await Order.findById(orderId).populate('items.product');
+    const order = await Order.findById(orderId).populate('products.product');
     if (!order || order.buyer.toString() !== req.user._id.toString()) {
         return res.status(403).json({ success: false, message: 'Not authorized to review this order.' });
     }
 
-    // Ensure product exists in this order
-    const productInOrder = order.items.find(
+    const productInOrder = order.products.find(
         (item) => item.product._id.toString() === productId.toString()
     );
     if (!productInOrder) {
         return res.status(400).json({ success: false, message: 'Product not found in this order.' });
     }
 
-    // Handle image uploads if present
     const images = [];
     if (req.files && req.files.length > 0) {
         for (const file of req.files) {
@@ -705,23 +1489,31 @@ const writeReview = asyncHandler(async (req, res) => {
         }
     }
 
-    // Create review
+    // Save review
     const review = await Review.create({
         product: productId,
         user: req.user._id,
         rating,
-        comment,
+        comment,  // ✅ make sure it's saved
         images,
         order: orderId,
-        orderItem: `${orderId}-${productId}`, // unique per order-product
+        orderItem: `${orderId}-${productId}`,
     });
+
+    // Repopulate with product + user + comment
+    const populatedReview = await Review.findById(review._id)
+        .populate('user', 'name')
+        .populate('product', 'name variety');
 
     res.status(201).json({
         success: true,
         message: 'Review submitted successfully.',
-        review
+        review: populatedReview
     });
 });
+
+
+
 
 
 
@@ -730,95 +1522,98 @@ const writeReview = asyncHandler(async (req, res) => {
 // @route   GET /api/buyer/checkout
 // @access  Private/Buyer
 // controllers/buyerController.js (replace startCheckout)
+
 const startCheckout = asyncHandler(async (req, res) => {
-    const userId = req.user._id || req.user.id;
+    const userId = req.user._id;
 
-    // 1. Fetch user
-    const user = await User.findById(userId).select('name email mobileNumber profilePicture');
-    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
-
-    // 2. Fetch cart
+    // 1. Fetch Cart
     const cart = await Cart.findOne({ user: userId }).populate('items.product');
-    if (!cart || !cart.items || cart.items.length === 0) {
+    if (!cart || cart.items.length === 0) {
         return res.status(400).json({ success: false, message: 'Your cart is empty.' });
     }
-
-    // 3. Filter valid items
     const validItems = cart.items.filter(i => i.product);
-    if (validItems.length === 0) return res.status(400).json({ success: false, message: 'No valid products in cart.' });
 
-    // 4. Build items with stock info
-    const itemsWithStockInfo = validItems.map(item => {
-        const price = item.price || item.product.price || 0;
-        const subtotal = price * (item.quantity || 0);
-        const outOfStock = item.product.status !== 'In Stock';
-        return {
-            product: item.product,
-            quantity: item.quantity,
-            price,
-            subtotal,
-            outOfStock
-        };
+    // 2. Group items by vendor
+    const itemsByVendor = {};
+    validItems.forEach(item => {
+        const vendorId = item.vendor.toString();
+        if (!itemsByVendor[vendorId]) itemsByVendor[vendorId] = [];
+        itemsByVendor[vendorId].push(item);
     });
 
-    // 5. Calculate summary
-    const itemsForSummary = validItems.map(i => ({
-        product: i.product,
-        quantity: i.quantity,
-        price: i.price || i.product.price || 0
-    }));
-    const summary = await calculateOrderSummary(itemsForSummary, cart.couponCode);
+    // 3. Prepare vendor-wise summary with UPI QR
+    const vendorSummaries = [];
+    for (const vendorId in itemsByVendor) {
+        const vendorItems = itemsByVendor[vendorId];
+        const summary = await calculateOrderSummary(vendorItems, cart.couponCode);
 
-    // 6. Addresses & coupons
+        const vendor = await User.findById(vendorId).select('name address mobileNumber upiId');
+
+        // Generate UPI transaction reference
+        const transactionRef = `TXN-${vendorItems[0]._id}-${Date.now()}`;
+        let upiUrl = null;
+        let qrCodeDataUrl = null;
+
+        if (vendor.upiId) {
+            // Generate UPI URL
+            const payeeVpa = encodeURIComponent(vendor.upiId);
+            const payeeName = encodeURIComponent(vendor.name);
+            const transactionNote = encodeURIComponent(`Payment for vendor order: ${transactionRef}`);
+            const amount = encodeURIComponent(summary.totalAmount.toFixed(2));
+
+            upiUrl = `upi://pay?pa=${payeeVpa}&pn=${payeeName}&am=${amount}&tn=${transactionNote}&tr=${transactionRef}&cu=INR`;
+
+            // Generate QR code (Base64)
+            qrCodeDataUrl = await QRCode.toDataURL(upiUrl);
+        }
+
+        vendorSummaries.push({
+            vendorId,
+            vendorName: vendor.name,
+            vendorAddress: vendor.address,
+            vendorPhone: vendor.mobileNumber,
+            items: vendorItems.map(item => ({
+                productId: item.product._id,
+                name: item.product.name,
+                price: item.price,
+                unit: item.product.unit,
+                quantity: item.quantity,
+                image: item.product.images ? item.product.images[0] : null
+            })),
+            summary,
+            upiId: vendor.upiId || null,
+            upiUrl,
+            qrCode: qrCodeDataUrl,
+            transactionRef
+        });
+    }
+
+    // 4. Fetch addresses & coupons
     const addresses = await Address.find({ user: userId }).sort({ isDefault: -1 });
-    const defaultAddress = addresses.find(a => a.isDefault) || null;
+    const defaultAddress = addresses.find(a => a.isDefault) || addresses[0] || null;
     const coupons = await Coupon.find({ status: 'Active' });
 
-    // 7. Response
+    // 5. Final response
     res.status(200).json({
         success: true,
-        message: 'Checkout data retrieved successfully.',
         data: {
-            user: {
-                _id: user._id,
-                name: user.name,
-                mobileNumber: user.mobileNumber,
-                profilePicture: user.profilePicture
-            },
             cart: {
-                _id: cart._id,
-                items: itemsWithStockInfo,
                 couponCode: cart.couponCode,
-                createdAt: cart.createdAt,
-                updatedAt: cart.updatedAt
+                vendors: vendorSummaries
             },
-            summary,
             addresses,
             defaultAddress,
-            availableCoupons: coupons,
-            payment: { upiId: '123c7ddr4s55fr@ybl' }
+            availableCoupons: coupons
         }
     });
 });
 
 
+
 // @desc    Generate UPI payment URL
 // @route   POST /api/buyer/upi-url
 // @access  Private/Buyer
-const generateUpiPaymentUrl = asyncHandler(async (req, res) => {
-    const { upiId, name, amount, orderId } = req.body;
 
-    if (!upiId || !name || !amount || !orderId) {
-        return res.status(400).json({ success: false, message: 'All fields are required: upiId, name, amount, orderId.' });
-    }
-
-    const upiUrl = generateUpiUrl(upiId, name, amount, orderId);
-
-    res.status(200).json({
-        success: true,
-        upiUrl
-    });
-});
 
 
 
@@ -830,120 +1625,7 @@ const generateUpiPaymentUrl = asyncHandler(async (req, res) => {
 // @desc    Place an order
 // @route   POST /api/buyer/orders/place
 // @access  Private/Buyer
-const placeOrder = asyncHandler(async (req, res) => {
-    const { shippingAddressId, pickupSlot, orderType, couponCode, comments, donation } = req.body;
 
-    // 1. Validate orderType
-    if (!orderType || !['Delivery', 'Pickup'].includes(orderType)) {
-        return res.status(400).json({ success: false, message: 'Valid orderType is required (Delivery or Pickup).' });
-    }
-
-    // 2. Get cart and populate products
-    const cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
-    if (!cart || !cart.items || cart.items.length === 0) {
-        return res.status(400).json({ success: false, message: 'Cart is empty.' });
-    }
-
-    // 3. Filter valid items
-    const validItems = cart.items.filter(i => i.product);
-    if (validItems.length === 0) {
-        return res.status(400).json({ success: false, message: 'Cart has no valid products.' });
-    }
-
-    // 4. Stock check
-    for (const item of validItems) {
-        if (item.product.status !== 'In Stock' || item.quantity > item.product.quantity) {
-            return res.status(400).json({
-                success: false,
-                message: `Product "${item.product.name}" is out of stock or insufficient quantity.`
-            });
-        }
-    }
-
-    // 5. Handle shipping address for delivery
-    let shippingAddress = null;
-    if (orderType === 'Delivery') {
-        if (!shippingAddressId) {
-            return res.status(400).json({ success: false, message: 'Shipping address is required for delivery orders.' });
-        }
-        shippingAddress = await Address.findById(shippingAddressId);
-        if (!shippingAddress) {
-            return res.status(404).json({ success: false, message: 'Shipping address not found.' });
-        }
-    }
-
-    // 6. Group items by vendor
-    const ordersByVendor = {};
-    validItems.forEach(item => {
-        const vendorId = item.product.vendor?.toString();
-        if (!vendorId) {
-            console.error("⚠️ Product missing vendor:", item.product._id);
-            return;
-        }
-        if (!ordersByVendor[vendorId]) ordersByVendor[vendorId] = [];
-        ordersByVendor[vendorId].push(item);
-    });
-
-    // 7. Create orders per vendor
-    const newOrders = [];
-    for (const vendorId in ordersByVendor) {
-        const vendorItems = ordersByVendor[vendorId];
-        const summary = await calculateOrderSummary(vendorItems, couponCode);
-
-        const orderProducts = vendorItems.map(item => ({
-            product: item.product._id,
-            quantity: item.quantity,
-            price: item.product.price,
-            vendor: item.product.vendor
-        }));
-
-        const newOrder = await Order.create({
-    orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`, // unique ID
-    buyer: req.user._id,
-    vendor: vendorId,
-    products: orderProducts,   // ✅ Correct field name
-    totalPrice: summary.totalAmount,
-    orderStatus: 'Pending',
-    orderType,
-    shippingAddress: shippingAddress || null,
-    pickupSlot: orderType === 'Pickup' ? pickupSlot : null,
-    comments: comments || '',
-    donation: donation || 0
-});
-
-
-        newOrders.push(newOrder);
-
-        // 8. Deduct stock for each product
-        for (const item of vendorItems) {
-            await Product.findByIdAndUpdate(item.product._id, {
-                $inc: { quantity: -item.quantity }
-            });
-        }
-    }
-
-    // 9. Clear cart
-    cart.items = [];
-    cart.couponCode = undefined;
-    await cart.save();
-
-    // 10. Total payment
-    const totalPaymentAmount = newOrders.reduce((acc, order) => acc + order.totalPrice, 0);
-
-    res.status(201).json({
-        success: true,
-        message: 'Orders placed successfully. Awaiting payment verification.',
-        orders: newOrders.map(o => ({
-            orderId: o.orderId,
-            vendor: o.vendor,
-            totalPrice: o.totalPrice
-        })),
-        paymentDetails: {
-            upiId: '123c7ddr4s55fr@ybl',
-            amount: totalPaymentAmount
-        }
-    });
-});
 
 
 
@@ -997,12 +1679,22 @@ const verifyPayment = asyncHandler(async (req, res) => {
 const getReviewsForProduct = asyncHandler(async (req, res) => {
     const { productId } = req.params;
 
+    // Validate productId
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+        return res.status(400).json({ success: false, message: 'Invalid product ID.' });
+    }
+
     const reviews = await Review.find({ product: productId })
-        .populate('user', 'name profileImage')
+        .populate('user', 'name profilePicture') // Ensure correct field name for profile image
         .sort({ createdAt: -1 });
 
-    res.status(200).json({ success: true, reviews });
+    res.status(200).json({
+        success: true,
+        count: reviews.length,
+        data: reviews
+    });
 });
+
 
 
 // @desc    Update a review
@@ -1012,33 +1704,54 @@ const updateReview = asyncHandler(async (req, res) => {
     const { reviewId } = req.params;
     const { rating, comment } = req.body;
 
-    const review = await Review.findById(reviewId);
-
+    // 1️⃣ Find review
+    let review = await Review.findById(reviewId);
     if (!review) {
         return res.status(404).json({ success: false, message: 'Review not found' });
     }
 
-    // Only the owner can update
+    // 2️⃣ Authorization
     if (review.user.toString() !== req.user._id.toString()) {
         return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
-    if (rating) review.rating = rating;
-    if (comment) review.comment = comment;
+    // 3️⃣ Update fields
+    if (rating) {
+        if (rating < 1 || rating > 5) {
+            return res.status(400).json({ success: false, message: 'Rating must be between 1 and 5' });
+        }
+        review.rating = rating;
+    }
+    if (comment !== undefined) review.comment = comment;
 
-    // Handle images if uploaded
+    // 4️⃣ Handle new images (replace only if provided)
     if (req.files && req.files.length > 0) {
         const images = [];
         for (const file of req.files) {
-            const result = await cloudinary.uploader.upload(file.path, { folder: 'product-reviews' });
+            const result = await cloudinary.uploader.upload(file.path, {
+                folder: 'product-reviews'
+            });
             images.push(result.secure_url);
         }
-        review.images = images;
+        review.images = images; // replace old images with new ones
     }
 
-    const updatedReview = await review.save();
-    res.status(200).json({ success: true, message: 'Review updated', review: updatedReview });
+    // 5️⃣ Save
+    await review.save();
+
+    // 6️⃣ Re-fetch with populated fields for better response
+    review = await Review.findById(review._id)
+        .populate("user", "name profilePicture")
+        .populate("product", "name variety");
+
+    res.status(200).json({
+        success: true,
+        message: "Review updated successfully",
+        review
+    });
 });
+
+
 
 // @desc    Delete a review
 // @route   DELETE /api/buyer/reviews/:reviewId
@@ -1046,19 +1759,41 @@ const updateReview = asyncHandler(async (req, res) => {
 const deleteReview = asyncHandler(async (req, res) => {
     const { reviewId } = req.params;
 
+    // 1️⃣ Find the review
     const review = await Review.findById(reviewId);
     if (!review) {
         return res.status(404).json({ success: false, message: 'Review not found' });
     }
 
-    // Only the owner can delete
+    // 2️⃣ Authorization
     if (review.user.toString() !== req.user._id.toString()) {
         return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
-    await review.remove();
-    res.status(200).json({ success: true, message: 'Review deleted successfully' });
+    // 3️⃣ (Optional) Delete images from Cloudinary
+    if (review.images && review.images.length > 0) {
+        for (const imgUrl of review.images) {
+            try {
+                // Extract public_id from Cloudinary URL
+                const publicId = imgUrl.split('/').slice(-1)[0].split('.')[0];
+                await cloudinary.uploader.destroy(`product-reviews/${publicId}`);
+            } catch (err) {
+                console.error("Failed to delete image from Cloudinary:", err.message);
+            }
+        }
+    }
+
+    // 4️⃣ Delete review
+    await review.deleteOne();
+
+    // 5️⃣ Send response
+    res.status(200).json({
+        success: true,
+        message: 'Review deleted successfully',
+        reviewId: reviewId
+    });
 });
+
 
 
 
@@ -1148,37 +1883,80 @@ const updateBuyerProfile = asyncHandler(async (req, res) => {
     });
 });
 
+
+
+
 const updateBuyerLocation = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id);
-    if (!user || user.role !== 'Buyer') {
-        return res.status(404).json({ success: false, message: 'Buyer not found.' });
+    const { 
+        pinCode, 
+        houseNumber, 
+        locality, 
+        city, 
+        district, 
+        latitude, 
+        longitude 
+    } = req.body;
+
+    // --- 1. Address Validation (Mandatory fields from UI) ---
+    if (!pinCode || !houseNumber || !locality || !city || !district) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'All address fields (Pin Code, House Number, Locality, City, District) are required for an update.' 
+        });
     }
 
-    // Create or update the address object
-    user.address = {
-        pinCode: req.body.pinCode,
-        houseNumber: req.body.houseNumber,
-        locality: req.body.locality,
-        city: req.body.city,
-        district: req.body.district,
-        state: req.body.state
-
+    // --- 2. Build Update Object for Address Text ---
+    const updateFields = {
+        'address.pinCode': pinCode,
+        'address.houseNumber': houseNumber,
+        'address.locality': locality,
+        'address.city': city,
+        'address.district': district,
     };
+    
+    // --- 3. Handle GeoJSON Location (Optional) ---
+    if (latitude && longitude) {
+        const lat = parseFloat(latitude);
+        const lng = parseFloat(longitude);
 
-    // Handle live location data (optional)
-    if (req.body.latitude && req.body.longitude) {
-        user.location = {
+        if (isNaN(lat) || isNaN(lng)) {
+             return res.status(400).json({ success: false, message: 'Invalid latitude or longitude provided.' });
+        }
+        
+        // GeoJSON Point is always stored as [longitude, latitude]
+        updateFields['location'] = {
             type: 'Point',
-            coordinates: [parseFloat(req.body.longitude), parseFloat(req.body.latitude)]
+            coordinates: [lng, lat] 
         };
-    } else if (user.location) {
-        // If not provided, ensure the GeoJSON type is removed if it was a Point
-        user.location = undefined;
+    } else {
+        // Explicitly clear location if no new coordinates are provided
+        updateFields['location'] = undefined;
+    }
+    
+    // --- 4. Update and Respond ---
+    const updatedUser = await User.findByIdAndUpdate(
+        req.user._id,
+        { $set: updateFields },
+        { new: true, runValidators: true }
+    );
+
+    if (!updatedUser) {
+        return res.status(404).json({ success: false, message: 'User not found.' });
     }
 
-    await user.save();
-    res.status(200).json({ success: true, message: 'Location updated successfully.', address: user.address, location: user.location });
+    res.status(200).json({
+        success: true,
+        message: 'Location updated successfully.',
+        data: {
+            address: updatedUser.address,
+            location: updatedUser.location
+        }
+    });
 });
+
+
+
+
 
 
 const updateBuyerLanguage = asyncHandler(async (req, res) => {
@@ -1237,6 +2015,195 @@ const setDefaultAddress = asyncHandler(async (req, res) => {
     res.json({ success: true, message: 'Default address set', data: address });
 });
 
+
+const getPickupLocationDetails = asyncHandler(async (req, res) => {
+  const { vendorId } = req.params;
+  const { buyerLat, buyerLng } = req.query;
+
+  // 🔍 Fetch vendor details
+  const vendor = await User.findById(vendorId).select(
+    "name mobileNumber address location profilePicture role"
+  );
+
+  if (!vendor || vendor.role !== "Vendor") {
+    return res
+      .status(404)
+      .json({ success: false, message: "Vendor not found." });
+  }
+
+  // 📏 Calculate distance (if buyer location provided)
+  let distanceKm = null;
+  if (buyerLat && buyerLng && vendor.location?.coordinates) {
+    try {
+      distanceKm = calculateDistance(
+        parseFloat(buyerLat),
+        parseFloat(buyerLng),
+        vendor.location.coordinates[1],
+        vendor.location.coordinates[0]
+      ).toFixed(1);
+    } catch (err) {
+      console.error("Distance calculation failed:", err);
+      distanceKm = null;
+    }
+  }
+
+  // 🏠 Construct pickup address dynamically
+  const pickupAddress = vendor.address
+    ? [
+        vendor.address.houseNumber,
+        vendor.address.locality || vendor.address.city,
+        vendor.address.district,
+      ]
+        .filter(Boolean)
+        .join(", ")
+    : "Address not available";
+
+  // 🕒 Generate next 3 dynamic pickup slots (2-hour intervals)
+  const now = new Date();
+  const pickupSlots = [];
+
+  for (let i = 0; i < 3; i++) {
+    const start = new Date(now.getTime() + i * 2 * 60 * 60 * 1000);
+    const end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+
+    pickupSlots.push({
+      startTime: start.toLocaleTimeString("en-IN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      }),
+      endTime: end.toLocaleTimeString("en-IN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      }),
+      available: true,
+    });
+  }
+
+  // 📅 Format current pickup date
+  const pickupDate = now.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+
+  // 🧾 Final Response
+  res.status(200).json({
+    success: true,
+    data: {
+      vendor: {
+        name: vendor.name,
+        profilePicture: vendor.profilePicture,
+        phoneNo: vendor.mobileNumber,
+        pickupLocationText: pickupAddress,
+        distance: distanceKm ? `${distanceKm} kms away` : null,
+      },
+      defaultPickupDate: pickupDate,
+      upcomingPickupSlots: pickupSlots, // now returns multiple dynamic slots
+    },
+  });
+});
+
+
+
+const getPickupLocationDetailsPost = asyncHandler(async (req, res) => {
+    const { vendorId, buyerLat, buyerLng } = req.body;
+
+    if (!vendorId) {
+        return res.status(400).json({ success: false, message: "Vendor ID is required." });
+    }
+
+    // 1️⃣ Fetch vendor details
+    const vendor = await User.findById(vendorId).select("name mobileNumber address location profilePicture role");
+
+    if (!vendor || vendor.role !== "Vendor") {
+        return res.status(404).json({ success: false, message: "Vendor not found." });
+    }
+
+    // 2️⃣ Calculate distance
+    let distanceKm = null;
+    if (buyerLat && buyerLng && vendor.location?.coordinates?.length === 2) {
+        try {
+            // Note: coordinates are stored [lng, lat]
+            distanceKm = calculateDistance(
+                parseFloat(buyerLat),
+                parseFloat(buyerLng),
+                vendor.location.coordinates[1], // vendorLat
+                vendor.location.coordinates[0]  // vendorLng
+            ).toFixed(1);
+        } catch (e) {
+             distanceKm = null;
+        }
+    }
+
+    // 3️⃣ Build pickup address display text
+    const pickupAddress = vendor.address?.houseNumber
+        ? `${vendor.address.houseNumber}, ${vendor.address.locality || vendor.address.city}, ${vendor.address.district}`
+        : `${vendor.address?.locality || vendor.address?.city || "N/A"}`;
+
+    // 4️⃣ Dynamic pickup hours & date (Current logic provides a slot 30 min from now + 2 hours)
+    const now = new Date();
+    const startTime = new Date(now.getTime() + 30 * 60000); 
+    const endTime = new Date(startTime.getTime() + 2 * 60 * 60000); 
+
+    // Helper to format time as 10:30 AM
+    const formatTime = (d) =>
+        d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toLowerCase();
+
+    const pickupHours = `${formatTime(startTime)} to ${formatTime(endTime)}`;
+    const pickupDate = now.toLocaleDateString("en-GB"); // Formatted as dd/mm/yyyy
+
+    // ✅ 5️⃣ Send response
+    res.status(200).json({
+        success: true,
+        data: {
+            vendor: {
+                name: vendor.name,
+                profilePicture: vendor.profilePicture,
+                phoneNo: vendor.mobileNumber,
+                pickupLocationText: pickupAddress,
+                distance: distanceKm ? `${distanceKm} kms away` : null,
+            },
+            defaultPickupHours: pickupHours,
+            defaultPickupDate: pickupDate,
+        },
+    });
+});
+
+
+
+const selectPickupSlot = asyncHandler(async (req, res) => {
+  const { vendorId, date, startTime, endTime } = req.body;
+
+  if (!vendorId || !date || !startTime || !endTime) {
+    return res.status(400).json({ success: false, message: "All fields are required." });
+  }
+
+  const cart = await Cart.findOne({ user: req.user._id });
+  if (!cart) {
+    return res.status(404).json({ success: false, message: "Cart not found." });
+  }
+
+  cart.pickupDetails = {
+    vendor: vendorId,
+    date,
+    startTime,
+    endTime,
+  };
+
+  await cart.save();
+
+  res.status(200).json({
+    success: true,
+    message: "Pickup slot selected successfully.",
+    data: cart.pickupDetails,
+  });
+});
+
+
+
+
 module.exports = {
     getHomePageData,
     getProductDetails,
@@ -1258,9 +2225,9 @@ module.exports = {
     getOrderDetails,
     setDefaultAddress,
     updateBuyerLocation,
-    updateBuyerLanguage,
-    writeReview,
-    getBuyerOrders,getLocalBestProducts,getAllAroundIndiaProducts,getSmartPicks,
-    getOrderDetails, searchProducts,generateUpiPaymentUrl,getFreshAndPopularProducts,
+    updateBuyerLanguage,getHighlightedCoupon,getPickupLocationDetails,getPickupLocationDetailsPost,selectPickupSlot,
+    writeReview,getProductsByCategory,getVendorProfileForBuyer,getProductReviews,getAvailableCouponsForBuyer,
+    getBuyerOrders,getLocalBestProducts,getAllAroundIndiaProducts,getSmartPicks,getCouponsByProductId,
+    getOrderDetails, searchProducts,getFreshAndPopularProducts,generateUpiPaymentUrl,
     getReviewsForProduct, updateReview, deleteReview, applyCouponToCart, startCheckout, verifyPayment, addAddress, getAddresses, getStaticPageContent
 };
