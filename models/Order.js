@@ -48,8 +48,8 @@ const orderSchema = new mongoose.Schema({
   },
   orderStatus: {
     type: String,
-    enum: ['Pending', 'Confirmed', 'Completed', 'Cancelled'],
-    default: 'Pending',
+    enum: [ 'In-process', 'Completed', 'Cancelled'],
+    default: 'In-Process',
   },
   shippingAddress: {
     type: Object, // embedded shipping address object

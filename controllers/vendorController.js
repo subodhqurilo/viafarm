@@ -29,14 +29,21 @@ const getDashboardData = asyncHandler(async (req, res) => {
         // Total orders for this vendor
         const totalOrders = await Order.countDocuments({ vendor: vendorId });
 
-        // Total revenue from completed orders
-        const totalRevenueResult = await Order.aggregate([
-            { $match: { vendor: vendorId, status: 'Completed' } },
+        // Total revenue from all orders for this vendor
+        const totalRevenueAllResult = await Order.aggregate([
+            { $match: { vendor: vendorId } },
             { $group: { _id: null, total: { $sum: '$totalPrice' } } }
         ]);
-        const totalRevenue = totalRevenueResult[0]?.total || 0;
+        const totalRevenueAll = totalRevenueAllResult[0]?.total || 0;
 
-        // Total orders for today
+        // Total revenue from completed orders for this vendor
+        const totalRevenueCompletedResult = await Order.aggregate([
+            { $match: { vendor: vendorId, orderStatus: 'Completed' } },
+            { $group: { _id: null, total: { $sum: '$totalPrice' } } }
+        ]);
+        const totalRevenueCompleted = totalRevenueCompletedResult[0]?.total || 0;
+
+        // Total orders for today for this vendor
         const todayOrders = await Order.countDocuments({
             vendor: vendorId,
             createdAt: {
@@ -49,14 +56,182 @@ const getDashboardData = asyncHandler(async (req, res) => {
             success: true,
             data: {
                 totalOrders,
-                totalRevenue,
+                totalRevenueAll,        // all orders revenue
+                totalRevenueCompleted,  // only completed orders
                 todayOrders,
             },
         });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Failed to fetch dashboard data.', error: error.message });
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch dashboard data.',
+            error: error.message
+        });
     }
 });
+
+const getVendorDashboardAnalytics = asyncHandler(async (req, res) => {
+    const vendorId = req.user._id;
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+    const today = new Date();
+
+    // --- 1. Customer Stats for Current Month vs. Last Year ---
+    const currentMonth = today.getMonth(); // 0-indexed
+    const currentYear = today.getFullYear();
+
+    const startOfCurrentMonth = new Date(currentYear, currentMonth, 1);
+    const endOfCurrentMonth = new Date(currentYear, currentMonth + 1, 0, 23, 59, 59);
+
+    const startOfLastYearMonth = new Date(currentYear - 1, currentMonth, 1);
+    const endOfLastYearMonth = new Date(currentYear - 1, currentMonth + 1, 0, 23, 59, 59);
+
+    const getUniqueCustomerCount = async (startDate, endDate) => {
+        const result = await Order.aggregate([
+            {
+                $match: {
+                    vendor: vendorId,
+                    createdAt: { $gte: startDate, $lte: endDate },
+                    orderStatus: { $in: ['In-process', 'Completed'] } // Only in-process and completed orders
+                }
+            },
+            { $group: { _id: '$buyer' } }, // Unique buyers
+            { $count: 'customerCount' }
+        ]);
+        return result.length > 0 ? result[0].customerCount : 0;
+    };
+
+    const currentMonthCustomers = await getUniqueCustomerCount(startOfCurrentMonth, endOfCurrentMonth);
+    const lastYearMonthCustomers = await getUniqueCustomerCount(startOfLastYearMonth, endOfLastYearMonth);
+
+    let percentageChange = 0;
+    if (lastYearMonthCustomers > 0) {
+        percentageChange = ((currentMonthCustomers - lastYearMonthCustomers) / lastYearMonthCustomers) * 100;
+    } else if (currentMonthCustomers > 0) {
+        percentageChange = 100;
+    }
+
+    // --- 2. Monthly Customer Data for Bar Chart ---
+    const monthlyCustomerData = await Order.aggregate([
+        {
+            $match: {
+                vendor: vendorId,
+                createdAt: {
+                    $gte: new Date(`${year}-01-01T00:00:00.000Z`),
+                    $lte: new Date(`${year}-12-31T23:59:59.999Z`)
+                },
+                orderStatus: { $in: ['In-process', 'Completed'] } // Only consider these orders
+            }
+        },
+        {
+            $group: {
+                _id: {
+                    month: { $month: '$createdAt' },
+                    buyer: '$buyer'
+                }
+            }
+        },
+        {
+            $group: {
+                _id: '$_id.month',
+                customerCount: { $sum: 1 }
+            }
+        },
+        { $sort: { '_id': 1 } }
+    ]);
+
+    const formattedChartData = Array.from({ length: 12 }, (_, i) => {
+        const monthData = monthlyCustomerData.find(item => item._id === i + 1);
+        return monthData ? monthData.customerCount : 0;
+    });
+
+    res.status(200).json({
+        success: true,
+        data: {
+            currentMonthCustomers,
+            percentageChangeVsLastYear: parseFloat(percentageChange.toFixed(1)),
+            monthlyCustomerDataForYear: formattedChartData,
+        }
+    });
+});
+
+const getVendorOrderStats = asyncHandler(async (req, res) => {
+    const vendorId = req.user._id;
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+
+    // --- Today ---
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const endOfToday = new Date();
+    endOfToday.setHours(23, 59, 59, 999);
+
+    // --- Year ---
+    const startOfYear = new Date(`${year}-01-01T00:00:00.000Z`);
+    const endOfYear = new Date(`${year}-12-31T23:59:59.999Z`);
+
+    try {
+        // Total orders for today
+        const todayOrders = await Order.countDocuments({
+            vendor: vendorId,
+            createdAt: { $gte: startOfToday, $lte: endOfToday },
+            orderStatus: { $in: ['In-process', 'Completed'] }
+        });
+
+        // Total orders for this year
+        const yearlyOrdersResult = await Order.aggregate([
+            { 
+                $match: { 
+                    vendor: vendorId,
+                    createdAt: { $gte: startOfYear, $lte: endOfYear },
+                    orderStatus: { $in: ['In-process', 'Completed'] }
+                } 
+            },
+            { $group: { _id: null, totalOrders: { $sum: 1 }, totalRevenue: { $sum: '$totalPrice' } } }
+        ]);
+        const yearlyOrders = yearlyOrdersResult[0]?.totalOrders || 0;
+        const yearlyRevenue = yearlyOrdersResult[0]?.totalRevenue || 0;
+
+        // Monthly orders (array of 12 months)
+        const monthlyOrdersResult = await Order.aggregate([
+            { 
+                $match: { 
+                    vendor: vendorId,
+                    createdAt: { $gte: startOfYear, $lte: endOfYear },
+                    orderStatus: { $in: ['In-process', 'Completed'] }
+                } 
+            },
+            { 
+                $group: { 
+                    _id: { month: { $month: '$createdAt' } }, 
+                    count: { $sum: 1 }, 
+                    revenue: { $sum: '$totalPrice' } 
+                } 
+            },
+            { $sort: { '_id.month': 1 } }
+        ]);
+
+        const monthlyOrders = Array.from({ length: 12 }, (_, i) => {
+            const monthData = monthlyOrdersResult.find(m => m._id.month === i + 1);
+            return monthData ? { orders: monthData.count, revenue: monthData.revenue } : { orders: 0, revenue: 0 };
+        });
+
+        res.status(200).json({
+            success: true,
+            data: {
+                todayOrders,
+                yearlyOrders,
+                yearlyRevenue,
+                monthlyOrders
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch vendor order stats',
+            error: error.message
+        });
+    }
+});
+
 
 
 const getMonthlyOrders = asyncHandler(async (req, res) => {
@@ -153,14 +328,24 @@ const getTodaysOrders = asyncHandler(async (req, res) => {
             vendor: vendorId,
             createdAt: { $gte: startOfToday }
         })
-        .populate('buyer', 'name')
+        // ✅ buyer info (name + mobile)
+        .populate('buyer', 'name mobileNumber')
+        // ✅ product info (name + variety)
+        .populate('products.product', 'name variety')
         .sort({ createdAt: -1 });
 
         res.status(200).json({ success: true, data: todaysOrders });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Failed to fetch today\'s orders.', error: error.message });
+        res.status(500).json({ 
+            success: false, 
+            message: 'Failed to fetch today\'s orders.', 
+            error: error.message 
+        });
     }
 });
+
+
+
 // -------------------------------
 // Product Management
 // -------------------------------
@@ -181,32 +366,59 @@ const getVendorProducts = asyncHandler(async (req, res) => {
 const addProduct = asyncHandler(async (req, res) => {
     const {
         name, category, variety, price, quantity, unit, description,
-        nutritionalValue, allIndiaDelivery
+        allIndiaDelivery // Removed nutritionalValue
     } = req.body;
+    
+    const vendorId = req.user._id; 
 
-    // Upload images to Cloudinary
+    // 1. Mandatory Input Validation (Matching the '*' fields in Figma)
+    if (!name || !category || !variety || !price || !quantity || !unit) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'Missing required fields: Name, Category, Variety, Price, Quantity, and Unit are mandatory.' 
+        });
+    }
+
+    if (isNaN(price) || isNaN(quantity) || Number(price) <= 0 || Number(quantity) <= 0) {
+        return res.status(400).json({
+            success: false, 
+            message: 'Price and Quantity must be valid positive numbers.'
+        });
+    }
+
+    // 2. Image Upload to Cloudinary (Mandatory requirement from the form text)
     let images = [];
-    if (req.files) {
+    if (req.files && req.files.length > 0) {
         for (const file of req.files) {
             const result = await cloudinary.uploader.upload(file.path, {
                 folder: 'product-images',
             });
             images.push(result.secure_url);
         }
+    } else {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'At least one product image is required.' 
+        });
     }
 
+    // 3. Prepare Boolean Field
+    const isAllIndiaDelivery = (allIndiaDelivery === true || allIndiaDelivery === 'true');
+
+    // 4. Create Product in Database
     const newProduct = await Product.create({
         name,
-        vendor: req.user._id,
+        vendor: vendorId,
         category,
         variety,
-        price,
-        quantity,
+        price: Number(price),
+        quantity: Number(quantity),
         unit,
-        description,
-        images, // store array of URLs
-        nutritionalValue: typeof nutritionalValue === 'string' ? JSON.parse(nutritionalValue) : nutritionalValue,
-        allIndiaDelivery: typeof allIndiaDelivery === 'string' ? JSON.parse(allIndiaDelivery) : allIndiaDelivery,
+        description: description || '',
+        images,
+        // Nutritional value is omitted as it is handled via a separate PUT/POST request later
+        allIndiaDelivery: isAllIndiaDelivery,
+        status: 'In Stock' // Default status upon creation
     });
 
     res.status(201).json({
@@ -221,54 +433,59 @@ const addProduct = asyncHandler(async (req, res) => {
 // @route   PUT /api/vendor/products/:id
 // @access  Private/Vendor
 const updateProduct = asyncHandler(async (req, res) => {
-    const product = await Product.findById(req.params.id);
+    const { id } = req.params;
+    const updates = req.body;
+    
+    // 1. Authorization Check (Find the product first)
+    const product = await Product.findById(id);
 
     if (!product) {
         return res.status(404).json({ success: false, message: 'Product not found' });
     }
 
+    // Ensure the user updating the product is the vendor who owns it
     if (product.vendor.toString() !== req.user._id.toString()) {
-        return res.status(401).json({ success: false, message: 'Not authorized' });
+        return res.status(401).json({ success: false, message: 'Not authorized to update this product.' });
     }
 
-    // Handle nutritionalValue
-    if (req.body.nutritionalValue) {
-        try {
-            product.nutritionalValue =
-                typeof req.body.nutritionalValue === 'string'
-                    ? JSON.parse(req.body.nutritionalValue)
-                    : req.body.nutritionalValue;
-        } catch (err) {
-            return res.status(400).json({ success: false, message: 'Invalid nutritionalValue JSON' });
-        }
-    }
+    // Prepare an object to hold updates
+    const updateFields = {};
 
-    // Handle allIndiaDelivery
-    if (req.body.allIndiaDelivery !== undefined) {
-        if (typeof req.body.allIndiaDelivery === 'string') {
-            product.allIndiaDelivery = req.body.allIndiaDelivery.toLowerCase() === 'true';
-        } else {
-            product.allIndiaDelivery = !!req.body.allIndiaDelivery;
-        }
-    }
-
-    // Update other allowed fields
-    const allowedFields = ['name', 'category', 'variety', 'price', 'quantity', 'unit', 'description'];
+    // 2. Update Basic Fields
+    const allowedFields = ['name', 'category', 'variety', 'price', 'quantity', 'unit', 'description', 'status'];
     allowedFields.forEach(field => {
-        if (req.body[field] !== undefined) product[field] = req.body[field];
+        if (updates[field] !== undefined) {
+            // Convert price and quantity to Number explicitly for safety
+            updateFields[field] = (field === 'price' || field === 'quantity') ? Number(updates[field]) : updates[field];
+        }
     });
 
-    // Handle multiple image uploads
+    // 3. Handle allIndiaDelivery (Boolean conversion)
+    if (updates.allIndiaDelivery !== undefined) {
+        // Convert string ('true'/'false') or boolean to boolean
+        const isAllIndiaDelivery = (updates.allIndiaDelivery === true || updates.allIndiaDelivery === 'true');
+        updateFields.allIndiaDelivery = isAllIndiaDelivery;
+    }
+    
+    // 4. Handle Image Replacement (If files are uploaded)
     if (req.files && req.files.length > 0) {
         const uploadedImages = [];
+        // First, upload new images
         for (const file of req.files) {
             const result = await cloudinary.uploader.upload(file.path, { folder: 'product-images' });
             uploadedImages.push(result.secure_url);
         }
-        product.images = uploadedImages;
+        // NOTE: This logic replaces ALL existing images.
+        // For partial updates, the frontend should send the existing URLs along with new files.
+        updateFields.images = uploadedImages; 
     }
-
-    const updatedProduct = await product.save();
+    
+    // 5. Apply Updates using findByIdAndUpdate
+    const updatedProduct = await Product.findByIdAndUpdate(
+        id, 
+        { $set: updateFields },
+        { new: true, runValidators: true } // Return the new document and enforce schema rules
+    );
 
     res.json({
         success: true,
@@ -349,8 +566,8 @@ const updateProductStatus = asyncHandler(async (req, res) => {
 // @access  Private/Vendor
 const getVendorOrders = asyncHandler(async (req, res) => {
     const orders = await Order.find({ vendor: req.user._id })
-        .populate('buyer', 'name email')           // only bring buyer details you need
-        .populate('products.product', 'name price'); // populate product details inside products array
+        .populate('buyer', 'name email mobileNumber')           // only bring buyer details you need
+        .populate('products.product', 'name price mobileNumber variety'); // populate product details inside products array
 
     res.json({ success: true, data: orders });
 });
@@ -363,29 +580,31 @@ const getVendorOrders = asyncHandler(async (req, res) => {
 const updateOrderStatus = asyncHandler(async (req, res) => {
     const { status } = req.body;
 
-    // 1. Find the order
-    const order = await Order.findById(req.params.id).populate('products.product');
+    // Find the order and ensure orderStatus is included
+    const order = await Order.findById(req.params.id)
+        .populate('products.product')
+        .select('+orderStatus'); // include orderStatus if it's normally excluded
 
     if (!order) {
         return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // 2. Check if vendor is authorized
     if (order.vendor.toString() !== req.user._id.toString()) {
         return res.status(401).json({ success: false, message: 'Not authorized' });
     }
 
-    // 3. Update orderStatus
-    order.orderStatus = status; // ✅ use orderStatus
+    order.orderStatus = status;
     const updatedOrder = await order.save();
 
-    // 4. Respond with updated order
+    // Send full document including orderStatus
     res.json({
         success: true,
         message: 'Order status updated',
         data: updatedOrder,
     });
 });
+
+
 
 
 
@@ -418,77 +637,152 @@ const getVendorCouponById = asyncHandler(async (req, res) => {
 });
 
 
-// Get coupons for the logged-in vendor
-const getVendorCoupons = asyncHandler(async (req, res) => {
-    const coupons = await Coupon.find({ vendor: new mongoose.Types.ObjectId(req.user.id) });
-    res.json({ success: true, data: coupons });
-});
-
-// Create a new coupon
 const createCoupon = asyncHandler(async (req, res) => {
-    const {
-        code,
-        discount,
-        appliesTo,
-        validFrom,
-        validTill,
-        minimumOrder,
-        usageLimit
-    } = req.body;
+  const {
+    code,
+    discount,
+    appliesTo,
+    startDate,
+    expiryDate,
+    minimumOrder = 0,
+    totalUsageLimit = 0,
+    usageLimitPerUser = 1,
+    applicableId = null,
+    appliesToRef = null,
+    category = null,
+    status = 'Active'
+  } = req.body;
 
-    if (!code || !discount || !validFrom || !validTill || !appliesTo) {
-        return res.status(400).json({
-            success: false,
-            message: 'Please fill all required fields',
-        });
-    }
-
-    const existing = await Coupon.findOne({ code });
-    if (existing) {
-        return res.status(400).json({ success: false, message: 'Coupon code already exists' });
-    }
-
-    const newCoupon = await Coupon.create({
-        code,
-        discount,
-        appliesTo,
-        validFrom,
-        validTill,
-        minimumOrder,
-        usageLimit,
-        vendor: new mongoose.Types.ObjectId(req.user.id),    // Correctly convert to ObjectId
-        createdBy: new mongoose.Types.ObjectId(req.user.id) // Correctly convert to ObjectId
+  // ✅ Validate required fields
+  if (
+    !code ||
+    !discount ||
+    !discount.value ||
+    !discount.type ||
+    !appliesTo ||
+    !startDate ||
+    !expiryDate
+  ) {
+    return res.status(400).json({
+      success: false,
+      message:
+        'Please fill all required fields: code, discount(value/type), appliesTo, startDate, expiryDate.'
     });
+  }
 
-    res.status(201).json({
-        success: true,
-        message: 'Coupon created successfully',
-        data: newCoupon,
+  // ✅ Check duplicate coupon code
+  const existingCoupon = await Coupon.findOne({ code: code.toUpperCase() });
+  if (existingCoupon) {
+    return res.status(400).json({
+      success: false,
+      message: 'Coupon code already exists.'
     });
+  }
+
+  // ✅ Create new coupon
+  const newCoupon = await Coupon.create({
+    code: code.toUpperCase(),
+    discount: {
+      value: discount.value,
+      type: discount.type
+    },
+    appliesTo,
+    applicableId,
+    appliesToRef,
+    category,
+    startDate: new Date(startDate),
+    expiryDate: new Date(expiryDate),
+    minimumOrder,
+    totalUsageLimit,
+    usageLimitPerUser,
+    vendor: req.user._id,
+    createdBy: req.user._id,
+    status
+  });
+
+  res.status(201).json({
+    success: true,
+    message: 'Coupon created successfully.',
+    data: newCoupon
+  });
 });
+
+
+
+const getVendorCoupons = asyncHandler(async (req, res) => {
+  if (!req.user || !req.user._id) {
+    return res.status(401).json({
+      success: false,
+      message: 'Unauthorized: Vendor information missing.'
+    });
+  }
+
+  const coupons = await Coupon.find({ vendor: req.user._id })
+    .sort({ createdAt: -1 });
+
+  if (!coupons || coupons.length === 0) {
+    return res.status(200).json({
+      success: true,
+      message: 'No coupons found for this vendor.',
+      data: []
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    count: coupons.length,
+    data: coupons
+  });
+});
+
+
+
+
 
 // Update a coupon
 const updateVendorCoupon = asyncHandler(async (req, res) => {
-    const coupon = await Coupon.findById(req.params.id);
+    const { id } = req.params;
+
+    if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+        return res.status(400).json({ success: false, message: 'Invalid coupon ID.' });
+    }
+
+    const coupon = await Coupon.findById(id);
 
     if (!coupon) {
         return res.status(404).json({ success: false, message: 'Coupon not found.' });
     }
 
-    if (coupon.vendor.toString() !== req.user.id) {
-        return res.status(403).json({ success: false, message: 'Not authorized' });
+    if (coupon.vendor.toString() !== req.user._id.toString()) {
+        return res.status(403).json({ success: false, message: 'Not authorized to update this coupon.' });
     }
 
     const allowedFields = [
-        'code', 'discount', 'appliesTo', 'validFrom',
-        'validTill', 'minimumOrder', 'usageLimit', 'status'
+        'code', 'discount', 'appliesTo', 'minimumOrder', 'usageLimitPerUser', 'status', 
+        'startDate', 'expiryDate', 'applicableId', 'appliesToRef', 'category'
     ];
 
     allowedFields.forEach(field => {
-        if (req.body[field] !== undefined) coupon[field] = req.body[field];
+        if (req.body[field] !== undefined) {
+            // Special handling for discount object
+            if (field === 'discount' && typeof req.body.discount === 'object') {
+                coupon.discount.value = req.body.discount.value ?? coupon.discount.value;
+                coupon.discount.type = req.body.discount.type ?? coupon.discount.type;
+            } 
+            else if (field === 'startDate' || field === 'expiryDate') {
+                coupon[field] = new Date(req.body[field]);
+            } 
+            else if (field === 'code') {
+                coupon.code = req.body.code.toUpperCase();
+            } 
+            else {
+                coupon[field] = req.body[field];
+            }
+        }
     });
 
     const updatedCoupon = await coupon.save();
+
     res.status(200).json({
         success: true,
         message: 'Coupon updated successfully.',
@@ -496,19 +790,31 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
     });
 });
 
-// Delete a coupon
+
 const deleteVendorCoupon = asyncHandler(async (req, res) => {
-    const coupon = await Coupon.findById(req.params.id);
+  const { id } = req.params;
 
-    if (!coupon) return res.status(404).json({ success: false, message: 'Coupon not found.' });
+  if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+    return res.status(400).json({ success: false, message: 'Invalid coupon ID.' });
+  }
 
-    if (coupon.vendor.toString() !== req.user.id) {
-        return res.status(403).json({ success: false, message: 'Not authorized' });
-    }
+  const coupon = await Coupon.findById(id);
 
-    await coupon.remove();
-    res.status(200).json({ success: true, message: 'Coupon deleted successfully.' });
+  if (!coupon) {
+    return res.status(404).json({ success: false, message: 'Coupon not found.' });
+  }
+
+  if (coupon.vendor.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ success: false, message: 'Not authorized to delete this coupon.' });
+  }
+
+  await Coupon.findByIdAndDelete(id);
+
+  res.status(200).json({ success: true, message: 'Coupon deleted successfully.' });
 });
+
+
+
 
 
 
@@ -523,39 +829,70 @@ const deleteVendorCoupon = asyncHandler(async (req, res) => {
 
 
 const getUserProfile = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id).select('-password'); // always _id
-    console.log(user)
-    if (user) {
-        res.status(200).json({
-            success: true,
-            user: {
-                id: user._id,
-                name: user.name,
-                mobileNumber: user.mobileNumber,
-                profilePicture: user.profilePicture,
-                role: user.role,
-                upiId: user.upiId,
-                address: user.address,
-                language: user.language
-
-            }
-        });
-    } else {
-        res.status(404).json({ success: false, message: 'User not found.' });
+    const user = await User.findById(req.user.id).select('-password'); 
+    if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found.' });
     }
+
+    // Ensure vendorDetails exists to safely access 'about'
+    const vendorDetails = user.vendorDetails || {};
+
+    const responseData = {
+        id: user._id,
+        name: user.name,
+        mobileNumber: user.mobileNumber,
+        profilePicture: user.profilePicture,
+        role: user.role,
+        upiId: user.upiId,
+        address: user.address,
+        language: user.language,
+        about: vendorDetails.about || '' // now safe and always returns string
+    };
+
+    // Include extra vendor info if role is Vendor
+    if (user.role === 'Vendor') {
+        responseData.totalOrdersAsBuyer = user.totalOrdersAsBuyer || 0;
+    }
+
+    res.status(200).json({ success: true, user: responseData });
 });
 
+
+
+
+// @desc    Update User/Vendor Profile
+// @route   PUT /api/user/profile
+// @access  Private
 const updateUserProfile = asyncHandler(async (req, res) => {
+    const { name, mobileNumber, upiId, about } = req.body;
+
+    // 1️⃣ Find User
     const user = await User.findById(req.user.id);
     if (!user) {
         return res.status(404).json({ success: false, message: 'User not found.' });
     }
 
-    // Update profile image if uploaded
+    // 2️⃣ Validate Mandatory Fields
+    if (!name || !mobileNumber || !upiId) {
+        return res.status(400).json({
+            success: false,
+            message: 'Name, Mobile Number, and UPI Id are mandatory fields.'
+        });
+    }
+
+    // Optional: Mobile number validation (10 digits)
+    if (!/^\d{10}$/.test(mobileNumber)) {
+        return res.status(400).json({
+            success: false,
+            message: 'Mobile number must be a valid 10-digit number.'
+        });
+    }
+
+    // 3️⃣ Handle Profile Picture Upload
     if (req.file) {
         try {
             const result = await cloudinary.uploader.upload(req.file.path, {
-                folder: 'profile-images'
+                folder: 'profile-images',
             });
             user.profilePicture = result.secure_url;
         } catch (err) {
@@ -564,19 +901,33 @@ const updateUserProfile = asyncHandler(async (req, res) => {
         }
     }
 
-    // Update other fields
-    if (req.body.name) user.name = req.body.name;
-    if (req.body.mobileNumber) user.mobileNumber = req.body.mobileNumber;
-    if (req.body.upiId) user.upiId = req.body.upiId;
+    // 4️⃣ Update Text Fields
+    user.name = name;
+    user.mobileNumber = mobileNumber;
+    user.upiId = upiId;
+
+    // Vendor About (ensure vendorDetails exists)
+    user.vendorDetails = user.vendorDetails || {};
+    user.vendorDetails.about = about || user.vendorDetails.about;
+
+    // 5️⃣ Handle Address Update
     if (req.body.address) {
-        user.address = typeof req.body.address === 'string'
-            ? JSON.parse(req.body.address)
-            : req.body.address;
+        try {
+            user.address = typeof req.body.address === 'string'
+                ? JSON.parse(req.body.address)
+                : req.body.address;
+        } catch (e) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid address format. Must be valid JSON.'
+            });
+        }
     }
 
-
+    // 6️⃣ Save User
     const updatedUser = await user.save();
 
+    // 7️⃣ Respond
     res.json({
         success: true,
         message: 'Profile updated successfully',
@@ -586,12 +937,15 @@ const updateUserProfile = asyncHandler(async (req, res) => {
             mobileNumber: updatedUser.mobileNumber,
             profilePicture: updatedUser.profilePicture,
             upiId: updatedUser.upiId,
-            address: user.address,
-
-
+            address: updatedUser.address,
+            about: updatedUser.vendorDetails?.about || ''
         }
     });
 });
+
+module.exports = { updateUserProfile };
+
+
 
 
 
@@ -638,49 +992,78 @@ const changePassword = asyncHandler(async (req, res) => {
 });
 
 
-const updateUserLocation = asyncHandler(async (req, res) => {
-    const { pinCode, houseNumber, locality, city, district, latitude, longitude } = req.body;
 
-    if (!pinCode || !houseNumber || !locality || !city || !district || !latitude || !longitude) {
-        return res.status(400).json({
-            success: false,
-            message: 'All fields including latitude & longitude are required.'
-        });
+
+/**
+ * @desc    Updates the authenticated user's address and GeoJSON location.
+ * GeoJSON coordinates (latitude/longitude) are optional.
+ * @route   PUT /api/user/profile/location
+ * @access  Private (Authenticated User/Vendor)
+ */
+const updateLocationDetails = asyncHandler(async (req, res) => {
+    const { 
+        pinCode, 
+        houseNumber, 
+        locality, 
+        city, 
+        district, 
+        latitude, 
+        longitude 
+    } = req.body;
+
+    // --- 1. Address Validation (Fields from the UI are required for an address update) ---
+    // If the user is updating location, they must provide the core address fields.
+    if (!pinCode || !houseNumber || !locality || !city || !district) {
+        return res.status(400).json({ success: false, message: 'All address fields (Pin Code, House Number, Locality, City, District) are required.' });
     }
 
-    try {
-        const updatedUser = await User.findByIdAndUpdate(
-            req.user._id,
-            {
-                $set: {
-                    'address.pinCode': pinCode,
-                    'address.houseNumber': houseNumber,
-                    'address.locality': locality,
-                    'address.city': city,
-                    'address.district': district,
-                    'address.latitude': latitude,
-                    'address.longitude': longitude,
-                    'location.coordinates': [parseFloat(longitude), parseFloat(latitude)]
-                }
-            },
-            { new: true, runValidators: true }
-        );
+    // --- 2. Build Update Object ---
+    const updateFields = {
+        'address.pinCode': pinCode,
+        'address.houseNumber': houseNumber,
+        'address.locality': locality,
+        'address.city': city,
+        'address.district': district,
+    };
+    
+    // --- 3. Handle GeoJSON Location (Optional Update) ---
+    if (latitude && longitude) {
+        const lat = parseFloat(latitude);
+        const lng = parseFloat(longitude);
 
-        if (!updatedUser) {
-            return res.status(404).json({ success: false, message: 'User not found.' });
+        if (isNaN(lat) || isNaN(lng)) {
+             return res.status(400).json({ success: false, message: 'Invalid latitude or longitude provided.' });
         }
-
-        res.status(200).json({
-            success: true,
-            message: 'Location updated successfully.',
-            address: updatedUser.address,
-            location: updatedUser.location
-        });
-
-    } catch (error) {
-        console.error('Error updating user location:', error);
-        res.status(500).json({ success: false, message: 'Server error. Could not update location.' });
+        
+        // GeoJSON Point is always stored as [longitude, latitude]
+        updateFields['location'] = {
+            type: 'Point',
+            coordinates: [lng, lat] 
+        };
+    } else {
+        // Clear location if not provided in the request body, 
+        // ensuring old coordinates don't persist if the user only updates address text.
+        updateFields['location'] = undefined;
     }
+    
+    // --- 4. Update and Validate ---
+    const updatedUser = await User.findByIdAndUpdate(
+        req.user._id,
+        { $set: updateFields },
+        { new: true, runValidators: true } // Return new document and enforce schema rules
+    );
+
+    if (!updatedUser) {
+        return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    // --- 5. Response ---
+    res.status(200).json({
+        success: true,
+        message: 'Location updated successfully.',
+        address: updatedUser.address,
+        location: updatedUser.location
+    });
 });
 
 const updateUserLanguage = asyncHandler(async (req, res) => {
@@ -752,10 +1135,10 @@ module.exports = {
     changePassword,
     logout,
     uploadProfileImage,
-    updateUserLocation,   // <-- missing
+    updateLocationDetails,   // <-- missing
     updateUserLanguage,
     updateOrderStatus,
     getMonthlyOrders,
-    getRecentVendorOrders,getTodaysOrders
+    getRecentVendorOrders,getTodaysOrders,getVendorDashboardAnalytics,getVendorOrderStats
 };
 

@@ -90,7 +90,9 @@ exports.setNewPassword = async (req, res) => {
             return res.status(404).json({ status: 'error', message: 'User not found.' });
         }
 
-        user.password = await hashPassword(password);
+        // ✅ Directly assign password, pre-save hook will hash it
+        user.password = password;
+
         await user.save();
 
         res.status(200).json({ status: 'success', message: 'Password has been set successfully.' });
@@ -98,6 +100,7 @@ exports.setNewPassword = async (req, res) => {
         res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
     }
 };
+
 
 // ===== Complete Profile (name, password, role) =====
 exports.completeProfile = async (req, res) => {
@@ -109,13 +112,12 @@ exports.completeProfile = async (req, res) => {
             return res.status(400).json({ status: 'error', message: 'User not verified or not found.' });
         }
 
-        // Update basic details
         user.name = name;
         user.role = role;
 
-        // Set password if provided
+        // ✅ Directly assign password if provided
         if (password) {
-            user.password = await hashPassword(password); // hash before saving
+            user.password = password;
         }
 
         await user.save();
@@ -140,29 +142,59 @@ exports.completeProfile = async (req, res) => {
     }
 };
 
+
 // ===== Login with Password =====
 exports.login = async (req, res) => {
-    const { mobileNumber, password } = req.body;
-    try {
-        const user = await User.findOne({ mobileNumber });
-        if (!user || !user.isVerified) {
-            return res.status(400).json({ status: 'error', message: 'User not found or not verified.' });
-        }
+  const { mobileNumber, password } = req.body;
 
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) return res.status(400).json({ status: 'error', message: 'Invalid credentials.' });
+  try {
+    console.log("🔹 Login attempt:", { mobileNumber, password });
 
-        const token = generateToken(user);
+    const user = await User.findOne({ mobileNumber });
+    console.log("🔹 User found:", user ? {
+      mobileNumber: user.mobileNumber,
+      isVerified: user.isVerified,
+      password: user.password
+    } : null);
 
-        res.status(200).json({
-            status: 'success',
-            message: 'Login successful.',
-            data: { token, user: { id: user._id, name: user.name, role: user.role } }
-        });
-    } catch (err) {
-        res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
+    if (!user || !user.isVerified) {
+      return res.status(400).json({ status: 'error', message: 'User not found or not verified.' });
     }
+
+    if (!user.password) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'This account has no password. Please login using OTP.',
+      });
+    }
+
+    // Use schema method to compare
+    const isMatch = await user.matchPassword(password);
+    console.log("🔹 Password match result:", isMatch);
+
+    if (!isMatch) {
+      return res.status(400).json({ status: 'error', message: 'Invalid credentials.' });
+    }
+
+    const token = generateToken(user);
+    console.log("🔹 JWT generated:", token);
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Login successful.',
+      data: { token, user: { id: user._id, name: user.name, role: user.role, mobileNumber: user.mobileNumber } }
+    });
+
+  } catch (err) {
+    console.error("🔹 Login error:", err);
+    res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
+  }
 };
+
+
+
+
+
 
 // ===== Request OTP for Login =====
 exports.requestOtpLogin = async (req, res) => {
@@ -211,58 +243,73 @@ exports.verifyOtpLogin = async (req, res) => {
 
 // ===== Forgot Password (send OTP) =====
 exports.forgotPassword = async (req, res) => {
-    const { mobileNumber } = req.body;
+  const { mobileNumber } = req.body;
 
-    if (!mobileNumber) {
-        return res.status(400).json({ status: 'fail', message: 'Mobile number is required.' });
+  if (!mobileNumber) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Mobile number is required.',
+    });
+  }
+
+  try {
+    const user = await User.findOne({ mobileNumber });
+    let otp = null;
+
+    if (user) {
+      // Generate new OTP
+      otp = otpService.generateOTP();
+
+      // Save OTP + expiry (10 minutes)
+      user.otp = otp;
+      user.otpExpiry = Date.now() + 10 * 60 * 1000;
+      await user.save();
+
+      // Optional: send OTP via SMS in production
+      // await smsService.sendOTP(mobileNumber, otp);
+
+      console.log(`🔐 OTP for ${mobileNumber}: ${otp}`); // remove in production
+    }
+
+    res.status(200).json({
+      status: 'success',
+      message:
+        'If an account with that number exists, an OTP has been sent.',
+      otp, // always include for dev/testing
+    });
+  } catch (err) {
+    console.error('Forgot Password Error:', err);
+    res.status(500).json({
+      status: 'error',
+      message: 'Server error',
+      error: err.message,
+    });
+  }
+};
+
+
+// ===== Reset Password =====
+exports.resetPassword = async (req, res) => {
+    const { mobileNumber, otp, newPassword, confirmPassword } = req.body;
+
+    if (!mobileNumber || !otp || !newPassword || !confirmPassword) {
+        return res.status(400).json({ status: 'error', message: 'All fields are required.' });
+    }
+
+    if (newPassword !== confirmPassword) {
+        return res.status(400).json({ status: 'error', message: 'Passwords do not match.' });
     }
 
     try {
         const user = await User.findOne({ mobileNumber });
-        let otp;
 
-        if (user) {
-            // Generate OTP
-            otp = otpService.generateOTP();
-
-            // Save OTP and expiry
-            user.otp = otp;
-            user.otpExpiry = Date.now() + 10 * 60 * 1000; // 10 minutes
-            await user.save();
-
-            // Optional: send OTP via SMS in production
-            // await smsService.sendOTP(mobileNumber, otp);
-        }
-
-        // Respond with OTP (for testing/dev purposes)
-        res.status(200).json({
-            status: 'success',
-            message: 'If a user with that number exists, an OTP has been sent.',
-            otp: otp || null // OTP only if user exists, else null
-        });
-
-    } catch (err) {
-        console.error('Forgot Password Error:', err);
-        res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
-    }
-};
-
-
-
-// ===== Reset Password (verify OTP + set new password) =====
-exports.resetPassword = async (req, res) => {
-    const { mobileNumber, otp, newPassword, confirmPassword } = req.body;
-    try {
-        if (newPassword !== confirmPassword) {
-            return res.status(400).json({ status: 'error', message: 'Passwords do not match.' });
-        }
-
-        const user = await User.findOne({ mobileNumber, otp });
-        if (!user || !user.otpExpiry || user.otpExpiry < Date.now()) {
+        if (!user || !user.otp || !user.otpExpiry || user.otp !== otp || user.otpExpiry < Date.now()) {
             return res.status(400).json({ status: 'error', message: 'Invalid or expired OTP.' });
         }
 
-        user.password = await hashPassword(newPassword);
+        // ✅ Directly assign new password
+        user.password = newPassword;
+
         user.otp = undefined;
         user.otpExpiry = undefined;
         await user.save();
@@ -272,6 +319,7 @@ exports.resetPassword = async (req, res) => {
         res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
     }
 };
+
 
 // Admin Signup (with hashed password)
 exports.adminSignup = asyncHandler(async (req, res) => {
@@ -451,6 +499,27 @@ exports.adminresetPassword = asyncHandler(async (req, res) => {
         message: 'Password reset successful.'
     });
 });
+
+
+
+exports.logout = asyncHandler(async (req, res) => {
+    // In a real application, advanced security might involve token blacklisting (using Redis or a similar store) 
+    // to instantly invalidate the JWT on the server side. For a standard API, this confirmation is sufficient.
+
+    res.json({ 
+        success: true, 
+        message: 'Logged out successfully.' 
+    });
+});
+
+
+
+
+
+
+
+
+
 
 
 

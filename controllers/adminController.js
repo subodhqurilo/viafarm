@@ -549,7 +549,7 @@ const getOrders = asyncHandler(async (req, res) => {
     const { q, page = 1, limit = 12 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Base match stage (you can add other filters if needed)
+    // Base match stage
     const matchStage = {};
 
     // Search condition
@@ -597,7 +597,7 @@ const getOrders = asyncHandler(async (req, res) => {
                 status: {
                     $switch: {
                         branches: [
-                            { case: { $in: ["$orderStatus", ["Pending", "Confirmed"]] }, then: "In Process" },
+                            { case: { $eq: ["$orderStatus", "In-process"] }, then: "In Process" },
                             { case: { $eq: ["$orderStatus", "Completed"] }, then: "Completed" },
                             { case: { $eq: ["$orderStatus", "Cancelled"] }, then: "Cancelled" }
                         ],
@@ -648,6 +648,7 @@ const getOrders = asyncHandler(async (req, res) => {
         total: totalCount,
     });
 });
+
 
 
 const getOrderDetail = asyncHandler(async (req, res) => {
@@ -711,10 +712,12 @@ const deleteOrder = asyncHandler(async (req, res) => {
 // @route   GET /api/admin/settings/banners
 // @access  Private/Admin
 const getBanners = asyncHandler(async (req, res) => {
-    const banners = await Banner.find({});
-    res.json(banners);
+    const banners = await Banner.find({}).sort({ createdAt: -1 }); // Optional: newest first
+    res.status(200).json({
+        success: true,
+        data: banners
+    });
 });
-
 // @desc    Create a new banner
 // @route   POST /api/admin/settings/banners
 // @access  Private/Admin
