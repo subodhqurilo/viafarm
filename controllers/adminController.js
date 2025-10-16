@@ -21,50 +21,83 @@ const Address = require('../models/Address');
 // @desc    Get admin dashboard stats
 // @route   GET /api/admin/dashboard
 // @access  Private/Admin
-const calculateChange = (current, previous) => {
-    if (previous === 0) return current > 0 ? 100 : 0;
-    return ((current - previous) / previous) * 100;
-};
+// A simple function to calculate the numeric percentage change.
+
+// A robust function to calculate the numeric percentage change.
+
 
 // @desc    Get key dashboard statistics
 // @route   GET /api/admin/dashboard/stats
 // @access  Private/Admin
+const calculateChange = (current, previous) => {
+  if (previous === 0) return current === 0 ? 0 : 100;
+  return ((current - previous) / previous) * 100;
+};
+
+// Format the change into a readable string (e.g., "+12%" or "-8%")
+const formatChange = (value) => {
+  const prefix = value >= 0 ? '+' : '';
+  return `${prefix}${value.toFixed(1)}%`;
+};
+
+// Main Controller
 const getDashboardStats = asyncHandler(async (req, res) => {
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+  const oneMonthAgo = new Date();
+  oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
 
-    const activeVendors = await User.countDocuments({ role: 'Vendor', status: 'Active' });
-    const activeVendorsLastMonth = await User.countDocuments({ role: 'Vendor', status: 'Active', createdAt: { $lte: oneMonthAgo } });
+  // 1️⃣ Vendors (Active)
+  const activeVendors = await User.countDocuments({ role: 'Vendor', status: 'Active' });
+  const activeVendorsPrevious = await User.countDocuments({
+    role: 'Vendor',
+    status: 'Active',
+    createdAt: { $lt: oneMonthAgo },
+  });
 
-    const activeBuyers = await User.countDocuments({ role: 'Buyer', status: 'Active' });
-    const activeBuyersLastMonth = await User.countDocuments({ role: 'Buyer', status: 'Active', createdAt: { $lte: oneMonthAgo } });
+  // 2️⃣ Buyers (Active)
+  const activeBuyers = await User.countDocuments({ role: 'Buyer', status: 'Active' });
+  const activeBuyersPrevious = await User.countDocuments({
+    role: 'Buyer',
+    status: 'Active',
+    createdAt: { $lt: oneMonthAgo },
+  });
 
-    const activeProducts = await Product.countDocuments({ status: 'In Stock' });
-    const activeProductsLastMonth = await Product.countDocuments({ status: 'In Stock', createdAt: { $lte: oneMonthAgo } });
+  // 3️⃣ Products (In Stock)
+  const activeProducts = await Product.countDocuments({ status: 'In Stock' });
+  const activeProductsPrevious = await Product.countDocuments({
+    status: 'In Stock',
+    createdAt: { $lt: oneMonthAgo },
+  });
 
-    const activeOrders = await Order.countDocuments({ orderStatus: { $in: ['Confirmed', 'In Process'] } });
-    const activeOrdersLastMonth = await Order.countDocuments({ orderStatus: { $in: ['Confirmed', 'In Process'] }, createdAt: { $lte: oneMonthAgo } });
+  // 4️⃣ Orders (Confirmed or In Process)
+  const orderFilter = { orderStatus: { $in: ['Confirmed', 'In Process'] } };
+  const activeOrders = await Order.countDocuments(orderFilter);
+  const activeOrdersPrevious = await Order.countDocuments({
+    ...orderFilter,
+    createdAt: { $lt: oneMonthAgo },
+  });
 
-    const stats = {
-        vendors: {
-            current: activeVendors,
-            change: calculateChange(activeVendors, activeVendorsLastMonth),
-        },
-        buyers: {
-            current: activeBuyers,
-            change: calculateChange(activeBuyers, activeBuyersLastMonth),
-        },
-        products: {
-            current: activeProducts,
-            change: calculateChange(activeProducts, activeProductsLastMonth),
-        },
-        orders: {
-            current: activeOrders,
-            change: calculateChange(activeOrders, activeOrdersLastMonth),
-        },
+  // Helper: Build stat object
+  const buildStat = (current, previous) => {
+    const changeValue = calculateChange(current, previous);
+    return {
+      current,
+      change: formatChange(changeValue),
+      increased: current >= previous, // ✅ true if increased, false if decreased
     };
+  };
 
-    res.status(200).json({ success: true, data: stats });
+  // Final Response Object
+  const stats = {
+    vendors: buildStat(activeVendors, activeVendorsPrevious),
+    buyers: buildStat(activeBuyers, activeBuyersPrevious),
+    products: buildStat(activeProducts, activeProductsPrevious),
+    orders: buildStat(activeOrders, activeOrdersPrevious),
+  };
+
+  res.status(200).json({
+    success: true,
+    data: stats,
+  });
 });
 
 // @desc    Get recent activities (e.g., new registrations)
@@ -259,7 +292,7 @@ const getVendorDetails = asyncHandler(async (req, res) => {
 
     // Fetch vendor by ID
     const vendor = await User.findById(id)
-        .select('name address mobileNumber profilePicture status vendorDetails role');
+        .select('name address mobileNumber profilePicture  status vendorDetails role rejectionReason'); // include rejectionReason
     
     if (!vendor || vendor.role !== 'Vendor') {
         return res.status(404).json({ success: false, message: 'Vendor not found.' });
@@ -267,7 +300,7 @@ const getVendorDetails = asyncHandler(async (req, res) => {
 
     // Fetch vendor's listed products
     const listedProducts = await Product.find({ vendor: id })
-        .select('name category variety price status images createdAt')
+        .select('name category variety unit weightPerPiece quantity price status images createdAt')
         .sort({ createdAt: -1 });
 
     res.status(200).json({
@@ -280,18 +313,21 @@ const getVendorDetails = asyncHandler(async (req, res) => {
                 status: vendor.status,
                 profilePicture: vendor.profilePicture,
                 address: vendor.address,          // Full address object
-                vendorDetails: vendor.vendorDetails
+                vendorDetails: vendor.vendorDetails,
+                // Only include rejectionReason if vendor status is 'Rejected'
+                ...(vendor.status === 'Reject' && { rejectionReason: vendor.rejectionReason || 'Not specified' }),
             },
             listedProducts
         }
     });
 });
 
+
 const updateVendorStatus = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { status } = req.body; // Expected: 'Active', 'Blocked', 'Inactive'
 
-    const validStatuses = ['Active', 'Blocked', 'Inactive'];
+    const validStatuses = ['Active', 'Blocked','UnBlocked', 'Inactive'];
     if (!validStatuses.includes(status)) {
         return res.status(400).json({ success: false, message: 'Invalid status provided.' });
     }
@@ -374,7 +410,7 @@ const getBuyerDetails = asyncHandler(async (req, res) => {
   const orders = await Order.find({ buyer: id })
     .populate({
       path: "products.product", // ✅ matches your schema
-      select: "name variety category price images",
+      select: "name variety unit rating quantity weightPerPiece category price images",
     })
     .sort({ createdAt: -1 });
 
@@ -405,83 +441,93 @@ const getBuyerDetails = asyncHandler(async (req, res) => {
 // controllers/adminController.js
 
 const getBuyers = asyncHandler(async (req, res) => {
-    const page = Number(req.query.page) || 1;
-    const limit = Number(req.query.limit) || 10;
+  const page = Number(req.query.page) || 1;
+  const limit = Number(req.query.limit) || 10;
+  const skip = (page - 1) * limit;
 
-    const buyers = await User.aggregate([
-        { $match: { role: "Buyer" } },
+  const buyers = await User.aggregate([
+    { $match: { role: "Buyer" } },
 
-        // Lookup total orders as buyer
-        {
-            $lookup: {
-                from: "orders",
-                localField: "_id",
-                foreignField: "buyer",
-                as: "orders"
+    // ✅ Lookup total orders as Buyer (safe ObjectId comparison)
+    {
+      $lookup: {
+        from: "orders",
+        let: { buyerId: "$_id" },
+        pipeline: [
+          {
+            $match: {
+              $expr: { $eq: ["$buyer", "$$buyerId"] } // match all orders placed by this buyer
             }
-        },
-        {
-            $addFields: {
-                totalOrders: { $size: "$orders" },
-                totalOrdersAsBuyer: { $size: "$orders" }
-            }
-        },
+          }
+        ],
+        as: "orders"
+      }
+    },
+    {
+      $addFields: {
+        totalOrders: { $size: "$orders" },
+        totalOrdersAsBuyer: { $size: "$orders" }
+      }
+    },
 
-        // Lookup addresses
-        {
-            $lookup: {
-                from: "addresses",
-                localField: "_id",
-                foreignField: "user",
-                as: "addresses"
-            }
-        },
+    // ✅ Lookup Addresses for Buyer
+    {
+      $lookup: {
+        from: "addresses",
+        localField: "_id",
+        foreignField: "user",
+        as: "addresses"
+      }
+    },
 
-        // If no addresses found, fallback to user’s own address field
-        {
-            $addFields: {
-                addresses: {
-                    $cond: [
-                        { $eq: [ { $size: "$addresses" }, 0 ] },
-                        {
-                            $cond: [
-                                { $ifNull: ["$address", false] },
-                                [ "$address" ], // wrap single user.address as array
-                                [] // empty array if no fallback
-                            ]
-                        },
-                        "$addresses"
-                    ]
-                }
-            }
-        },
+    // ✅ Fallback to user's embedded address if no separate address exists
+    {
+      $addFields: {
+        addresses: {
+          $cond: [
+            { $eq: [{ $size: "$addresses" }, 0] },
+            {
+              $cond: [
+                { $ifNull: ["$address", false] },
+                ["$address"], // wrap embedded address in array
+                []
+              ]
+            },
+            "$addresses"
+          ]
+        }
+      }
+    },
 
-        // Shape final response
-        {
-            $project: {
-                _id: 1,
-                name: 1,
-                mobileNumber: 1,
-                addresses: 1,
-                totalOrders: 1,
-                totalOrdersAsBuyer: 1
-            }
-        },
+    // ✅ Final clean projection
+    {
+      $project: {
+        _id: 1,
+        name: 1,
+        mobileNumber: 1,
+        addresses: 1,
+        totalOrders: 1,
+        totalOrdersAsBuyer: 1,
+        createdAt: 1
+      }
+    },
 
-        { $skip: (page - 1) * limit },
-        { $limit: limit }
-    ]);
+    { $sort: { createdAt: -1 } }, // recent buyers first
+    { $skip: skip },
+    { $limit: limit }
+  ]);
 
-    const total = await User.countDocuments({ role: "Buyer" });
+  const total = await User.countDocuments({ role: "Buyer" });
 
-    res.status(200).json({
-        success: true,
-        data: buyers,
-        page,
-        pages: Math.ceil(total / limit),
-        total
-    });
+  res.status(200).json({
+    success: true,
+    data: buyers,
+    page,
+    pages: Math.ceil(total / limit),
+    total
+  });
 });
+
 
 
 
@@ -549,10 +595,10 @@ const getOrders = asyncHandler(async (req, res) => {
     const { q, page = 1, limit = 12 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Base match stage
+    // Base match stage for initial filtering
     const matchStage = {};
 
-    // Search condition
+    // Search condition for buyer name, vendor name, or orderId
     const searchStage = q ? {
         $or: [
             { orderId: { $regex: q, $options: "i" } },
@@ -561,9 +607,11 @@ const getOrders = asyncHandler(async (req, res) => {
         ]
     } : {};
 
-    // Aggregation pipeline
+    // --- Aggregation pipeline for fetching orders ---
     const pipeline = [
+        // 1. Initial match for optional filters
         { $match: matchStage },
+        // 2. Lookup buyer info from 'users' collection
         {
             $lookup: {
                 from: "users",
@@ -573,6 +621,7 @@ const getOrders = asyncHandler(async (req, res) => {
             }
         },
         { $unwind: "$buyerInfo" },
+        // 3. Lookup vendor info from 'users' collection
         {
             $lookup: {
                 from: "users",
@@ -582,25 +631,38 @@ const getOrders = asyncHandler(async (req, res) => {
             }
         },
         { $unwind: "$vendorInfo" },
+        // 4. Match search query on joined fields
         { $match: searchStage },
+        // 5. Sort by creation date (newest first)
         { $sort: { createdAt: -1 } },
+        // 6. Apply Pagination
         { $skip: skip },
         { $limit: parseInt(limit) },
+        // 7. Project the final output fields and format status
         {
             $project: {
+                _id: 1,
                 orderId: 1,
-                buyer: "$buyerInfo.name",
-                vendor: "$vendorInfo.name",
                 totalPrice: 1,
                 createdAt: 1,
-                action: "View",
+                // ✅ Correctly project buyer and vendor names
+                buyer: "$buyerInfo.name",
+                vendor: "$vendorInfo.name",
+                action: "View", // Hardcoded as per the image
+                // ✅ FIX: Use a correct $switch condition to map status values
                 status: {
                     $switch: {
                         branches: [
+                            // Data in DB: 'In-process' -> Display: 'In Process'
                             { case: { $eq: ["$orderStatus", "In-process"] }, then: "In Process" },
+                            // Data in DB: 'Confirmed' -> Display: 'In Process' (as per image)
+                            { case: { $eq: ["$orderStatus", "Confirmed"] }, then: "In Process" },
+                            // Data in DB: 'Completed' -> Display: 'Completed'
                             { case: { $eq: ["$orderStatus", "Completed"] }, then: "Completed" },
+                            // Data in DB: 'Cancelled' -> Display: 'Cancelled'
                             { case: { $eq: ["$orderStatus", "Cancelled"] }, then: "Cancelled" }
                         ],
+                        // If no other cases match, default to 'Unknown'
                         default: "Unknown"
                     }
                 }
@@ -608,31 +670,22 @@ const getOrders = asyncHandler(async (req, res) => {
         }
     ];
 
-    // Count pipeline for pagination
+    // --- Count pipeline for pagination (Unchanged, but uses a corrected $match stage) ---
     const countPipeline = [
         { $match: matchStage },
         {
-            $lookup: {
-                from: "users",
-                localField: "buyer",
-                foreignField: "_id",
-                as: "buyerInfo"
-            }
+            $lookup: { from: "users", localField: "buyer", foreignField: "_id", as: "buyerInfo" }
         },
         { $unwind: "$buyerInfo" },
         {
-            $lookup: {
-                from: "users",
-                localField: "vendor",
-                foreignField: "_id",
-                as: "vendorInfo"
-            }
+            $lookup: { from: "users", localField: "vendor", foreignField: "_id", as: "vendorInfo" }
         },
         { $unwind: "$vendorInfo" },
         { $match: searchStage },
         { $count: "total" }
     ];
 
+    // Execute both pipelines in parallel
     const [orders, countResult] = await Promise.all([
         Order.aggregate(pipeline),
         Order.aggregate(countPipeline)
@@ -712,35 +765,89 @@ const deleteOrder = asyncHandler(async (req, res) => {
 // @route   GET /api/admin/settings/banners
 // @access  Private/Admin
 const getBanners = asyncHandler(async (req, res) => {
-    const banners = await Banner.find({}).sort({ createdAt: -1 }); // Optional: newest first
+    const { placement, status } = req.query;
+
+    // Build query object
+    const query = {};
+    if (placement) query.placement = placement;
+    if (status) query.status = status;
+
+    // Fetch banners
+    const banners = await Banner.find(query).sort({ createdAt: -1 }); // newest first
+
     res.status(200).json({
         success: true,
+        count: banners.length,
+        banners
+    });
+});
+
+const getBannersByPlacement = asyncHandler(async (req, res) => {
+    const { placement } = req.params;
+
+    if (!placement) {
+        return res.status(400).json({ success: false, message: 'Placement is required' });
+    }
+
+    const banners = await Banner.find({ placement, status: 'Active' }).sort({ createdAt: -1 });
+
+    res.status(200).json({
+        success: true,
+        count: banners.length,
         data: banners
     });
 });
+
+
 // @desc    Create a new banner
 // @route   POST /api/admin/settings/banners
 // @access  Private/Admin
+
 const createBanner = asyncHandler(async (req, res) => {
+    // 1️⃣ Check if files are uploaded
     if (!req.files || req.files.length === 0) {
         res.status(400);
         throw new Error('At least one image file is required');
     }
 
-    const { title, link } = req.body;
+    const { title, link, placement, status } = req.body;
 
-    // Map each file to an object for DB
+    // Optional: Validate placement and status
+    const validPlacements = [
+        'HomePageSlider',
+        'HomePageBottomPromo',
+        'CategoryTop',
+        'SearchPageAd',
+        'CheckoutPromo'
+    ];
+    const validStatus = ['Active', 'Inactive'];
+
+    const finalPlacement = validPlacements.includes(placement) ? placement : 'HomePageSlider';
+    const finalStatus = validStatus.includes(status) ? status : 'Active';
+
+    // 2️⃣ Map each uploaded file to a banner object
     const bannersData = req.files.map(file => ({
-        imageUrl: file.path,  // Cloudinary or local path
-        title,
-        link
+        imageUrl: file.path,      // Cloudinary or local path
+        public_id: file.filename || file.public_id || '', // Cloudinary public_id if available
+        title: title || 'Promotional Banner',
+        link: link || '#',
+        placement: finalPlacement,
+        status: finalStatus
     }));
 
-    // Insert multiple banners at once
+    // 3️⃣ Insert multiple banners at once
     const banners = await Banner.insertMany(bannersData);
 
-    res.status(201).json(banners);
+    // 4️⃣ Respond with created banners
+    res.status(201).json({
+        success: true,
+        message: `${banners.length} banner(s) created successfully`,
+        banners
+    });
 });
+
+
+
 
 
 // @desc    Delete a banner
@@ -748,15 +855,32 @@ const createBanner = asyncHandler(async (req, res) => {
 // @access  Private/Admin
 const deleteBanner = asyncHandler(async (req, res) => {
     const banner = await Banner.findById(req.params.id);
-    if (banner) {
-        const publicId = banner.imageUrl.split('/').pop().split('.')[0];
-        await cloudinary.uploader.destroy(`farm-ecomm-products/${publicId}`);
-        await banner.remove();
-        res.json({ message: 'Banner deleted' });
-    } else {
-        res.status(404).json({ message: 'Banner not found' });
+
+    if (!banner) {
+        res.status(404);
+        throw new Error('Banner not found');
     }
+
+    // Delete image from Cloudinary if public_id exists
+    if (banner.public_id) {
+        try {
+            await cloudinary.uploader.destroy(banner.public_id);
+        } catch (err) {
+            console.error('Cloudinary deletion error:', err);
+            // Continue even if Cloudinary deletion fails
+        }
+    }
+
+    // Remove banner from database
+    await banner.remove();
+
+    res.status(200).json({
+        success: true,
+        message: 'Banner deleted successfully',
+        bannerId: req.params.id
+    });
 });
+
 
 // @desc    Get all categories
 // @route   GET /api/admin/manage-app/categories
@@ -971,7 +1095,7 @@ const deleteCoupon = asyncHandler(async (req, res) => {
 // @route   GET /api/admin/settings/profile
 // @access  Private/Admin
 const getAdminProfile = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id).select('name mobileNumber profilePicture');
+    const user = await User.findById(req.user.id).select('name email profilePicture');
 
     if (!user) {
         return res.status(404).json({ success: false, message: 'Admin not found.' });
@@ -981,7 +1105,7 @@ const getAdminProfile = asyncHandler(async (req, res) => {
         success: true,
         data: {
             name: user.name,
-            mobileNumber: user.mobileNumber,
+            email: user.email,
             profilePicture: user.profilePicture || null,
         },
     });
@@ -999,18 +1123,18 @@ const updateAdminProfile = asyncHandler(async (req, res) => {
     if (!user) return res.status(404).json({ success: false, message: 'Admin not found.' });
 
     // Convert body fields if using multipart/form-data
-    const { name, mobileNumber } = req.body;
+    const { name, email } = req.body;
 
     // Update name
     if (name) user.name = name;
 
     // Check for duplicate mobile number
-    if (mobileNumber) {
-        const existingUser = await User.findOne({ mobileNumber });
+    if (email) {
+        const existingUser = await User.findOne({ email });
         if (existingUser && existingUser._id.toString() !== req.user.id) {
             return res.status(400).json({ success: false, message: 'Mobile number already exists.' });
         }
-        user.mobileNumber = mobileNumber;
+        user.email = email;
     }
 
     // Update profile picture
@@ -1035,7 +1159,7 @@ const updateAdminProfile = asyncHandler(async (req, res) => {
         message: 'Profile updated successfully.',
         data: {
             name: user.name,
-            mobileNumber: user.mobileNumber,
+            email: user.email,
             profilePicture: user.profilePicture || null,
         },
     });
@@ -1361,15 +1485,126 @@ const updateuserNotificationSettings = asyncHandler(async (req, res) => {
     });
 });
 
+
+
+
+
+/**
+ * @desc    Approve a Vendor (set status to 'Active', mark approved = true)
+ * @route   PUT /api/admin/vendors/:id/approve
+ * @access  Private/Admin
+ */
+const approveVendor = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  // Find the vendor
+  const vendor = await User.findOne({ _id: id, role: 'Vendor' });
+  if (!vendor) {
+    return res.status(404).json({
+      success: false,
+      message: 'Vendor not found.',
+    });
+  }
+
+  // Update vendor details
+  vendor.status = 'Active';
+  vendor.isApproved = true;
+  await vendor.save();
+
+  // Optionally, activate their products if they were inactive
+  await Product.updateMany({ vendor: id, status: 'Inactive' }, { status: 'In Stock' });
+
+  res.status(200).json({
+    success: true,
+    message: '✅ Vendor approved successfully.',
+    data: {
+      vendorId: vendor._id,
+      name: vendor.name,
+      email: vendor.email,
+      status: vendor.status,
+      isApproved: vendor.isApproved,
+    },
+  });
+});
+
+
+/**
+ * @desc    Reject a Vendor (set status to 'Blocked', mark approved = false)
+ * @route   PUT /api/admin/vendors/:id/reject
+ * @access  Private/Admin
+ */
+
+/**
+ * @desc    Reject a Vendor, set status to 'Rejected', mark approved = false, and save the reason.
+ * @route   PUT /api/admin/vendors/:id/reject
+ * @access  Private/Admin
+ */
+const rejectVendor = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    // ✅ 1. Get the reason from the request body
+    const { rejectionReason } = req.body; 
+
+    // Basic validation for the rejection reason
+    if (!rejectionReason || rejectionReason.trim().length < 5) {
+        return res.status(400).json({
+            success: false,
+            message: 'Rejection reason is required and must be at least 5 characters long.'
+        });
+    }
+
+    // 2. Find the vendor
+    const vendor = await User.findOne({ _id: id, role: 'Vendor' });
+    if (!vendor) {
+        return res.status(404).json({
+            success: false,
+            message: 'Vendor not found.',
+        });
+    }
+
+    // 3. Update vendor details
+    vendor.status = 'Rejected'; // Using 'Rejected' for clarity
+    vendor.isApproved = false;
+    
+    // ✅ 4. Save the rejection reason to the vendor document
+    // NOTE: This requires the 'rejectionReason' field to exist in your User/Vendor model schema.
+    vendor.rejectionReason = rejectionReason; 
+    
+    await vendor.save();
+
+    // 5. Deactivate all their products
+    await Product.updateMany({ vendor: id }, { status: 'Out of Stock' });
+
+    res.status(200).json({
+        success: true,
+        message: '❌ Vendor rejected and reason saved successfully.',
+        data: {
+            vendorId: vendor._id,
+            name: vendor.name,
+            email: vendor.email,
+            status: vendor.status,
+            isApproved: vendor.isApproved,
+            // ✅ Include the saved reason in the response
+            rejectionReason: vendor.rejectionReason, 
+        },
+    });
+});
+
+
+
+
+
+
+
+
 module.exports = {
     getDashboardStats,
-    getProducts,
+    getProducts,approveVendor,
     getAdminProductDetails,
     addOrUpdateNutritionalValue,
     deleteProduct,
     getVendors,
     getVendorDetails,
-    updateVendorStatus,
+    updateVendorStatus,rejectVendor,
     deleteVendor,
     getBuyers,
     getBuyerDetails,
@@ -1401,6 +1636,6 @@ module.exports = {
     postPageContent,
     reportIssue,
     getRecentActivity,
-    getuserNotificationSettings,
+    getuserNotificationSettings,getBannersByPlacement,
     updateuserNotificationSettings,getCustomerSupportDetails,updateCustomerSupportDetails,updateStaticPageContent
 };

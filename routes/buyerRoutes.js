@@ -1,101 +1,122 @@
 const express = require('express');
 const router = express.Router();
 const { authMiddleware, authorizeRoles } = require('../middleware/authMiddleware');
-const multer = require('multer');
 
-const buyerController = require('../controllers/buyerController');
+// Get all exported controllers from the buyerController file
 const { 
-    getBuyerProfile, updateBuyerProfile, updateBuyerLocation, updateBuyerLanguage, getWishlist, addToWishlist, getBuyerOrders, removeFromWishlist,reportBuyerIssue,
-    getStaticPageContent ,writeReview ,getCartItems, addItemToCart,removeItemFromCart,updateCartItemQuantity,placeOrder,
-reorder,
-getReviewsForProduct,
- updateReview,
-  deleteReview,
-applyCouponToCart,
-    getOrderDetails, 
-   startCheckout,getHighlightedCoupon,getPickupLocationDetails,selectPickupSlot,
-verifyPayment,getProductsByCategory,getVendorProfileForBuyer,getProductReviews,getAvailableCouponsForBuyer,getCouponsByProductId,
-addAddress,getFreshAndPopularProducts ,getLocalBestProducts,getAllAroundIndiaProducts,getSmartPicks,
-getAddresses,setDefaultAddress,getHomePageData,getProductDetails,getFilteredProducts,getVendorsNearYou,searchProducts,generateUpiPaymentUrl
+    getBuyerProfile, updateBuyerProfile, updateBuyerLocation, updateBuyerLanguage, getWishlist, addToWishlist, getBuyerOrders, removeFromWishlist, 
+    getStaticPageContent, writeReview, getCartItems, addItemToCart, removeItemFromCart, updateCartItemQuantity, placeOrder,updateAddress,deleteAddress,
+    reorder, getReviewsForProduct, updateReview, deleteReview, applyCouponToCart,getAllVendors,searchAllProducts,getProductsByVendorId,getProductById,
+    getOrderDetails, startCheckout, getHighlightedCoupon, getPickupLocationDetails, selectPickupSlot,getProductsByName,getPickupLocationDetailsPost,
+    verifyPayment, getProductsByCategory, getVendorProfileForBuyer, getProductReviews, getAvailableCouponsForBuyer, getCouponsByProductId,
+    addAddress, getFreshAndPopularProducts, getLocalBestProducts, getAllAroundIndiaProducts, getSmartPicks,getVendorsByProductName,
+    getAddresses, setDefaultAddress, getHomePageData, getProductDetails, getFilteredProducts, getVendorsNearYou, searchProducts, generateUpiPaymentUrl
 } = require('../controllers/buyerController');
-
 
 const { upload } = require('../services/cloudinaryService');
 
 
-router.use(authMiddleware);
+// ---------------------------------------------------------------------
+// 1. PUBLIC ROUTES (No Auth/Role required, e.g., if used by non-logged-in users)
+// Note: In your current setup, these are still hit by users with ANY role because of the router.use(authMiddleware) below.
+// To make them truly public, move them ABOVE router.use(authMiddleware).
+
+// For consistency, let's assume 'authMiddleware' is needed for context (e.g., personalized pricing)
+// and move role authorization below.
+
+// General product discovery (Local Best often doesn't need GeoJSON restriction)
+router.get('/local-best', getLocalBestProducts); // Auth only
+router.get('/products/search', searchProducts); // Auth only
+
+router.use(authMiddleware); // Apply authentication to all following routes
+
+// ---------------------------------------------------------------------
+// 2. BUYER AUTHORIZED ROUTES 
+// Only users with role 'Buyer' can access routes below this line
 router.use(authorizeRoles('Buyer'));
-// --- Public Routes ---
-// Buyer role check -> authorizeRoles('buyer')
-router.get('/home',   getHomePageData);
+
+// --- Home & Product Discovery (Auth & Buyer Role required) ---
+router.get('/home', getHomePageData);
 router.get('/products/filters', getFilteredProducts);
-router.get('/products/search', searchProducts); 
-
 router.get('/products/by-category', getProductsByCategory);
-router.get('/products/:id', getProductDetails);
-// Vendor Details
-router.get('/vendor/:vendorId', getVendorProfileForBuyer);
-router.get('/products/:productId/reviews', getProductReviews);
 
+router.get('/vendors-near-you', getVendorsNearYou);
+router.get('/allvendors', getAllVendors);
+router.get('/vendors/by-product', getVendorsByProductName);
+
+router.get('/products/all', searchAllProducts); // <-- ADD THIS LINE
+router.get('/products/by-name', getProductsByName);
+router.get('/vendor/:vendorId/products', getProductsByVendorId);
+router.get('/public/product/:id', getProductById);
+
+ // <-- ADD THIS LINE
+router.get('/products/:id', getProductDetails); // Path clearer
 
 router.get('/fresh-and-popular', getFreshAndPopularProducts);
-router.get('/local-best', getLocalBestProducts);
 router.get('/all-around-india', getAllAroundIndiaProducts);
 router.get('/smart-picks', getSmartPicks);
 
+router.get('/vendor/:vendorId', getVendorProfileForBuyer);
 
-router.get('/public/static-page/:pageName', getStaticPageContent); 
+// Static Pages (Auth & Buyer Role required)
+router.get('/static-page/:pageName', getStaticPageContent); 
 
 
-router.get('/vendors-near-you',  getVendorsNearYou);
-
-// Cart, Checkout & Orders
+// --- Cart, Checkout & Orders ---
 router.get('/cart', getCartItems);
 router.post('/cart/add', addItemToCart);
 router.delete('/cart/:id', removeItemFromCart);
 router.put('/cart/:id/quantity', updateCartItemQuantity);
+router.post('/cart/apply-coupon', applyCouponToCart); 
+
+router.get('/checkout', startCheckout);
 router.post('/orders/place', placeOrder);
 router.get('/orders', getBuyerOrders);
 router.get('/orders/:orderId', getOrderDetails);
 router.post('/orders/:orderId/reorder', reorder);
-router.post('/cart/apply-coupon', applyCouponToCart); 
-router.get('/checkout',  startCheckout);
 router.post('/orders/verify-payment', verifyPayment);
-// Generate UPI payment URL
-router.post('/upi-url', generateUpiPaymentUrl);
+
+// Payment & Coupon
+router.post('/payment/upi-url', generateUpiPaymentUrl); 
 router.get('/coupons/available', getAvailableCouponsForBuyer);
 router.get('/coupons/product/:productId', getCouponsByProductId);
 router.get('/coupons/highlighted', getHighlightedCoupon);
 
-// Wishlist
-router.get('/wishlist',   getWishlist);
-router.post('/wishlist/add', addToWishlist);
-router.delete('/wishlist/:id', removeFromWishlist);
+// --- Wishlist (RESTful path) ---
+router.get('/wishlist', getWishlist);
+router.post('/wishlist/add', addToWishlist); 
+router.delete('/wishlist/:productId', removeFromWishlist); 
 
-// Reviews
-router.post('/reviews/:productId', upload.array('images', 5), writeReview);
-router.get('/reviews/:productId', getReviewsForProduct);
-router.put('/reviews/:reviewId', authMiddleware, upload.array('images', 5), updateReview);
-router.delete('/reviews/:reviewId', authMiddleware, deleteReview);
+// --- Reviews ---
+router.get('/reviews/product/:productId', getReviewsForProduct); // Path clearer
+router.get('/products/:productId/reviews', getProductReviews);
 
 
-router.post('/addresses', addAddress);
+router.post('/reviews/:productId', upload.array('images', 5), writeReview); 
+router.put('/reviews/:reviewId', upload.array('images', 5), updateReview); // Removed redundant authMiddleware
+router.delete('/reviews/:reviewId', deleteReview); // Removed redundant authMiddleware
 
 
+// --- Address & Pickup ---
 router.get('/addresses', getAddresses);
-
+router.post('/addresses', addAddress);
+router.put('/addresses/:id', updateAddress);  // Update address by ID (supports 'profile' or normal address)
+router.delete('/addresses/:id',  deleteAddress); // ✅ DELETE route
 
 router.put('/addresses/:id/default', setDefaultAddress);
-router.get('/pickup/:vendorId',  getPickupLocationDetails);
-router.post("/pickup-slot/select",  selectPickupSlot);
+
+router.get('/pickup/:vendorId/pickup-details', getPickupLocationDetails);
+router.post('/pickup/location', getPickupLocationDetailsPost); // ✅ new POST version
+
+router.post("/pickup-slot/select", selectPickupSlot);
 
 
-// Profile & Settings
+// --- Profile & Settings ---
 router.route('/profile')
-    .get(getBuyerProfile) // GET /api/buyer/profile (This is the route for getBuyerProfile)
+    .get(getBuyerProfile)
     .put(upload.single('profilePicture'), updateBuyerProfile);
+
 router.put('/location', updateBuyerLocation);
 router.put('/language', updateBuyerLanguage);
-// router.post('/logout', authMiddleware, authorizeRoles('Buyer'), buyerController.logout);
 
 module.exports = router;

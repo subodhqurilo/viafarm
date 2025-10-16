@@ -6,12 +6,15 @@ const CartItemSchema = new mongoose.Schema({
         ref: 'Product',
         required: true,
     },
-    pickupDetails: {
-  vendor: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  date: String,
-  startTime: String,
-  endTime: String,
-},
+pickupDetails: {
+        vendor: { // The core fix is here
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'User',
+        },
+        date: String,
+        startTime: String,
+        endTime: String,
+    },
 
     quantity: {
         type: Number,

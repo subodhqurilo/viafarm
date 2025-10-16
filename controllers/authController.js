@@ -23,38 +23,41 @@ const hashPassword = async (password) => {
 };
 
 // ===== Signup (Create Account) =====
-exports.signup = async (req, res) => {
-    const { mobileNumber } = req.body;
-    try {
-        let user = await User.findOne({ mobileNumber });
+exports.signup = asyncHandler(async (req, res) => {
+  const { mobileNumber } = req.body;
 
-        if (user && user.isVerified) {
-            return res.status(400).json({ status: 'error', message: 'This mobile number is already registered.' });
-        }
+  let user = await User.findOne({ mobileNumber });
 
-        const otp = otpService.generateOTP();
-        const otpExpiry = Date.now() + 10 * 60 * 1000;
+  if (user && user.isVerified) {
+    return res.status(400).json({ status: 'error', message: 'This mobile number is already registered.' });
+  }
 
-        if (user) {
-            user.otp = otp;
-            user.otpExpiry = otpExpiry;
-        } else {
-            user = new User({ mobileNumber, otp, otpExpiry, isVerified: false });
-        }
+  const otp = otpService.generateOTP();
+  const otpExpiry = Date.now() + 10 * 60 * 1000;
 
-        await user.save();
+  if (user) {
+    user.otp = otp;
+    user.otpExpiry = otpExpiry;
+  } else {
+    user = new User({ 
+      mobileNumber, 
+      otp, 
+      otpExpiry, 
+      isVerified: false,
+      role: 'Buyer' // default role
+    });
+  }
 
-        res.status(201).json({
-            status: 'success',
-            message: 'OTP has been sent to your mobile number.',
-            otp
-        });
+  await user.save();
 
-    } catch (err) {
+  res.status(201).json({
+    status: 'success',
+    message: 'OTP has been sent to your mobile number.',
+    otp // remove in production
+  });
+});
 
-        res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
-    }
-};
+
 
 // ===== Verify OTP (Signup flow) =====
 exports.verifyOtp = async (req, res) => {
@@ -322,79 +325,88 @@ exports.resetPassword = async (req, res) => {
 
 
 // Admin Signup (with hashed password)
+// controllers/authController.js
 exports.adminSignup = asyncHandler(async (req, res) => {
-    const { name, email, password } = req.body;
+  const { name, email, password } = req.body;
 
-    if (!name || !email || !password) {
-        return res.status(400).json({ success: false, message: 'Name, email, and password are required.' });
+  if (!name || !email || !password)
+    return res.status(400).json({ success: false, message: 'Name, email, and password are required.' });
+
+  const userExists = await User.findOne({ email });
+  if (userExists)
+    return res.status(400).json({ success: false, message: 'Admin with this email already exists.' });
+
+  const newAdmin = new User({
+    name,
+    email,
+    password, // plain password
+    role: 'Admin',
+    isVerified: true,
+    isApproved: true
+  });
+
+  const createdAdmin = await newAdmin.save();
+  const token = generateToken(createdAdmin);
+
+  res.status(201).json({
+    success: true,
+    message: 'Admin user created successfully.',
+    token,
+    user: {
+      id: createdAdmin._id,
+      name: createdAdmin.name,
+      email: createdAdmin.email,
+      role: createdAdmin.role
     }
-
-    const userExists = await User.findOne({ email });
-    if (userExists) {
-        return res.status(400).json({ success: false, message: 'Admin with this email already exists.' });
-    }
-
-    const hashedPassword = await hashPassword(password);
-
-    const newAdmin = new User({
-        name,
-        email,
-        password: hashedPassword,
-        role: 'Admin',
-        isVerified: true
-    });
-
-    const createdAdmin = await newAdmin.save();
-
-    res.status(201).json({
-        success: true,
-        message: 'Admin user created successfully.',
-        user: {
-            id: createdAdmin._id,
-            name: createdAdmin.name,
-            email: createdAdmin.email,
-            role: createdAdmin.role
-        }
-    });
+  });
 });
 
-// ===== Admin Login =====
+
+
+// ================== Admin Login ==================
 exports.adminLogin = asyncHandler(async (req, res) => {
-    const { email, password } = req.body;
+  const { email, password } = req.body;
 
-    if (!email || !password) {
-        return res.status(400).json({ success: false, message: 'Email and password are required.' });
+  console.log("🔹 Admin login attempt:", { email, password });
+
+  if (!email || !password)
+    return res.status(400).json({ success: false, message: 'Email and password are required.' });
+
+  const user = await User.findOne({ email });
+  console.log("🔹 Admin user found:", user ? { email: user.email, role: user.role } : null);
+
+  if (!user)
+    return res.status(401).json({ success: false, message: 'Invalid credentials.' });
+
+  if (user.role !== 'Admin')
+    return res.status(403).json({ success: false, message: 'Access denied. Not an admin.' });
+
+  // Compare password using bcrypt
+  const isMatch = await bcrypt.compare(password, user.password);
+  console.log("🔹 Password match:", isMatch);
+
+  if (!isMatch)
+    return res.status(401).json({ success: false, message: 'Invalid password' });
+
+  const token = generateToken(user);
+
+  res.status(200).json({
+    success: true,
+    message: 'Admin login successful.',
+    token,
+    user: {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role
     }
-
-    const user = await User.findOne({ email });
-
-    if (!user) {
-        return res.status(401).json({ success: false, message: 'Invalid credentials.' });
-    }
-
-    if (user.role !== 'Admin') {
-        return res.status(403).json({ success: false, message: 'Access denied. Not an admin.' });
-    }
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-        return res.status(401).json({ success: false, message: 'Invalid credentials.' });
-    }
-
-    const token = generateToken(user);
-
-    res.status(200).json({
-        success: true,
-        message: 'Admin login successful.',
-        token,
-        user: {
-            id: user._id,
-            name: user.name,
-            email: user.email,
-            role: user.role
-        }
-    });
+  });
 });
+
+
+
+
+
 
 // POST /api/auth/request-password-reset
 exports.adminrequestPasswordReset = asyncHandler(async (req, res) => {

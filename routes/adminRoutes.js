@@ -30,6 +30,9 @@ router.get('/buyer/:id', adminController.getBuyerDetails);
 
 // Banners & Pages
 router.get('/public/manage-app/banners', adminController.getBanners);
+// Example: GET banners for "HomePageSlider"
+router.get('/public/manage-app/banners/placement/:placement', adminController.getBannersByPlacement);
+
 router.get('/manage-app/:pageName', adminController.getStaticPageContent);
 // User Notification Settings (New Routes)
 router.get('/settings/user-notifications', adminController.getuserNotificationSettings);
@@ -58,6 +61,10 @@ router.put('/products/:id/nutritional-value', adminController.addOrUpdateNutriti
 router.delete('/products/:id', adminController.deleteProduct);
 
 // Vendor Management
+// ✅ Approve / Reject Vendor
+router.put('/vendors/:id/approve', adminController.approveVendor);
+router.put('/vendors/:id/reject', adminController.rejectVendor);
+
 router.put('/vendors/:id/status', adminController.updateVendorStatus);
 router.delete('/vendors/:id', adminController.deleteVendor); // soft-delete
 
@@ -71,7 +78,7 @@ router.get('/orders/:id', adminController.getOrderDetail);
 router.delete('/orders/:id', adminController.deleteOrder);
 
 // Manage Banners
-router.post('/manage-app/banners', upload.array('images', 5), adminController.createBanner);
+router.post('/manage-app/banners', upload.array('images', 1), adminController.createBanner);
 router.delete('/manage-app/banners/:id', adminController.deleteBanner);
 
 // Manage Categories

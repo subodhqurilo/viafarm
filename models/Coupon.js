@@ -20,26 +20,12 @@ const couponSchema = new mongoose.Schema({
     },
   },
   appliesTo: {
-    type: String,
-    enum: ['All Products', 'Fruits',  'Vegetables',
-        'Plants',
-        'Seeds',
-        'Handicrafts'],
-    required: [true, 'Applies to field is required.'],
-  },
-  applicableId: {
-    type: mongoose.Schema.Types.Mixed, // ObjectId or string
-    default: null,
-  },
-  appliesToRef: {
-    type: String,
-    enum: ['Product', 'User'],
-    default: null,
-  },
-  category: {
-    type: String,
-    default: null,
-  },
+  type: [String], // <-- Array of strings
+  enum: ['All Products', 'Fruits', 'Vegetables', 'Plants', 'Seeds', 'Handicrafts'],
+  required: [true, 'Applies to field is required.'],
+},
+
+  
   startDate: {
     type: Date,
     required: [true, 'Start date is required.'],
