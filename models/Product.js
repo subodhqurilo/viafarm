@@ -40,6 +40,11 @@ const productSchema = new mongoose.Schema({
   additionalNote: String
 },
 
+weightPerPiece: {
+        type: String,
+        min: 0,
+    },
+
   images: [{
     type: String,
     required: true,
@@ -57,6 +62,8 @@ const productSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  rating: { type: Number, default: 0 },       // Average rating
+  ratingCount: { type: Number, default: 0 },
 }, { timestamps: true });
 
 // --- ADD THIS: TEXT INDEX ---

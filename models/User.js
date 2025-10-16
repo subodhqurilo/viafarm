@@ -8,20 +8,24 @@ const userSchema = new mongoose.Schema({
     type: String, 
     required: function() { return this.role !== 'Admin'; }, 
     unique: true, 
-    sparse: true 
+    sparse: true // allows multiple nulls
   },
+
   email: { 
     type: String, 
     required: function() { return this.role === 'Admin'; }, 
     unique: true, 
-    sparse: true 
+    sparse: true
   },
+
   password: { type: String },
   passwordResetToken: { type: String },
   passwordResetExpires: { type: Date },
 
+  isApproved: { type: Boolean, default: false },
   isVerified: { type: Boolean, default: false },
   role: { type: String, enum: ['Buyer', 'Vendor', 'Admin'], required: true },
+
   otp: { type: String },
   otpExpiry: { type: Date },
   profilePicture: { type: String },
@@ -42,11 +46,11 @@ const userSchema = new mongoose.Schema({
 
   location: {
     type: { type: String, enum: ["Point"], default: "Point" },
-    coordinates: { type: [Number] }, // [longitude, latitude]
+    coordinates: { type: [Number], default: [0, 0] }, // [longitude, latitude]
   },
 
   upiId: { type: String },
-  status: { type: String, enum: ['Active', 'Inactive', 'Blocked', 'Deleted'], default: 'Active' },
+  status: { type: String, enum: ['Active', 'Inactive', 'UnBlocked','Blocked','Rejected', 'Deleted'], default: 'Active' },
 
   vendorDetails: {
     about: { type: String, default: '' },
@@ -54,6 +58,10 @@ const userSchema = new mongoose.Schema({
     contactNo: String,
     totalOrders: { type: Number, default: 0 },
   },
+    rejectionReason: {
+        type: String,
+        default: null,
+    },
 
   notificationSettings: {
     newVendorRegistration: { type: Boolean, default: true },
@@ -66,38 +74,38 @@ const userSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
-// 2dsphere index for Vendors
-userSchema.index({ location: "2dsphere" });
+// ✅ Create 2dsphere index for vendors
+userSchema.index({ location: '2dsphere' });
 
-// Pre-save hook: Fix location for non-vendors
-userSchema.pre('save', function(next) {
-  if (this.role !== 'Vendor') {
-    this.location = undefined;
-  } else {
-    if (!this.location || !Array.isArray(this.location.coordinates)) {
-      this.location = { type: "Point", coordinates: [0, 0] };
-    }
-  }
-  next();
-});
-
-// ---------------------------
-// Password handling
-// ---------------------------
-
-// Hash password before saving
+// ✅ Pre-save logic
 userSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
-  if (this.password) {
+  // Vendors must have location
+  if (this.role === 'Vendor' && (!this.location || !Array.isArray(this.location.coordinates))) {
+    this.location = { type: "Point", coordinates: [0, 0] };
+  }
+
+  // Admins & Buyers do not need location
+  if (this.role !== 'Vendor') this.location = undefined;
+
+  // Hash password if modified
+  if (this.isModified('password') && this.password) {
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
   }
+
   next();
 });
 
-// Compare entered password with hashed password
+// ✅ Compare password
 userSchema.methods.matchPassword = async function(enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };
+
+// ✅ Drop mobileNumber unique index for Admins if it exists
+userSchema.on('index', async function(error) {
+  if (error && error.code === 11000 && error.keyPattern?.mobileNumber) {
+    console.warn('Duplicate mobileNumber index error ignored for Admins.');
+  }
+});
 
 module.exports = mongoose.model('User', userSchema);
