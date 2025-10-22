@@ -406,11 +406,16 @@ const getBuyerDetails = asyncHandler(async (req, res) => {
   // 2. Count orders
   const totalOrders = await Order.countDocuments({ buyer: id });
 
-  // 3. Fetch buyer's orders with populated products
+  // 3. Fetch buyer's orders with populated products and vendor
   const orders = await Order.find({ buyer: id })
     .populate({
-      path: "products.product", // ✅ matches your schema
-      select: "name variety unit rating quantity weightPerPiece category price images",
+      path: "products.product", // product details
+      select:
+        "name variety unit rating quantity weightPerPiece category price images",
+    })
+    .populate({
+      path: "vendor", // ✅ populate vendor info
+      select: "name ",
     })
     .sort({ createdAt: -1 });
 
@@ -423,12 +428,23 @@ const getBuyerDetails = asyncHandler(async (req, res) => {
         location: buyer.address,
         contactNo: buyer.mobileNumber,
         profilePicture: buyer.profilePicture,
-        totalOrders: totalOrders,
+        totalOrders,
       },
-      orders: orders,
+      orders: orders.map((order) => ({
+        ...order.toObject(),
+        vendorDetails: order.vendor
+          ? {
+              name: order.vendor.name,
+              shopName: order.vendor.shopName,
+              mobileNumber: order.vendor.mobileNumber,
+              profilePicture: order.vendor.profilePicture,
+            }
+          : null,
+      })),
     },
   });
 });
+
 
 
 
@@ -987,30 +1003,53 @@ const getCategoryById = asyncHandler(async (req, res) => {
 // @route   GET /api/admin/manage-app/coupons
 // @access  Private/Admin
 const createCoupon = asyncHandler(async (req, res) => {
-    const { code, discount, minimumOrder, usageLimit, startDate, expiryDate, appliesTo, applicableId } = req.body;
+    const adminId = req.user._id; // Admin creating the coupon
+    const {
+        code,
+        discount, // { value: Number, type: 'Percentage'|'Fixed' }
+        minimumOrder = 0,
+        usageLimitPerUser = 1,
+        totalUsageLimit = 0,
+        startDate,
+        expiryDate,
+        appliesTo = ['All Products'], // Array of categories
+        applicableProducts = [] // Optional: array of product IDs
+    } = req.body;
 
-    const couponExists = await Coupon.findOne({ code });
-    if (couponExists) {
+    // 1️⃣ Check if coupon code exists
+    const existingCoupon = await Coupon.findOne({ code: code.toUpperCase() });
+    if (existingCoupon) {
         return res.status(400).json({ success: false, message: 'Coupon code already exists.' });
     }
 
+    // 2️⃣ Validate dates
     if (new Date(expiryDate) <= new Date(startDate)) {
-        return res.status(400).json({ success: false, message: 'Expiry date must be after the start date.' });
+        return res.status(400).json({ success: false, message: 'Expiry date must be after start date.' });
     }
 
+    // 3️⃣ Create coupon (vendor=null => applicable to all vendors)
     const newCoupon = await Coupon.create({
-        code,
+        code: code.toUpperCase(),
         discount,
         minimumOrder,
-        usageLimit,
+        usageLimitPerUser,
+        totalUsageLimit,
         startDate,
         expiryDate,
         appliesTo,
-        applicableId
+        applicableProducts,
+        vendor: null,       // null indicates coupon applies to all vendors
+        createdBy: adminId
     });
 
-    res.status(201).json({ success: true, message: 'Coupon created successfully.', data: newCoupon });
+    res.status(201).json({
+        success: true,
+        message: 'Coupon created successfully and is applicable to all vendors.',
+        data: newCoupon
+    });
 });
+
+
 
 
 
@@ -1095,7 +1134,7 @@ const deleteCoupon = asyncHandler(async (req, res) => {
 // @route   GET /api/admin/settings/profile
 // @access  Private/Admin
 const getAdminProfile = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id).select('name email profilePicture');
+    const user = await User.findById(req.user.id).select('name email upiId profilePicture');
 
     if (!user) {
         return res.status(404).json({ success: false, message: 'Admin not found.' });
@@ -1106,6 +1145,8 @@ const getAdminProfile = asyncHandler(async (req, res) => {
         data: {
             name: user.name,
             email: user.email,
+                        upiId: user.upiId || null,
+
             profilePicture: user.profilePicture || null,
         },
     });
@@ -1120,24 +1161,36 @@ const getAdminProfile = asyncHandler(async (req, res) => {
 const updateAdminProfile = asyncHandler(async (req, res) => {
     const user = await User.findById(req.user.id);
 
-    if (!user) return res.status(404).json({ success: false, message: 'Admin not found.' });
+    if (!user) {
+        return res.status(404).json({ success: false, message: 'Admin not found.' });
+    }
 
-    // Convert body fields if using multipart/form-data
-    const { name, email } = req.body;
+    // Extract fields
+    const { name, email, upiId } = req.body;
 
-    // Update name
+    // --- Update Name ---
     if (name) user.name = name;
 
-    // Check for duplicate mobile number
+    // --- Update Email with duplicate check ---
     if (email) {
         const existingUser = await User.findOne({ email });
         if (existingUser && existingUser._id.toString() !== req.user.id) {
-            return res.status(400).json({ success: false, message: 'Mobile number already exists.' });
+            return res.status(400).json({ success: false, message: 'Email already exists.' });
         }
         user.email = email;
     }
 
-    // Update profile picture
+    // --- Update UPI ID ---
+    if (upiId) {
+        // Basic validation for UPI format (e.g., example@upi)
+        const upiPattern = /^[\w.\-_]{2,}@[a-zA-Z]{2,}$/;
+        if (!upiPattern.test(upiId)) {
+            return res.status(400).json({ success: false, message: 'Invalid UPI ID format.' });
+        }
+        user.upiId = upiId;
+    }
+
+    // --- Update Profile Picture ---
     if (req.file) {
         try {
             if (user.profilePicture) {
@@ -1160,10 +1213,12 @@ const updateAdminProfile = asyncHandler(async (req, res) => {
         data: {
             name: user.name,
             email: user.email,
+            upiId: user.upiId || null,
             profilePicture: user.profilePicture || null,
         },
     });
 });
+
 
 
 

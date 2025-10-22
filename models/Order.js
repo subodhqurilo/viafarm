@@ -50,6 +50,10 @@ orderStatus: {
   type: String,
   enum: [
     'In-process',
+    'Confirmed',
+    'Out For Delivery',
+    'Cancelled',
+    'Ready For Pickup',
     'Completed',  ],
   default: 'In-process'
 },

@@ -20,12 +20,11 @@ const couponSchema = new mongoose.Schema({
     },
   },
   appliesTo: {
-  type: [String], // <-- Array of strings
-  enum: ['All Products', 'Fruits', 'Vegetables', 'Plants', 'Seeds', 'Handicrafts'],
-  required: [true, 'Applies to field is required.'],
-},
-
-  
+    type: [String],
+    enum: ['All Products', 'Fruits', 'Vegetables', 'Plants', 'Seeds', 'Handicrafts'],
+    required: [true, 'Applies to field is required.'],
+  },
+  applicableProducts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
   startDate: {
     type: Date,
     required: [true, 'Start date is required.'],
@@ -50,6 +49,14 @@ const couponSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+
+  usedBy: [
+  {
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    count: { type: Number, default: 0 }
+  }
+],
+
   status: {
     type: String,
     enum: ['Active', 'Expired', 'Disabled'],
@@ -57,8 +64,11 @@ const couponSchema = new mongoose.Schema({
   },
   vendor: {
     type: mongoose.Schema.Types.ObjectId,
-    required: true,
-    ref: 'User', // or Vendor model
+    ref: 'User',
+    required: function() {
+      // Only required if coupon is NOT for all products
+      return !this.appliesTo.includes('All Products');
+    }
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
