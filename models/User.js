@@ -57,6 +57,8 @@ const userSchema = new mongoose.Schema({
     location: String,
     contactNo: String,
     totalOrders: { type: Number, default: 0 },
+  
+   deliveryRegion: { type: String, default: 5 }, // in km (max distance)
   },
     rejectionReason: {
         type: String,

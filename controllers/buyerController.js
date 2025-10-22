@@ -12,6 +12,7 @@ const Review = require('../models/Review');
 const { upload, cloudinary } = require('../services/cloudinaryService');
 const Coupon = require('../models/Coupon');
 const { calculateOrderSummary } = require('../utils/orderUtils');
+const Donation = require('../models/Donation');
 const QRCode = require('qrcode');
 const PickupLocation = require('../models/PickupLocation');
 
@@ -28,20 +29,60 @@ const PickupLocation = require('../models/PickupLocation');
 
 
 
-const calculateEstimatedDelivery = () => {
-    // ... (implementation for calculating delivery date)
-    const deliveryDate = new Date();
-    let daysToAdd = 3;
-    while (daysToAdd > 0) {
-        deliveryDate.setDate(deliveryDate.getDate() + 1);
-        if (deliveryDate.getDay() !== 0) {
-            daysToAdd--;
-        }
-    }
-    const options = { month: 'short', day: '2-digit' };
-    const formatted = deliveryDate.toLocaleDateString('en-US', options).replace(',', '');
-    return { formatted, date: deliveryDate.toISOString() };
+const calculateDistanceKm = (lat1, lon1, lat2, lon2) => {
+    // Haversine formula
+    const R = 6371; // km
+    const dLat = (lat2 - lat1) * (Math.PI / 180);
+    const dLon = (lon2 - lon1) * (Math.PI / 180);
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1 * (Math.PI / 180)) *
+        Math.cos(lat2 * (Math.PI / 180)) *
+        Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
 };
+
+const calculateEstimatedDelivery = (vendor, buyer, orderTime = new Date()) => {
+  let deliveryDate = new Date(orderTime);
+
+  // Safe coordinate extraction
+  const vendorCoords = vendor?.location?.coordinates || [0, 0]; // [lng, lat]
+  const buyerCoords = buyer?.location?.coordinates || [0, 0];
+
+  const vendorLat = vendorCoords[1];
+  const vendorLng = vendorCoords[0];
+  const buyerLat = buyerCoords[1];
+  const buyerLng = buyerCoords[0];
+
+  const distanceKm = calculateDistanceKm(vendorLat, vendorLng, buyerLat, buyerLng);
+
+  // Buyer within vendor delivery region
+  if (distanceKm <= (vendor?.deliveryRegion || 0)) {
+    const cutoffHour = 17; // 5 PM
+    if (orderTime.getHours() >= cutoffHour) {
+      deliveryDate.setDate(deliveryDate.getDate() + 1);
+    }
+  } else {
+    // Buyer out of delivery region
+    let daysToAdd = 4; // default for different state
+    if (vendor?.address?.state && buyer?.address?.state && vendor.address.state === buyer.address.state) {
+      daysToAdd = 2 + Math.floor(Math.random() * 2); // 2-3 days
+    }
+    deliveryDate.setDate(deliveryDate.getDate() + daysToAdd);
+  }
+
+  // Format delivery date
+  const options = { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' };
+  const formattedDate = deliveryDate.toLocaleDateString('en-US', options);
+
+  return {
+    formatted: formattedDate,
+    date: deliveryDate.toISOString(),
+    distanceKm: distanceKm.toFixed(1)
+  };
+};
+
 
 const formatDeliveryDate = (date) => {
     // ... (implementation for formatting delivery date)
@@ -680,11 +721,11 @@ const getAllVendors = asyncHandler(async (req, res) => {
 const getCartItems = asyncHandler(async (req, res) => {
     const userId = req.user._id;
 
-    // 1. डिलीवरी की तारीख की गणना (Assuming helper is available)
+    // 1️⃣ Delivery date text
     const deliveryDate = calculateEstimatedDelivery();
     const deliveryDateText = `Delivery by ${deliveryDate.formatted}`;
 
-    // खाली सारांश (Empty Summary) ऑब्जेक्ट, float 0 values के साथ
+    // 2️⃣ Empty summary defaults
     const emptySummary = { totalMRP: 0, discount: 0, deliveryCharge: 0, totalAmount: 0 };
     const emptySummaryFormatted = {
         TotalMRP: "₹ 0.00",
@@ -693,15 +734,17 @@ const getCartItems = asyncHandler(async (req, res) => {
         TotalAmount: "₹ 0.00"
     };
 
-
     try {
-        // 2. कार्ट फ़ेच करें
+        // 3️⃣ Fetch user's cart (Populate necessary fields for summary calculation)
         const cart = await Cart.findOne({ user: userId })
-            .populate('items.product')
+            .populate({
+                path: 'items.product',
+                select: 'price vendor name images variety unit' 
+            })
             .lean();
 
-        // 3. खाली कार्ट हैंडलिंग
-        if (!cart || !cart.items?.length || !cart.items.filter(item => item.product).length) {
+        // 4️⃣ Handle empty cart
+        if (!cart || !cart.items?.length || !cart.items.filter(i => i.product).length) {
             return res.json({
                 success: true,
                 data: {
@@ -713,33 +756,57 @@ const getCartItems = asyncHandler(async (req, res) => {
             });
         }
 
-        // 4. मूल्य सारांश की गणना
-        // calculateOrderSummary से लौटा हुआ नेस्टेड summary ऑब्जेक्ट प्राप्त करें
-        const summaryResult = await calculateOrderSummary(cart, cart.couponCode);
-        const finalSummary = summaryResult.summary;
+        // 5️⃣ Safe coordinates check
+        const user = await User.findById(userId).select('location.coordinates');
+        if (!user?.location?.coordinates || user.location.coordinates.length !== 2) {
+            return res.json({
+                success: true,
+                data: {
+                    items: cart.items.filter(i => i.product).map(i => ({
+                        id: i.product._id,
+                        name: i.product.name,
+                        subtitle: i.product.variety,
+                        mrp: i.product.price,
+                        imageUrl: i.product.images?.[0] || 'https://placehold.co/100x100/CCCCCC/333333?text=Product',
+                        quantity: i.quantity,
+                        unit: i.product.unit,
+                        deliveryText: deliveryDateText
+                    })),
+                    summary: emptySummaryFormatted,
+                    priceDetails: emptySummary,
+                    couponCode: cart.couponCode || ''
+                },
+                message: 'Delivery location not fully set. Price details may be inaccurate.'
+            });
+        }
 
-        // 5. आइटम को UI के लिए फॉर्मेट करें
+        // 6️⃣ Calculate order summary safely
+        const summaryResult = await calculateOrderSummary(cart, cart.couponCode);
+        const finalSummary = summaryResult?.summary || emptySummary;
+
+        // 7️⃣ Format items for frontend
         const formattedItems = cart.items
-            .filter(item => item.product) // केवल मान्य (valid) आइटम
-            .map(item => ({
-                id: item.product._id,
-                name: item.product.name || 'Product Name',
-                subtitle: item.product.variety || 'Hand Painted', // UI के लिए सबटाइटल
-                mrp: item.product.price,
-                imageUrl: item.product.images?.[0] || 'https://default-image-url.com/default.png',
-                quantity: item.quantity,
+            .filter(i => i.product)
+            .map(i => ({
+                id: i.product._id,
+                name: i.product.name || 'Product Name',
+                subtitle: i.product.variety || 'Hand Picked',
+                mrp: i.product.price,
+                imageUrl: i.product.images?.[0] || 'https://placehold.co/100x100/CCCCCC/333333?text=Product',
+                quantity: i.quantity,
+                unit: i.product.unit,
                 deliveryText: deliveryDateText
             }));
 
-        // 6. priceDetails ऑब्जेक्ट बनाएं (Numeric values)
+        // 8️⃣ Price details (numbers and formatted strings) - **no donation**
         const priceDetails = {
-            totalMRP: finalSummary.totalMRP,
-            couponDiscount: finalSummary.discount,
-            deliveryCharge: finalSummary.deliveryCharge,
-            totalAmount: finalSummary.totalAmount // ✅ अब यह deliveryCharge सहित सही मान होगा
+            totalMRP: finalSummary.totalMRP || 0,
+            couponDiscount: finalSummary.discount || 0,
+            deliveryCharge: finalSummary.deliveryCharge || 0,
+            totalAmount: finalSummary.totalAmount || 0
         };
 
-        // 7. Response भेजें
+        // 9️⃣ Send response
         res.json({
             success: true,
             data: {
@@ -748,17 +815,21 @@ const getCartItems = asyncHandler(async (req, res) => {
                     TotalMRP: `₹ ${priceDetails.totalMRP.toFixed(2)}`,
                     CouponDiscount: `₹ ${priceDetails.couponDiscount.toFixed(2)}`,
                     DeliveryCharge: `₹ ${priceDetails.deliveryCharge.toFixed(2)}`,
-                    TotalAmount: `₹ ${priceDetails.totalAmount.toFixed(2)}` // ✅ सही अंतिम राशि
+                    TotalAmount: `₹ ${priceDetails.totalAmount.toFixed(2)}`
                 },
                 priceDetails,
                 couponCode: cart.couponCode || ''
             }
         });
+
     } catch (err) {
-        console.error('Cart fetch error:', err);
+        console.error('❌ Cart fetch error:', err);
         res.status(500).json({ success: false, message: 'Failed to load cart details.' });
     }
 });
+
+
+
 
 
 // 🎟 APPLY COUPON
@@ -871,93 +942,94 @@ const applyCouponToCart = asyncHandler(async (req, res) => {
 // Note: calculateOrderSummary and Cart, Product, User models must be imported.
 
 const addItemToCart = asyncHandler(async (req, res) => {
-  const { productId, quantity = 1 } = req.body;
-  const userId = req.user._id;
+    const { productId, quantity = 1 } = req.body;
+    const userId = req.user._id;
 
-  if (!productId ) {
-    return res.status(400).json({
-      success: false,
-      message: 'Product ID and valid quantity are required.'
-    });
-  }
-
-  // 1️⃣ Get Product Details
-  const product = await Product.findById(productId).select('name price weightPerPiece vendor status images unit');
-  if (!product) {
-    return res.status(404).json({ success: false, message: 'Product not found.' });
-  }
-  if (product.status !== 'In Stock') {
-    return res.status(400).json({ success: false, message: 'Product is out of stock.' });
-  }
-
-  // 2️⃣ Find or Create User Cart
-  let cart = await Cart.findOne({ user: userId }).populate('items.product');
-  if (!cart) {
-    cart = await Cart.create({ user: userId, items: [] });
-  }
-
-  // 3️⃣ Enforce single-vendor rule
-  const existingVendors = cart.items
-    .map(i => i.vendor?.toString())
-    .filter(Boolean);
-
-  if (existingVendors.length > 0 && existingVendors[0] !== product.vendor.toString()) {
-    return res.status(400).json({
-      success: false,
-      message: 'You can only add products from one vendor at a time. Please clear your cart to add items from a different vendor.'
-    });
-  }
-
-  // 4️⃣ Add or Update Product in Cart
-  const existingItemIndex = cart.items.findIndex(i => i.product._id.toString() === productId);
-  const newQuantity = Number(quantity);
-
-  if (existingItemIndex > -1) {
-    cart.items[existingItemIndex].quantity += newQuantity;
-    cart.items[existingItemIndex].price = product.price;
-  } else {
-    cart.items.push({
-      product: product._id,
-      vendor: product.vendor,
-      quantity: newQuantity,
-      price: product.price
-    });
-  }
-
-  await cart.save();
-
-  // 5️⃣ Recalculate order summary
-  const summary = await calculateOrderSummary(cart, cart.couponCode);
-
-  // 6️⃣ Format items for response
-  const items = await Promise.all(
-    cart.items.map(async i => {
-      const vendor = await User.findById(i.vendor).select('name').lean();
-      return {
-        product: {
-          id: i.product._id,
-          name: i.product.name,
-          price: i.price,
-          image: i.product.images?.[0] || null,
-          unit: i.product.unit,
-          weightPerPiece: i.weightPerPiece,
-        },
-        quantity: i.quantity,
-        vendorId: i.vendor,
-        vendorName: vendor?.name || null
-      };
-    })
-  );
-
-  res.status(200).json({
-    success: true,
-    message: 'Item added to cart successfully.',
-    data: {
-      items,
-      summary
+    if (!productId || quantity <= 0) {
+        return res.status(400).json({
+            success: false,
+            message: 'Product ID and valid quantity are required.'
+        });
     }
-  });
-})
+
+    // --- 1. Fetch product details ---
+    const product = await Product.findById(productId)
+        .select('name price weightPerPiece vendor status images unit');
+
+    if (!product) {
+        return res.status(404).json({ success: false, message: 'Product not found.' });
+    }
+
+    if (product.status !== 'In Stock' || product.price == null) {
+        return res.status(400).json({ success: false, message: 'Product is out of stock or invalid.' });
+    }
+
+    // --- 2. Find or create user's cart ---
+    let cart = await Cart.findOne({ user: userId }).populate('items.product');
+    if (!cart) {
+        cart = await Cart.create({ user: userId, items: [] });
+    }
+
+    // --- 3. Clean invalid/null products from cart ---
+    cart.items = cart.items.filter(i => i.product && i.price != null);
+
+    // --- 4. Enforce single-vendor rule ---
+    const existingVendors = cart.items.map(i => i.vendor?.toString()).filter(Boolean);
+    if (existingVendors.length > 0 && existingVendors[0] !== product.vendor.toString()) {
+        return res.status(400).json({
+            success: false,
+            message: 'You can only add products from one vendor at a time. Please clear your cart to add items from a different vendor.'
+        });
+    }
+
+    // --- 5. Add or update product in cart ---
+    const existingItemIndex = cart.items.findIndex(
+        i => i.product && i.product._id && i.product._id.toString() === productId
+    );
+
+    const newQuantity = Number(quantity);
+
+    if (existingItemIndex > -1) {
+        cart.items[existingItemIndex].quantity += newQuantity;
+        cart.items[existingItemIndex].price = product.price; // update price if changed
+    } else {
+        cart.items.push({
+            product: product._id,
+            vendor: product.vendor,
+            quantity: newQuantity,
+            price: product.price
+        });
+    }
+
+    await cart.save();
+
+    // --- 6. Recalculate summary ---
+    const summary = await calculateOrderSummary(cart, cart.couponCode);
+
+    // --- 7. Format items for frontend response ---
+    const items = cart.items.map(i => ({
+        id: i.product._id,
+        name: i.product.name,
+        mrp: i.price,
+        imageUrl: i.product.images?.[0] || null,
+        quantity: i.quantity,
+        unit: i.product.unit,
+        vendorId: i.vendor
+    }));
+
+    res.status(200).json({
+        success: true,
+        message: 'Item added to cart successfully.',
+        data: {
+            items,
+            summary
+        }
+    });
+});
+
+
+
+
 
 
 
@@ -1234,79 +1306,125 @@ const reorder = asyncHandler(async (req, res) => {
  * @access  Private/Buyer
  */
 
-/**
- * @desc    Place order from cart (supports Delivery or Pickup)
- * @route   POST /api/buyer/orders/place
- * @access  Private
- */
 const placeOrder = asyncHandler(async (req, res) => {
     const userId = req.user._id;
-    const { 
-        deliveryType, 
-        addressId, 
-        pickupSlot, 
-        couponCode, 
-        donationAmount = 0, 
-        comments 
+    const {
+        deliveryType,
+        addressId,
+        pickupSlot,
+        couponCode,
+        comments,
+        paymentMethod
     } = req.body;
 
-    // --- 1. Validate inputs and fetch cart ---
+    // --- 1️⃣ Fetch Cart ---
     const cart = await Cart.findOne({ user: userId })
-        .populate({ path: 'items.product', select: 'price vendor name' })
+        .populate({
+            path: 'items.product',
+            select: 'name price vendor images unit'
+        })
         .lean();
 
-    if (!cart || cart.items.length === 0) {
+    if (!cart || !cart.items.length) {
         return res.status(400).json({ success: false, message: 'Your cart is empty.' });
     }
 
-    const validItems = cart.items.filter(i => i.product);
-    if (!deliveryType || !['Delivery', 'Pickup'].includes(deliveryType)) {
-        return res.status(400).json({ success: false, message: 'Valid orderType is required (Delivery or Pickup).' });
+    const validItems = cart.items.filter(i => i.product && typeof i.product.price === 'number');
+    if (!validItems.length) {
+        return res.status(400).json({ success: false, message: 'Cart contains invalid products.' });
     }
 
-    // --- 2. Handle shipping/pickup details ---
+    // --- 2️⃣ Validate delivery/payment options ---
+    if (!['Delivery', 'Pickup'].includes(deliveryType)) {
+        return res.status(400).json({ success: false, message: 'Valid deliveryType is required (Delivery or Pickup).' });
+    }
+
+    if (!['Cash', 'UPI'].includes(paymentMethod)) {
+        return res.status(400).json({ success: false, message: 'Valid paymentMethod (Cash or UPI) is required.' });
+    }
+
+    if (deliveryType === 'Delivery' && paymentMethod === 'Cash') {
+        return res.status(400).json({ success: false, message: 'Cash payment is only allowed for Pickup orders.' });
+    }
+
+    if (deliveryType === 'Pickup' && !pickupSlot) {
+        return res.status(400).json({ success: false, message: 'Pickup slot is required for pickup orders.' });
+    }
+
+    // --- 3️⃣ Validate Address ---
     let shippingAddress = null;
     if (deliveryType === 'Delivery') {
         shippingAddress = await Address.findById(addressId);
         if (!shippingAddress) {
             return res.status(404).json({ success: false, message: 'Shipping address not found.' });
         }
-    } else if (deliveryType === 'Pickup' && !pickupSlot) {
-        return res.status(400).json({ success: false, message: 'Pickup slot is required for pickup orders.' });
     }
 
-    const parsedDonation = parseFloat(donationAmount) || 0;
+    // --- 4️⃣ Validate Coupon (if provided) ---
+    let coupon = null;
+    if (couponCode) {
+        coupon = await Coupon.findOne({
+            code: couponCode.toUpperCase(),
+            status: 'Active',
+            startDate: { $lte: new Date() },
+            expiryDate: { $gte: new Date() }
+        });
 
-    // --- 3. Group items by vendor ---
+        if (!coupon) {
+            return res.status(400).json({ success: false, message: 'Invalid or expired coupon.' });
+        }
+
+        // 🟢 Check per-user usage limit
+        const usedCount = await Order.countDocuments({ buyer: userId, couponCode: coupon.code });
+        if (coupon.usageLimitPerUser && usedCount >= coupon.usageLimitPerUser) {
+            return res.status(400).json({
+                success: false,
+                message: `You have already used this coupon the maximum allowed times (${coupon.usageLimitPerUser}).`
+            });
+        }
+    }
+
+    // --- 5️⃣ Group items by vendor ---
     const ordersByVendor = validItems.reduce((acc, item) => {
         const vendorId = item.product.vendor?.toString();
         if (vendorId) {
-            if (!acc[vendorId]) {
-                acc[vendorId] = { items: [], totalMRP: 0, vendor: vendorId };
-            }
+            if (!acc[vendorId]) acc[vendorId] = { items: [], vendor: vendorId };
             acc[vendorId].items.push(item);
-            acc[vendorId].totalMRP += item.quantity * item.product.price;
         }
         return acc;
     }, {});
 
-    // --- 4. Create orders per vendor ---
     const createdOrderIds = [];
     const payments = [];
-    let grandTotalAmountToPay = 0;
-    const vendorCount = Object.keys(ordersByVendor).length;
+    let grandTotalAmount = 0;
+    let totalDiscount = 0;
 
+    const isOnlinePayment = paymentMethod === 'UPI';
+    const orderStatus = isOnlinePayment ? 'In-process' : 'Confirmed';
+    const isPaid = !isOnlinePayment;
+
+    // --- 6️⃣ Process each vendor ---
     for (const vendorId in ordersByVendor) {
         const vendorData = ordersByVendor[vendorId];
         const vendorItems = vendorData.items;
 
-        const summaryResult = await calculateOrderSummary({ items: vendorItems }, couponCode);
+        const summaryResult = await calculateOrderSummary(
+            { items: vendorItems, user: userId },
+            couponCode,
+            deliveryType
+        );
+
         const summary = summaryResult.summary;
 
-        const perOrderDonation = parsedDonation / vendorCount;
-        const finalOrderPrice = summary.totalAmount + perOrderDonation;
+        if (!summary.totalAmount || isNaN(summary.totalAmount)) {
+            return res.status(400).json({ success: false, message: 'Invalid total amount in order summary.' });
+        }
 
-        // --- Create order ---
+        grandTotalAmount += summary.totalAmount;
+        totalDiscount += summary.discount || 0;
+
+        const vendor = await User.findById(vendorId).select('name upiId').lean();
+
         const newOrder = new Order({
             orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
             buyer: userId,
@@ -1315,53 +1433,68 @@ const placeOrder = asyncHandler(async (req, res) => {
                 product: item.product._id,
                 quantity: item.quantity,
                 price: item.product.price,
-                vendor: vendorId,
+                vendor: vendorId
             })),
-            totalPrice: parseFloat(finalOrderPrice.toFixed(2)),
+            totalPrice: parseFloat(summary.totalAmount.toFixed(2)),
+            discount: summary.discount || 0,
+            couponCode: couponCode || null,
             orderType: deliveryType,
-            orderStatus: 'Pending Payment',
-            shippingAddress: shippingAddress,
-            pickupSlot: pickupSlot,
-            comments: comments,
-            donation: parseFloat(perOrderDonation.toFixed(2)),
+            orderStatus,
+            shippingAddress: shippingAddress || null,
+            pickupSlot: pickupSlot || null,
+            comments: comments || '',
+            paymentMethod,
+            isPaid
         });
 
         const createdOrder = await newOrder.save();
         createdOrderIds.push(createdOrder._id);
-        grandTotalAmountToPay += finalOrderPrice;
 
-        // --- Generate UPI/QR payment info ---
-        const vendor = await User.findById(vendorId).select('name upiId');
-        if (vendor?.upiId) {
+        if (isOnlinePayment && vendor?.upiId) {
             const transactionRef = `TXN-${createdOrder.orderId.replace('#', '-')}-${Date.now()}`;
-            const upiUrl = `upi://pay?pa=${encodeURIComponent(vendor.upiId)}&pn=${encodeURIComponent(vendor.name)}&am=${finalOrderPrice.toFixed(2)}&tn=${encodeURIComponent(`Payment for Orders: ${transactionRef}`)}&tr=${encodeURIComponent(transactionRef)}&cu=INR`;
-
+            const upiUrl = `upi://pay?pa=${encodeURIComponent(vendor.upiId)}&pn=${encodeURIComponent(vendor.name)}&am=${summary.totalAmount.toFixed(2)}&tn=${encodeURIComponent(`Payment for Order ${createdOrder.orderId}`)}&tr=${encodeURIComponent(transactionRef)}&cu=INR`;
             const qrCodeDataUrl = await QRCode.toDataURL(upiUrl);
 
             payments.push({
                 orderId: createdOrder._id,
                 vendorName: vendor.name,
                 upiId: vendor.upiId,
-                amount: finalOrderPrice.toFixed(2),
+                amount: summary.totalAmount.toFixed(2),
+                discount: summary.discount || 0,
                 upiUrl,
                 qrCode: qrCodeDataUrl,
-                transactionRef,
+                transactionRef
             });
         }
     }
 
-    // --- 5. Optionally clear cart after order creation ---
+    // --- 7️⃣ Clear cart ---
     await Cart.deleteOne({ user: userId });
 
-    // --- 6. Respond ---
+    // --- 8️⃣ Respond ---
     res.status(201).json({
         success: true,
-        message: 'Orders placed successfully. Proceed to payment.',
+        message: isOnlinePayment
+            ? 'Orders placed successfully. Proceed to payment.'
+            : 'Order confirmed. Cash payment selected.',
         orderIds: createdOrderIds,
-        totalAmountToPay: grandTotalAmountToPay.toFixed(2),
-        payments,
+        totalAmountToPay: grandTotalAmount.toFixed(2),
+        totalDiscount: totalDiscount.toFixed(2),
+        paymentMethod,
+        payments
     });
 });
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -2098,46 +2231,6 @@ const startCheckout = asyncHandler(async (req, res) => {
 });
 
 
-
-
-
-
-
-
-
-// @desc    Generate UPI payment URL
-// @route   POST /api/buyer/upi-url
-// @access  Private/Buyer
-
-
-
-
-
-
-
-
-
-// @desc    Place an order
-// @route   POST /api/buyer/orders/place
-// @access  Private/Buyer
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// @desc    Get all reviews for a product
-// @route   GET /api/buyer/reviews/:productId
-// @access  Public
 const getReviewsForProduct = asyncHandler(async (req, res) => {
     const { productId } = req.params;
 
@@ -2159,9 +2252,6 @@ const getReviewsForProduct = asyncHandler(async (req, res) => {
 
 
 
-// @desc    Update a review
-// @route   PUT /api/buyer/reviews/:reviewId
-// @access  Private/Buyer
 const updateReview = asyncHandler(async (req, res) => {
     const { reviewId } = req.params;
     const { rating, comment } = req.body;
@@ -2215,9 +2305,7 @@ const updateReview = asyncHandler(async (req, res) => {
 
 
 
-// @desc    Delete a review
-// @route   DELETE /api/buyer/reviews/:reviewId
-// @access  Private/Buyer
+
 const deleteReview = asyncHandler(async (req, res) => {
     const { reviewId } = req.params;
 
@@ -2432,7 +2520,7 @@ const updateBuyerLanguage = asyncHandler(async (req, res) => {
 });
 
 const logout = asyncHandler(async (_req, res) => {
-    // implement token blacklist if needed
+    
     res.json({ success: true, message: 'Logged out successfully' });
 });
 
@@ -2636,9 +2724,6 @@ const setDefaultAddress = asyncHandler(async (req, res) => {
 // ---------------- GET PICKUP LOCATION DETAILS ----------------
 
 
-// @desc Save the selected pickup slot to the cart
-// @route POST /api/buyer/pickup/select-slot
-// @access Private/Buyer
 const selectPickupSlot = asyncHandler(async (req, res) => {
     const { vendorId, date, startTime, endTime } = req.body;
     const userId = req.user._id;
@@ -2652,14 +2737,14 @@ const selectPickupSlot = asyncHandler(async (req, res) => {
         return res.status(404).json({ success: false, message: "Cart not found." });
     }
     
-    // Validate vendorId as an ObjectId
+    // FIX: Ensure vendorId is a valid ObjectId before saving.
     if (!mongoose.Types.ObjectId.isValid(vendorId)) {
         return res.status(400).json({ success: false, message: "Invalid vendor ID." });
     }
     
-    // Save the pickup details with the vendorId. Mongoose will handle the casting.
+    // Save the pickup details with the vendorId as an ObjectId
     cart.pickupDetails = { 
-        vendor: vendorId, // Mongoose will automatically cast this string to ObjectId
+        vendor: new mongoose.Types.ObjectId(vendorId), // <-- CAST TO OBJECTID HERE
         date, 
         startTime, 
         endTime,
@@ -2675,73 +2760,69 @@ const selectPickupSlot = asyncHandler(async (req, res) => {
 
 
 
-
-// Haversine formula to calculate distance in km.
-
-
-/**
- * @desc Get vendor's pickup details and slot information
- * @route GET /api/buyer/vendor/:vendorId/pickup-details
- * @access Private/Buyer
- */
 const getPickupLocationDetails = asyncHandler(async (req, res) => {
     const { vendorId } = req.params;
     const userId = req.user._id;
 
-    // Fetch vendor, cart (for saved slot), and default buyer address location
+    // Fetch vendor, cart, and buyer's default address in parallel
     const [vendor, cart, defaultBuyerAddress] = await Promise.all([
-        User.findById(vendorId).select("name mobileNumber address location profilePicture role").lean(),
-        Cart.findOne({ user: userId }).select('pickupDetails').lean(),
+        User.findById(vendorId)
+            .select("name mobileNumber address location profilePicture role")
+            .lean(),
+        Cart.findOne({ user: userId }).select("pickupDetails").lean(),
         Address.findOne({ user: userId, isDefault: true }).lean()
     ]);
-    
-    // Fallback if no default address is found
-    const buyerAddress = defaultBuyerAddress || (await Address.findOne({ user: userId }).lean());
+
+    let buyerAddress = defaultBuyerAddress || (await Address.findOne({ user: userId }).lean());
 
     if (!vendor || vendor.role !== "Vendor") {
         return res.status(404).json({ success: false, message: "Vendor not found." });
     }
 
-    // --- The Core Fix: Correctly check for a saved slot ---
+    // Determine slot details
     let slotToDisplay = {};
     let isSaved = false;
     const savedPickup = cart?.pickupDetails;
-    
-    // Create an ObjectId from the URL parameter for a correct comparison
     const vendorObjectId = new mongoose.Types.ObjectId(vendorId);
 
-    // This check will now succeed because savedPickup.vendor is also an ObjectId
     if (savedPickup && savedPickup.vendor?.equals(vendorObjectId)) {
+        // Use selected slot
         slotToDisplay = savedPickup;
         isSaved = true;
     } else {
-        // Fallback to default slot details
+        // Fallback default slot (optional)
+        const now = new Date();
+        const tomorrow = new Date(now);
+        tomorrow.setDate(now.getDate() + 1);
+
+        const formattedDate = `${String(tomorrow.getDate()).padStart(2, "0")}/${
+            String(tomorrow.getMonth() + 1).padStart(2, "0")
+        }/${tomorrow.getFullYear()}`;
+
         slotToDisplay = {
-            date: '29/09/2025',
-            startTime: '10:30 AM',
-            endTime: '12:30 PM',
+            date: formattedDate,
+            startTime: "10:30 AM",
+            endTime: "12:30 PM",
         };
         isSaved = false;
     }
-    
-    // --- Distance Calculation ---
+
+    // Calculate distance
     let distanceKm = null;
     if (buyerAddress?.location?.coordinates?.length === 2 && vendor.location?.coordinates?.length === 2) {
-      const [vendorLng, vendorLat] = vendor.location.coordinates;
-      const buyerLatNum = buyerAddress.location.coordinates[1];
-      const buyerLngNum = buyerAddress.location.coordinates[0];
-      distanceKm = calculateDistance(buyerLatNum, buyerLngNum, vendorLat, vendorLng).toFixed(1);
+        const [vendorLng, vendorLat] = vendor.location.coordinates;
+        const buyerLatNum = buyerAddress.location.coordinates[1];
+        const buyerLngNum = buyerAddress.location.coordinates[0];
+        distanceKm = calculateDistance(buyerLatNum, buyerLngNum, vendorLat, vendorLng).toFixed(1);
     }
-    
-    // --- Format Response ---
+
+    // Format vendor address
     const vendorAddressText = [
-        vendor.address?.houseNumber, 
-        vendor.address?.locality || vendor.address?.city, 
+        vendor.address?.houseNumber,
+        vendor.address?.locality || vendor.address?.city,
         vendor.address?.city
     ].filter(Boolean).join(", ");
-    
-    const formattedStartTime = slotToDisplay.startTime.replace(/\s/g, '').toLowerCase();
-    const formattedEndTime = slotToDisplay.endTime.replace(/\s/g, '').toLowerCase();
+
     const pickupHoursDisplay = `${slotToDisplay.startTime} to ${slotToDisplay.endTime}`;
 
     res.status(200).json({
@@ -2752,18 +2833,21 @@ const getPickupLocationDetails = asyncHandler(async (req, res) => {
                 profilePicture: vendor.profilePicture,
                 phoneNo: vendor.mobileNumber,
                 pickupLocationText: vendorAddressText,
-                distance: distanceKm ? `${distanceKm} kms away` : 'N/A',
+                distance: distanceKm ? `${distanceKm} kms away` : "N/A",
             },
             slotDetails: {
                 date: slotToDisplay.date,
-                startTime: formattedStartTime,
-                endTime: formattedEndTime,
-                pickupHoursDisplay: pickupHoursDisplay,
-                isSaved: isSaved, 
+                startTime: slotToDisplay.startTime,
+                endTime: slotToDisplay.endTime,
+                pickupHoursDisplay,
+                isSaved
             }
-        },
+        }
     });
 });
+
+
+
 
 
 
@@ -3234,8 +3318,121 @@ const getProductById = asyncHandler(async (req, res) => {
     });
 });
 
+const donateToAdmin = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+  const { amount, message = '', paymentMethod = 'UPI' } = req.body;
+
+  if (!amount || amount <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Please enter a valid donation amount.'
+    });
+  }
+
+  // --- 1. Find admin ---
+  const admin = await User.findOne({ role: 'Admin' }).select('name upiId');
+  if (!admin) {
+    return res.status(404).json({ success: false, message: 'Admin not found.' });
+  }
+
+  if (!admin.upiId && paymentMethod === 'UPI') {
+    return res.status(400).json({
+      success: false,
+      message: 'Admin has not configured UPI ID for donations.'
+    });
+  }
+
+  // --- 2. Prepare transaction details ---
+  const transactionRef = `DONATE-${Date.now()}`;
+  const isOnline = paymentMethod === 'UPI';
+
+  let upiUrl = null;
+  let qrCode = null;
+
+  if (isOnline) {
+    upiUrl = `upi://pay?pa=${encodeURIComponent(admin.upiId)}&pn=${encodeURIComponent(admin.name)}&am=${amount.toFixed(
+      2
+    )}&tn=${encodeURIComponent('Donation to Admin')}&tr=${encodeURIComponent(transactionRef)}&cu=INR`;
+
+    qrCode = await QRCode.toDataURL(upiUrl);
+  }
+
+  // --- 3. Save donation record ---
+  const donation = await Donation.create({
+    donor: userId,
+    admin: admin._id,
+    amount,
+    message,
+    paymentMethod,
+    transactionRef,
+    upiUrl,
+    qrCode,
+    status: isOnline ? 'Pending' : 'Completed',
+  });
+
+  // --- 4. Respond ---
+  res.status(201).json({
+    success: true,
+    message: isOnline
+      ? 'Donation created successfully. Please complete the UPI payment.'
+      : 'Cash donation recorded successfully.',
+    donationId: donation._id,
+    paymentMethod,
+    amount: amount.toFixed(2),
+    adminName: admin.name,
+    upiId: admin.upiId || null,
+    upiUrl,
+    qrCode,
+    transactionRef,
+  });
+});
+const getDonationsReceived = asyncHandler(async (req, res) => {
+    const { page = 1, limit = 12, sortBy = 'createdAt', sortOrder = -1 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const sort = { [sortBy]: parseInt(sortOrder) };
+
+    try {
+        // Fetch donations with donor info
+        const donations = await Donation.find()
+            .select('donor admin amount message paymentMethod transactionRef status createdAt')
+            .populate('donor', 'name email') // donor details
+            .populate('admin', 'name email') // admin details
+            .sort(sort)
+            .limit(parseInt(limit))
+            .skip(skip)
+            .lean();
+
+        const totalCount = await Donation.countDocuments();
+
+        // Format for frontend
+        const formattedDonations = donations.map(d => ({
+            donorName: d.donor?.name || 'Anonymous',
+            donorEmail: d.donor?.email || '',
+            adminName: d.admin?.name || 'Admin',
+            amount: d.amount,
+            paymentMethod: d.paymentMethod,
+            message: d.message,
+            status: d.status,
+            transactionRef: d.transactionRef,
+            date: new Date(d.createdAt).toLocaleDateString('en-GB'),
+        }));
+
+        res.status(200).json({
+            success: true,
+            totalCount,
+            resultsPerPage: parseInt(limit),
+            currentPage: parseInt(page),
+            donations: formattedDonations,
+        });
+    } catch (error) {
+        console.error("Error fetching donations:", error);
+        res.status(500).json({ success: false, message: 'Failed to retrieve donation data.' });
+    }
+});
+
+
 module.exports = {
-    getHomePageData,getProductsByVendorId,
+    getHomePageData,getProductsByVendorId,donateToAdmin,getDonationsReceived,
     getProductDetails,
     getFilteredProducts,
     getVendorsNearYou,

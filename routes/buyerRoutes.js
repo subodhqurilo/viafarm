@@ -8,8 +8,8 @@ const {
     getStaticPageContent, writeReview, getCartItems, addItemToCart, removeItemFromCart, updateCartItemQuantity, placeOrder,updateAddress,deleteAddress,
     reorder, getReviewsForProduct, updateReview, deleteReview, applyCouponToCart,getAllVendors,searchAllProducts,getProductsByVendorId,getProductById,
     getOrderDetails, startCheckout, getHighlightedCoupon, getPickupLocationDetails, selectPickupSlot,getProductsByName,getPickupLocationDetailsPost,
-    verifyPayment, getProductsByCategory, getVendorProfileForBuyer, getProductReviews, getAvailableCouponsForBuyer, getCouponsByProductId,
-    addAddress, getFreshAndPopularProducts, getLocalBestProducts, getAllAroundIndiaProducts, getSmartPicks,getVendorsByProductName,
+    verifyPayment, getProductsByCategory, getVendorProfileForBuyer, getProductReviews, getAvailableCouponsForBuyer, getCouponsByProductId,getDonationsReceived,
+    addAddress, getFreshAndPopularProducts, getLocalBestProducts, getAllAroundIndiaProducts, getSmartPicks,getVendorsByProductName,donateToAdmin,
     getAddresses, setDefaultAddress, getHomePageData, getProductDetails, getFilteredProducts, getVendorsNearYou, searchProducts, generateUpiPaymentUrl
 } = require('../controllers/buyerController');
 
@@ -27,6 +27,7 @@ const { upload } = require('../services/cloudinaryService');
 // General product discovery (Local Best often doesn't need GeoJSON restriction)
 router.get('/local-best', getLocalBestProducts); // Auth only
 router.get('/products/search', searchProducts); // Auth only
+router.get('/donation', getDonationsReceived);
 
 router.use(authMiddleware); // Apply authentication to all following routes
 
@@ -118,5 +119,7 @@ router.route('/profile')
 
 router.put('/location', updateBuyerLocation);
 router.put('/language', updateBuyerLanguage);
+router.post('/donation', donateToAdmin);
+
 
 module.exports = router;

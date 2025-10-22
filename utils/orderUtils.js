@@ -1,74 +1,131 @@
 // utils/orderUtils.js
 const Coupon = require('../models/Coupon');
-const mongoose = require('mongoose'); // Assuming mongoose is needed for Coupon model
+const User = require('../models/User');
+const Address = require('../models/Address');
 
-async function calculateOrderSummary(cartOrItems, couponCode) {
-    const items = Array.isArray(cartOrItems) ? cartOrItems : (cartOrItems?.items || []);
+/**
+ * --- Helper: Haversine formula (in km) ---
+ */
+function getDistanceKm(lat1, lon1, lat2, lon2) {
+    const toRad = (v) => (v * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * --- Delivery charge calculator ---
+ */
+async function getDeliveryCharge(buyerId, vendorId, totalWeightKg = 1) {
+    try {
+        const [buyerAddress, vendor] = await Promise.all([
+            Address.findOne({ user: buyerId, isDefault: true }).lean(),
+            User.findById(vendorId).lean(),
+        ]);
+
+        if (!vendor?.location?.coordinates || !buyerAddress?.location?.coordinates) return 20;
+
+        const [buyerLng, buyerLat] = buyerAddress.location.coordinates;
+        const [vendorLng, vendorLat] = vendor.location.coordinates;
+
+        const distanceKm = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
+
+        const deliveryRegion = vendor.deliveryRegion || 5;
+        let charge = 0;
+
+        if (distanceKm <= deliveryRegion) {
+            charge = distanceKm <= 2 ? 50 : 50 + (distanceKm - 2) * 10;
+        } else {
+            const sameState = buyerAddress?.state?.trim()?.toLowerCase() === vendor?.state?.trim()?.toLowerCase();
+            charge = sameState ? 60 + Math.max(0, totalWeightKg - 2) * 20 : 80 + Math.max(0, totalWeightKg - 2) * 25;
+        }
+
+        return parseFloat(charge.toFixed(2));
+    } catch (err) {
+        console.error('Delivery charge calc error:', err);
+        return 20;
+    }
+}
+
+/**
+ * --- Main order summary calculator ---
+ */
+async function calculateOrderSummary(cartOrItems, couponCode, deliveryType = 'Delivery') {
+    const items = Array.isArray(cartOrItems) ? cartOrItems : cartOrItems?.items || [];
 
     let totalMRP = 0;
     let totalDiscount = 0;
-
+    let totalWeight = 0;
     const updatedItems = [];
 
-    // Fetch coupon details
     const coupon = couponCode
         ? await Coupon.findOne({ code: couponCode.toUpperCase(), status: 'Active' })
         : null;
 
     for (const item of items) {
-        // Fallback for price: prefer price snapshot on item, then populated product price, then 0
-        const price = (typeof item.price === 'number' && !Number.isNaN(item.price))
-            ? item.price
-            : (item.product?.price || 0);
-
+        const price = typeof item.price === 'number' ? item.price : item.product?.price || 0;
         const qty = Number(item.quantity) || 0;
         const itemMRP = price * qty;
+        totalMRP += itemMRP;
+        totalWeight += (item.product?.weightPerPiece || 0.2) * qty;
 
         let itemDiscount = 0;
 
-        // Apply coupon only if applicable
         if (coupon) {
-            // Get vendor ID from item snapshot or populated product
-            const productVendorId = item.vendor?.toString() || item.product?.vendor?.toString(); 
-            
-            // Assuming Coupon model has a 'vendor' field linking to the creator
-            if (productVendorId && productVendorId === coupon.vendor.toString()) { 
+            // Apply to all products or specific products
+            if (
+                coupon.appliesTo.includes('All Products') ||
+                (item.product?._id && coupon.applicableProducts?.some(p => p.equals(item.product._id)))
+            ) {
                 if (coupon.discount.type === 'Percentage') {
                     itemDiscount = (itemMRP * coupon.discount.value) / 100;
                 } else if (coupon.discount.type === 'Fixed') {
-                    // Apply fixed discount entirely to the first applicable item or split logic if necessary
-                    // For simplicity, applying fixed discount once if totalDiscount is still zero
-                    if (totalDiscount === 0) {
-                        itemDiscount = coupon.discount.value;
-                    }
+                    // Spread fixed discount proportionally
+                    const totalQualifyingMRP = items.reduce((sum, i) => {
+                        if (
+                            coupon.appliesTo.includes('All Products') ||
+                            coupon.applicableProducts?.some(p => p.equals(i.product?._id))
+                        ) {
+                            return sum + ((i.price || i.product?.price || 0) * (i.quantity || 0));
+                        }
+                        return sum;
+                    }, 0);
+                    itemDiscount = (itemMRP / totalQualifyingMRP) * coupon.discount.value;
                 }
             }
         }
 
-        totalMRP += itemMRP;
         totalDiscount += itemDiscount;
-
         updatedItems.push({
-            // Ensure data integrity when converting back from lean/populated objects
-            ...item.toObject?.() || item, 
-            itemMRP: parseFloat(itemMRP.toFixed(2)),
-            discount: parseFloat(itemDiscount.toFixed(2)),
-            total: parseFloat((itemMRP - itemDiscount).toFixed(2))
+            ...item.toObject?.() || item,
+            itemMRP: +itemMRP.toFixed(2),
+            discount: +itemDiscount.toFixed(2),
+            total: +(itemMRP - itemDiscount).toFixed(2),
         });
     }
 
-    // 🚨 UPDATED LOGIC: Delivery Charge is 0 if totalMRP > 500, otherwise 20.
-    const deliveryCharge = totalMRP > 500 ? 0 : 20; // <--- CHANGE APPLIED HERE
-    const finalTotalAmount = totalMRP - totalDiscount + deliveryCharge; 
+    const buyerId = cartOrItems.user || cartOrItems.userId;
+    const vendorId = items[0]?.vendor?.toString() || items[0]?.product?.vendor?.toString();
+
+    let deliveryCharge = 0;
+    if (deliveryType === 'Delivery' && vendorId) {
+        deliveryCharge = await getDeliveryCharge(buyerId, vendorId, totalWeight);
+    }
+
+    const finalTotal = totalMRP - totalDiscount + deliveryCharge;
 
     return {
         items: updatedItems,
         summary: {
-            totalMRP: parseFloat(totalMRP.toFixed(2)),
-            discount: parseFloat(totalDiscount.toFixed(2)),
-            deliveryCharge: parseFloat(deliveryCharge.toFixed(2)),
-            totalAmount: parseFloat(finalTotalAmount.toFixed(2))
-        }
+            totalMRP: +totalMRP.toFixed(2),
+            discount: +totalDiscount.toFixed(2),
+            deliveryCharge,
+            totalAmount: +finalTotal.toFixed(2),
+        },
     };
 }
 

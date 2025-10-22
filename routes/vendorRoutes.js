@@ -29,6 +29,7 @@ router.post('/products/add', upload.array('images', 5), vendorController.addProd
 router.put('/products/:id', upload.array('images', 5), vendorController.updateProduct);
 router.delete('/products/:id', vendorController.deleteProduct);
 router.put('/products/:id/status', vendorController.updateProductStatus);
+router.get("/public/products/:category", vendorController.getVendorProductsByCategory);
 
 // -------------------------
 // Orders
@@ -55,6 +56,8 @@ router.get('/profile', vendorController.getUserProfile);
 router.put('/profile', upload.single('profilePicture'), vendorController.updateUserProfile);
 router.put('/update-language', vendorController.updateUserLanguage);
 router.put('/update-location', vendorController.updateLocationDetails);
+router.get('/update-location', vendorController.getVendorLocationDetails);
+
 router.post('/change-password', vendorController.changePassword);
 router.post('/logout', vendorController.logout);
 

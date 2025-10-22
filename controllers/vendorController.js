@@ -774,6 +774,65 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
 
 
 
+const getVendorProductsByCategory = asyncHandler(async (req, res) => {
+  try {
+    const vendorId = req.user._id; // vendor logged in
+    const { category } = req.params; // category from dropdown (fruits, vegetables, etc.)
+
+    if (!vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: "Vendor authentication required.",
+      });
+    }
+
+    if (!category) {
+      return res.status(400).json({
+        success: false,
+        message: "Category is required in URL (e.g., /vendor/products/fruits).",
+      });
+    }
+
+    // ✅ Supported categories (capitalized as stored in DB)
+    const allowedCategories = ['Fruits', 'Vegetables', 'Plants', 'Seeds', 'Handicrafts'];
+
+    // Find matching category in DB ignoring case
+    const matchedCategory = allowedCategories.find(
+      (cat) => cat.toLowerCase() === category.toLowerCase()
+    );
+
+    if (!matchedCategory) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid category. Choose one of: ${allowedCategories.join(", ")}.`,
+      });
+    }
+
+    // ✅ Fetch products for this vendor & category (case-insensitive)
+    const products = await Product.find({
+      vendor: vendorId,
+      category: { $regex: new RegExp(`^${matchedCategory}$`, 'i') }, // case-insensitive
+    })
+      .select("name price images stock status unit variety")
+      .sort({ createdAt: -1 });
+
+    // ✅ Response
+    res.status(200).json({
+      success: true,
+      total: products.length,
+      category: matchedCategory,
+      data: products,
+    });
+  } catch (error) {
+    console.error("Error fetching vendor products by category:", error);
+    res.status(500).json({
+      success: false,
+      message: "Something went wrong while fetching vendor products.",
+    });
+  }
+});
+
+
 
 
 
@@ -905,55 +964,46 @@ const createCoupon = asyncHandler(async (req, res) => {
 
 
 const getVendorCoupons = asyncHandler(async (req, res) => {
-  if (!req.user || !req.user._id) {
+  const vendorId = req.user?._id;
+  if (!vendorId) {
     return res.status(401).json({
       success: false,
       message: 'Unauthorized: Vendor information missing.'
     });
   }
 
-  const vendorId = req.user._id;
-  const { search = '', status, page = 1, limit = 10 } = req.query;
+  const { search = '', status } = req.query;
 
+  // --- Build query ---
   const query = { vendor: vendorId };
 
-  // 🔍 Filter by status if provided
-  if (status && ['Active', 'Expired', 'Disabled'].includes(status)) {
+  // Filter by status
+  const allowedStatuses = ['Active', 'Expired', 'Disabled'];
+  if (status && allowedStatuses.includes(status)) {
     query.status = status;
   }
 
-  // 🔍 Search by coupon code
-  if (search) {
-    query.code = { $regex: search, $options: 'i' };
+  // Search by coupon code (case-insensitive)
+  if (search.trim()) {
+    query.code = { $regex: search.trim(), $options: 'i' };
   }
 
-  const skip = (Number(page) - 1) * Number(limit);
-
-  const total = await Coupon.countDocuments(query);
-
-  // Fetch coupons with optional population
+  // Fetch all matching coupons (no pagination)
   const coupons = await Coupon.find(query)
     .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(Number(limit))
     .populate({
-      path: 'applicableId',
-      select: 'name category price' // Example: populate products
+      path: 'applicableProducts', // populate products if any
+      select: 'name category price'
     });
 
   res.status(200).json({
     success: true,
     count: coupons.length,
-    data: coupons,
-    pagination: {
-      total,
-      page: Number(page),
-      limit: Number(limit),
-      totalPages: Math.ceil(total / limit)
-    }
+    data: coupons
   });
 });
 
+module.exports = { getVendorCoupons };
 
 
 
@@ -1066,27 +1116,39 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
 
 
 
+
+
 const deleteVendorCoupon = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+    const { id } = req.params;
+    const vendorId = req.user._id;
 
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    return res.status(400).json({ success: false, message: 'Invalid coupon ID.' });
-  }
+    // --- 1. Validate coupon ID ---
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: 'Invalid or missing coupon ID.' });
+    }
 
-  const coupon = await Coupon.findById(id);
+    // --- 2. Fetch the coupon ---
+    const coupon = await Coupon.findById(id);
+    if (!coupon) {
+        return res.status(404).json({ success: false, message: 'Coupon not found.' });
+    }
 
-  if (!coupon) {
-    return res.status(404).json({ success: false, message: 'Coupon not found.' });
-  }
+    // --- 3. Authorization check ---
+    if (coupon.vendor.toString() !== vendorId.toString()) {
+        return res.status(403).json({ success: false, message: 'You are not authorized to delete this coupon.' });
+    }
 
-  if (coupon.vendor.toString() !== req.user._id.toString()) {
-    return res.status(403).json({ success: false, message: 'Not authorized to delete this coupon.' });
-  }
+    // --- 4. Delete coupon ---
+    await Coupon.findByIdAndDelete(id);
 
-  await coupon.remove(); // or Coupon.findByIdAndDelete(id);
-
-  res.status(200).json({ success: true, message: 'Coupon deleted successfully.' });
+    res.status(200).json({
+        success: true,
+        message: 'Coupon deleted successfully.',
+        data: { couponId: id, code: coupon.code }
+    });
 });
+
+
 
 
 
@@ -1277,69 +1339,106 @@ const changePassword = asyncHandler(async (req, res) => {
  * @access  Private (Authenticated User/Vendor)
  */
 const updateLocationDetails = asyncHandler(async (req, res) => {
-    const { 
-        pinCode, 
-        houseNumber, 
-        locality, 
-        city, 
-        district, 
-        latitude, 
-        longitude 
-    } = req.body;
+  const { 
+    pinCode, 
+    houseNumber, 
+    locality, 
+    city, 
+    district, 
+    latitude, 
+    longitude,
+    deliveryRegion
+  } = req.body;
 
-    // --- 1. Address Validation (Fields from the UI are required for an address update) ---
-    // If the user is updating location, they must provide the core address fields.
-    if (!pinCode || !houseNumber || !locality || !city || !district) {
-        return res.status(400).json({ success: false, message: 'All address fields (Pin Code, House Number, Locality, City, District) are required.' });
+  // Validate mandatory fields
+  if (!pinCode || !houseNumber || !locality || !city || !district) {
+    return res.status(400).json({ success: false, message: 'All address fields are required.' });
+  }
+
+  // Parse deliveryRegion as number
+  const region = parseFloat(deliveryRegion);
+  if (isNaN(region) || region <= 0) {
+    return res.status(400).json({ success: false, message: 'Delivery Region must be a positive number.' });
+  }
+
+  const updateFields = {
+    'address.pinCode': pinCode,
+    'address.houseNumber': houseNumber,
+    'address.locality': locality,
+    'address.city': city,
+    'address.district': district,
+    'vendorDetails.deliveryRegion': region
+  };
+
+  // Parse latitude/longitude as numbers
+  if (latitude && longitude) {
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
+
+    if (isNaN(lat) || isNaN(lng)) {
+      return res.status(400).json({ success: false, message: 'Invalid latitude or longitude.' });
     }
 
-    // --- 2. Build Update Object ---
-    const updateFields = {
-        'address.pinCode': pinCode,
-        'address.houseNumber': houseNumber,
-        'address.locality': locality,
-        'address.city': city,
-        'address.district': district,
-    };
-    
-    // --- 3. Handle GeoJSON Location (Optional Update) ---
-    if (latitude && longitude) {
-        const lat = parseFloat(latitude);
-        const lng = parseFloat(longitude);
+    updateFields['address.latitude'] = lat;
+    updateFields['address.longitude'] = lng;
+    updateFields['location'] = { type: 'Point', coordinates: [lng, lat] };
+  } else {
+    updateFields['location'] = undefined;
+  }
 
-        if (isNaN(lat) || isNaN(lng)) {
-             return res.status(400).json({ success: false, message: 'Invalid latitude or longitude provided.' });
-        }
-        
-        // GeoJSON Point is always stored as [longitude, latitude]
-        updateFields['location'] = {
-            type: 'Point',
-            coordinates: [lng, lat] 
-        };
-    } else {
-        // Clear location if not provided in the request body, 
-        // ensuring old coordinates don't persist if the user only updates address text.
-        updateFields['location'] = undefined;
+  const updatedUser = await User.findByIdAndUpdate(
+    req.user._id,
+    { $set: updateFields },
+    { new: true, runValidators: true }
+  ).select('-password');
+
+  if (!updatedUser) {
+    return res.status(404).json({ success: false, message: 'Vendor not found.' });
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'Location and delivery details updated successfully.',
+    data: {
+        address: {
+            ...updatedUser.address,
+            latitude: Number(updatedUser.address.latitude),
+            longitude: Number(updatedUser.address.longitude)
+        },
+        location: updatedUser.location,
+        deliveryRegion: `${Number(updatedUser.vendorDetails?.deliveryRegion || 0)} km` // ✅ append " km"
     }
-    
-    // --- 4. Update and Validate ---
-    const updatedUser = await User.findByIdAndUpdate(
-        req.user._id,
-        { $set: updateFields },
-        { new: true, runValidators: true } // Return new document and enforce schema rules
-    );
+});
 
-    if (!updatedUser) {
-        return res.status(404).json({ success: false, message: 'User not found.' });
+});
+
+const getVendorLocationDetails = asyncHandler(async (req, res) => {
+    // Ensure the user is a Vendor (though route middleware should enforce this)
+    if (req.user.role !== 'Vendor') {
+        return res.status(403).json({ success: false, message: 'Access denied. Must be a vendor.' });
     }
 
-    // --- 5. Response ---
+    // Fetch the vendor and select the required fields
+    const vendor = await User.findById(req.user._id).select('name address location vendorDetails');
+
+    if (!vendor) {
+        return res.status(404).json({ success: false, message: 'Vendor profile not found.' });
+    }
+
     res.status(200).json({
-        success: true,
-        message: 'Location updated successfully.',
-        address: updatedUser.address,
-        location: updatedUser.location
-    });
+    success: true,
+    data: {
+        // Address fields
+        address: vendor.address || null,
+        // GeoJSON location
+        location: vendor.location || null,
+        // Delivery settings with " km" appended
+        deliveryRegion: vendor.vendorDetails?.deliveryRegion 
+            ? `${Number(vendor.vendorDetails.deliveryRegion)} km` 
+            : null
+    }
+});
+
 });
 
 const updateUserLanguage = asyncHandler(async (req, res) => {
@@ -1407,8 +1506,8 @@ module.exports = {
     getUserProfile,
     updateUserProfile,
     getRecentListings,
-    getProductById,
-    changePassword,
+    getProductById,getVendorLocationDetails,
+    changePassword,getVendorProductsByCategory,
     logout,
     uploadProfileImage,
     updateLocationDetails,   // <-- missing
