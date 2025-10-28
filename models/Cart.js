@@ -40,6 +40,7 @@ const CartSchema = new mongoose.Schema({
     couponCode: {
         type: String, // Code applied to the cart
     },
+    deleteAt: { type: Date, index: { expires: 0 } }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Cart', CartSchema);

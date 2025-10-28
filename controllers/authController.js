@@ -8,6 +8,7 @@ const otpService = require('../services/otpService');
 const asyncHandler = require('express-async-handler');
 const crypto = require('crypto');
 const sendEmail = require('../services/emailService');
+const Notification = require('../models/Notification');
 
 // ===== Helpers =====
 // Top of authController.js
@@ -23,8 +24,23 @@ const hashPassword = async (password) => {
 };
 
 // ===== Signup (Create Account) =====
+// --- Socket notification helper ---
+const sendAdminNotification = (req, message, data = {}) => {
+  const io = req.app.get('io');
+  if (io) {
+    io.emit('adminNotification', { message, data, time: new Date() });
+  }
+};
+
+
+
+
 exports.signup = asyncHandler(async (req, res) => {
   const { mobileNumber } = req.body;
+
+  if (!mobileNumber) {
+    return res.status(400).json({ status: 'error', message: 'Mobile number is required.' });
+  }
 
   let user = await User.findOne({ mobileNumber });
 
@@ -32,53 +48,89 @@ exports.signup = asyncHandler(async (req, res) => {
     return res.status(400).json({ status: 'error', message: 'This mobile number is already registered.' });
   }
 
+  // Generate OTP and expiry
   const otp = otpService.generateOTP();
-  const otpExpiry = Date.now() + 10 * 60 * 1000;
+  const otpExpiry = Date.now() + (process.env.OTP_EXPIRY_MINUTES || 5) * 60 * 1000; // 5 minutes
 
   if (user) {
     user.otp = otp;
     user.otpExpiry = otpExpiry;
   } else {
-    user = new User({ 
-      mobileNumber, 
-      otp, 
-      otpExpiry, 
+    user = new User({
+      mobileNumber,
+      otp,
+      otpExpiry,
       isVerified: false,
-      role: 'Buyer' // default role
+      role: 'Buyer', // default role
     });
   }
 
   await user.save();
 
+  // Send OTP via SMS
+  const otpSent = await otpService.sendOTP(mobileNumber, otp);
+  if (!otpSent) {
+    return res.status(500).json({
+      status: 'error',
+      message: 'Failed to send OTP. Please try again.'
+    });
+  }
+
+  // Optional: notify admin via socket
+  sendAdminNotification(req, 'New user signed up', {
+    mobileNumber: user.mobileNumber,
+    role: user.role
+  });
+
   res.status(201).json({
     status: 'success',
     message: 'OTP has been sent to your mobile number.',
-    otp // remove in production
+     otp// uncomment for testing only
   });
 });
 
 
 
 // ===== Verify OTP (Signup flow) =====
-exports.verifyOtp = async (req, res) => {
+// ===== Verify OTP (Signup flow) =====
+exports.verifyOtp = asyncHandler(async (req, res) => {
     const { mobileNumber, otp } = req.body;
-    try {
-        const user = await User.findOne({ mobileNumber, otp });
 
-        if (!user || !user.otpExpiry || user.otpExpiry < Date.now()) {
-            return res.status(400).json({ status: 'error', message: 'Invalid or expired OTP.' });
+    if (!mobileNumber || !otp) {
+        return res.status(400).json({ status: 'error', message: 'Mobile number and OTP are required.' });
+    }
+
+    try {
+        const user = await User.findOne({ mobileNumber });
+
+        if (!user || !user.otp || user.otp !== otp) {
+            return res.status(400).json({ status: 'error', message: 'Invalid OTP.' });
         }
 
+        if (!user.otpExpiry || user.otpExpiry < Date.now()) {
+            return res.status(400).json({ status: 'error', message: 'OTP has expired. Please request a new one.' });
+        }
+
+        // Mark user as verified
         user.isVerified = true;
         user.otp = undefined;
         user.otpExpiry = undefined;
+
         await user.save();
 
-        res.status(200).json({ status: 'success', message: 'OTP verified. Please complete your profile.' });
+        // Optional: generate JWT for immediate login
+        // const token = generateToken(user);
+
+        res.status(200).json({
+            status: 'success',
+            message: 'OTP verified successfully. Please complete your profile.'
+            // token // uncomment if sending JWT immediately
+        });
     } catch (err) {
         res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
     }
-};
+});
+
 
 // ===== Set New Password (after verification) =====
 exports.setNewPassword = async (req, res) => {
@@ -200,36 +252,67 @@ exports.login = async (req, res) => {
 
 
 // ===== Request OTP for Login =====
-exports.requestOtpLogin = async (req, res) => {
+exports.requestOtpLogin = asyncHandler(async (req, res) => {
     const { mobileNumber } = req.body;
+
+    if (!mobileNumber) {
+        return res.status(400).json({ status: 'error', message: 'Mobile number is required.' });
+    }
+
     try {
         const user = await User.findOne({ mobileNumber });
+
         if (!user || !user.isVerified) {
             return res.status(400).json({ status: 'error', message: 'User not found or not verified.' });
         }
 
+        // Generate OTP
         const otp = otpService.generateOTP();
+        const otpExpiry = Date.now() + (process.env.OTP_EXPIRY_MINUTES || 5) * 60 * 1000; // 5 min expiry
+
         user.otp = otp;
-        user.otpExpiry = Date.now() + 10 * 60 * 1000;
+        user.otpExpiry = otpExpiry;
         await user.save();
 
-        res.status(200).json({ status: 'success', message: 'OTP has been sent for login.', otp });
+        // Send OTP via SMS
+        const sent = await otpService.sendOTP(mobileNumber, otp);
+        if (!sent) {
+            return res.status(500).json({ status: 'error', message: 'Failed to send OTP. Please try again.' });
+        }
+
+        res.status(200).json({
+            status: 'success',
+            message: 'OTP has been sent for login.',
+             otp // remove in production
+        });
+
     } catch (err) {
         res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
     }
-};
+});
+
 
 // ===== Verify OTP Login =====
-exports.verifyOtpLogin = async (req, res) => {
+exports.verifyOtpLogin = asyncHandler(async (req, res) => {
     const { mobileNumber, otp } = req.body;
+
+    if (!mobileNumber || !otp) {
+        return res.status(400).json({ status: 'error', message: 'Mobile number and OTP are required.' });
+    }
+
     try {
-        const user = await User.findOne({ mobileNumber, otp });
-        if (!user || !user.otpExpiry || user.otpExpiry < Date.now()) {
+        // Find user by mobile number
+        const user = await User.findOne({ mobileNumber });
+
+        // Check if OTP matches and is not expired
+        if (!user || !user.otp || user.otp !== otp || !user.otpExpiry || user.otpExpiry < Date.now()) {
             return res.status(400).json({ status: 'error', message: 'Invalid or expired OTP.' });
         }
 
+        // Generate JWT token
         const token = generateToken(user);
 
+        // Clear OTP fields after successful login
         user.otp = undefined;
         user.otpExpiry = undefined;
         await user.save();
@@ -237,12 +320,22 @@ exports.verifyOtpLogin = async (req, res) => {
         res.status(200).json({
             status: 'success',
             message: 'Login successful.',
-            data: { token, user: { id: user._id, name: user.name, role: user.role } }
+            data: {
+                token,
+                user: {
+                    id: user._id,
+                    name: user.name,
+                    role: user.role,
+                    mobileNumber: user.mobileNumber
+                }
+            }
         });
+
     } catch (err) {
         res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
     }
-};
+});
+
 
 // ===== Forgot Password (send OTP) =====
 exports.forgotPassword = async (req, res) => {
@@ -293,9 +386,9 @@ exports.forgotPassword = async (req, res) => {
 
 // ===== Reset Password =====
 exports.resetPassword = async (req, res) => {
-    const { mobileNumber, otp, newPassword, confirmPassword } = req.body;
+    const { otp, newPassword, confirmPassword } = req.body;
 
-    if (!mobileNumber || !otp || !newPassword || !confirmPassword) {
+    if (!otp || !newPassword || !confirmPassword) {
         return res.status(400).json({ status: 'error', message: 'All fields are required.' });
     }
 
@@ -304,24 +397,34 @@ exports.resetPassword = async (req, res) => {
     }
 
     try {
-        const user = await User.findOne({ mobileNumber });
+        // ✅ Find user by OTP only
+        const user = await User.findOne({ otp });
 
-        if (!user || !user.otp || !user.otpExpiry || user.otp !== otp || user.otpExpiry < Date.now()) {
+        if (!user || !user.otpExpiry || user.otpExpiry < Date.now()) {
             return res.status(400).json({ status: 'error', message: 'Invalid or expired OTP.' });
         }
 
-        // ✅ Directly assign new password
+        // ✅ Update password
         user.password = newPassword;
 
+        // ✅ Clear OTP fields
         user.otp = undefined;
         user.otpExpiry = undefined;
         await user.save();
 
-        res.status(200).json({ status: 'success', message: 'Password has been reset successfully.' });
+        res.status(200).json({
+            status: 'success',
+            message: 'Password has been reset successfully.'
+        });
     } catch (err) {
-        res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
+        res.status(500).json({
+            status: 'error',
+            message: 'Server error',
+            error: err.message
+        });
     }
 };
+
 
 
 // Admin Signup (with hashed password)

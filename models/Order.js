@@ -77,6 +77,9 @@ orderStatus: {
     type: Number,
     default: 0,
   },
+  qrClosed: { type: Boolean, default: false },
+qrExpiry: { type: Date, default: null },
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('Order', orderSchema);

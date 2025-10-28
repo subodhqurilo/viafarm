@@ -8,6 +8,8 @@ const Category = require('../models/Category');
 const { upload, cloudinary } = require('../services/cloudinaryService');
 const Coupon = require('../models/Coupon');
 const Address = require('../models/Address');
+const { createAndSendNotification } = require('../utils/notificationUtils');
+
 // -------------------------------
 // Vendor Dashboard
 // -------------------------------
@@ -16,59 +18,81 @@ const Address = require('../models/Address');
 // @route   GET /api/vendor/dashboard
 // @access  Private/Vendor
 const getDashboardData = asyncHandler(async (req, res) => {
+  try {
     const vendorId = req.user._id;
 
-    // Calculate the start and end of today
+    // Define today's start and end timestamps
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
-
     const endOfToday = new Date();
     endOfToday.setHours(23, 59, 59, 999);
 
-    try {
-        // Total orders for this vendor
-        const totalOrders = await Order.countDocuments({ vendor: vendorId });
+    // 1️⃣ Total Orders (All-Time)
+    const totalOrders = await Order.countDocuments({ vendor: vendorId });
 
-        // Total revenue from all orders for this vendor
-        const totalRevenueAllResult = await Order.aggregate([
-            { $match: { vendor: vendorId } },
-            { $group: { _id: null, total: { $sum: '$totalPrice' } } }
-        ]);
-        const totalRevenueAll = totalRevenueAllResult[0]?.total || 0;
+    // 2️⃣ Total Revenue (All-Time)
+    const totalRevenueAllResult = await Order.aggregate([
+      { $match: { vendor: vendorId } },
+      { $group: { _id: null, total: { $sum: "$totalPrice" } } },
+    ]);
+    const totalRevenueAll = totalRevenueAllResult[0]?.total || 0;
 
-        // Total revenue from completed orders for this vendor
-        const totalRevenueCompletedResult = await Order.aggregate([
-            { $match: { vendor: vendorId, orderStatus: 'Completed' } },
-            { $group: { _id: null, total: { $sum: '$totalPrice' } } }
-        ]);
-        const totalRevenueCompleted = totalRevenueCompletedResult[0]?.total || 0;
+    // 3️⃣ Total Completed (Delivered) Revenue
+    const totalRevenueCompletedResult = await Order.aggregate([
+      { $match: { vendor: vendorId, orderStatus: "Completed",} },
+      { $group: { _id: null, total: { $sum: "$totalPrice" } } },
+    ]);
+    const totalRevenueCompleted = totalRevenueCompletedResult[0]?.total || 0;
 
-        // Total orders for today for this vendor
-        const todayOrders = await Order.countDocuments({
-            vendor: vendorId,
-            createdAt: {
-                $gte: startOfToday,
-                $lte: endOfToday
-            }
-        });
+    // 4️⃣ Today's Orders Count
+    const todayOrders = await Order.countDocuments({
+      vendor: vendorId,
+      createdAt: { $gte: startOfToday, $lte: endOfToday },
+      orderStatus: { $in: ["Confirmed", "Delivered",    'In-process',
+    
+    'Out For Delivery',
+    'Cancelled',
+    'Ready For Pickup',
+    'Completed',] },
+    });
 
-        res.json({
-            success: true,
-            data: {
-                totalOrders,
-                totalRevenueAll,        // all orders revenue
-                totalRevenueCompleted,  // only completed orders
-                todayOrders,
-            },
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            message: 'Failed to fetch dashboard data.',
-            error: error.message
-        });
-    }
+    // 5️⃣ Today's Revenue
+    const todayRevenueResult = await Order.aggregate([
+      {
+        $match: {
+          vendor: vendorId,
+          createdAt: { $gte: startOfToday, $lte: endOfToday },
+          orderStatus: { $in: [  'Delivered',
+    'Confirmed',
+    'Completed',] },
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$totalPrice" } } },
+    ]);
+    const todayRevenue = todayRevenueResult[0]?.total || 0;
+
+    // ✅ Response
+    res.status(200).json({
+      success: true,
+      data: {
+        totalOrders,
+        totalRevenueAll: Number(totalRevenueAll.toFixed(2)),
+        totalRevenueCompleted: Number(totalRevenueCompleted.toFixed(2)),
+        todayOrders,
+        todayRevenue: Number(todayRevenue.toFixed(2)),
+      },
+    });
+  } catch (error) {
+    console.error("❌ Dashboard Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch dashboard data.",
+      error: error.message,
+    });
+  }
 });
+
+
 
 const getVendorDashboardAnalytics = asyncHandler(async (req, res) => {
     const vendorId = req.user._id;
@@ -331,7 +355,7 @@ const getTodaysOrders = asyncHandler(async (req, res) => {
         // ✅ buyer info (name + mobile)
         .populate('buyer', 'name mobileNumber')
         // ✅ product info (name + variety)
-        .populate('products.product', 'name variety')
+        .populate('products.product', 'name variety unit ')
         .sort({ createdAt: -1 });
 
         res.status(200).json({ success: true, data: todaysOrders });
@@ -364,101 +388,115 @@ const getVendorProducts = asyncHandler(async (req, res) => {
 // @route   POST /api/vendor/products/add
 // @access  Private/Vendor
 const addProduct = asyncHandler(async (req, res) => {
-    const {
-        name,
-        category,
-        variety,
-        price,
-        quantity,
-        unit,
-        description,
-        weightPerPiece,
-        allIndiaDelivery
-    } = req.body;
+  const {
+    name,
+    category,
+    variety,
+    price,
+    quantity,
+    unit,
+    description,
+    weightPerPiece,
+    allIndiaDelivery
+  } = req.body;
 
-    const vendorId = req.user._id;
+  const vendorId = req.user._id;
 
-    // --- 1. Vendor Approval Check ---
-    const vendor = await User.findById(vendorId);
-    if (!vendor || !vendor.isApproved) {
-        return res.status(403).json({
-            success: false,
-            message: 'Your account is not approved. Cannot add products.'
-        });
-    }
-
-    // --- 2. Mandatory Field Validation ---
-    if (!name || !category || !variety || !price || !quantity || !unit) {
-        return res.status(400).json({
-            success: false,
-            message: 'Missing required fields.'
-        });
-    }
-
-    if (isNaN(price) || isNaN(quantity) || Number(price) <= 0 || Number(quantity) <= 0) {
-        return res.status(400).json({
-            success: false,
-            message: 'Price and Quantity must be valid positive numbers.'
-        });
-    }
-
-    // --- 3. Validation for "pc" unit ---
-    if (unit === 'pc' && (!weightPerPiece || typeof weightPerPiece !== 'string')) {
-        return res.status(400).json({
-            success: false,
-            message: 'When selling by piece (pc), you must specify the weight per piece (e.g., "400g").'
-        });
-    }
-
-    // --- 4. Upload Product Images to Cloudinary ---
-    let images = [];
-    if (req.files && req.files.length > 0) {
-        try {
-            for (const file of req.files) {
-                const result = await cloudinary.uploader.upload(file.path, {
-                    folder: 'product-images'
-                });
-                images.push(result.secure_url);
-            }
-        } catch (err) {
-            return res.status(500).json({
-                success: false,
-                message: 'Image upload failed. Please try again.',
-                error: err.message
-            });
-        }
-    } else {
-        return res.status(400).json({
-            success: false,
-            message: 'At least one product image is required.'
-        });
-    }
-
-    // --- 5. Create Product in Database ---
-    const isAllIndiaDelivery =
-        allIndiaDelivery === 'true' || allIndiaDelivery === true;
-
-    const newProduct = await Product.create({
-        name: name.trim(),
-        vendor: vendorId,
-        category: category.trim(),
-        variety: variety.trim(),
-        price: Number(price),
-        quantity: Number(quantity),
-        unit: unit.trim(),
-        description: description?.trim() || 'No description provided.',
-        images,
-        allIndiaDelivery: isAllIndiaDelivery,
-        status: 'In Stock',
-        weightPerPiece: unit === 'pc' ? weightPerPiece : null
+  // --- 1. Vendor Approval Check ---
+  const vendor = await User.findById(vendorId);
+  if (!vendor || !vendor.isApproved) {
+    return res.status(403).json({
+      success: false,
+      message: 'Your account is not approved. Cannot add products.'
     });
+  }
 
-    // --- 6. Respond ---
-    res.status(201).json({
-        success: true,
-        message: 'Product added successfully.',
-        data: newProduct
+  // --- 2. Mandatory Field Validation ---
+  if (!name || !category || !variety || !price || !quantity || !unit) {
+    return res.status(400).json({
+      success: false,
+      message: 'Missing required fields.'
     });
+  }
+
+  if (isNaN(price) || isNaN(quantity) || Number(price) <= 0 || Number(quantity) <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Price and Quantity must be valid positive numbers.'
+    });
+  }
+
+  // --- 3. Validation for "pc" unit ---
+  if (unit === 'pc' && (!weightPerPiece || typeof weightPerPiece !== 'string')) {
+    return res.status(400).json({
+      success: false,
+      message: 'When selling by piece (pc), you must specify the weight per piece (e.g., "400g").'
+    });
+  }
+
+  // --- 4. Upload Product Images to Cloudinary ---
+  let images = [];
+  if (req.files && req.files.length > 0) {
+    try {
+      for (const file of req.files) {
+        const result = await cloudinary.uploader.upload(file.path, {
+          folder: 'product-images'
+        });
+        images.push(result.secure_url);
+      }
+    } catch (err) {
+      return res.status(500).json({
+        success: false,
+        message: 'Image upload failed. Please try again.',
+        error: err.message
+      });
+    }
+  } else {
+    return res.status(400).json({
+      success: false,
+      message: 'At least one product image is required.'
+    });
+  }
+
+  // --- 5. Create Product in Database ---
+  const isAllIndiaDelivery =
+    allIndiaDelivery === 'true' || allIndiaDelivery === true;
+
+  const newProduct = await Product.create({
+    name: name.trim(),
+    vendor: vendorId,
+    category: category.trim(),
+    variety: variety.trim(),
+    price: Number(price),
+    quantity: Number(quantity),
+    unit: unit.trim(),
+    description: description?.trim() || 'No description provided.',
+    images,
+    allIndiaDelivery: isAllIndiaDelivery,
+    status: 'In Stock',
+    weightPerPiece: unit === 'pc' ? weightPerPiece : null
+  });
+
+  // ✅ 6. Create & Send Admin Notification
+  await createAndSendNotification(
+    req,
+    'New Product Added',
+    `${vendor.name} added a new product: ${newProduct.name}.`,
+    {
+      productId: newProduct._id,
+      vendorId: vendorId,
+      category: category,
+      price: price,
+      quantity: quantity
+    }
+  );
+
+  // --- 7. Respond ---
+  res.status(201).json({
+    success: true,
+    message: 'Product added successfully.',
+    data: newProduct
+  });
 });
 
 
@@ -734,7 +772,7 @@ const updateProductStatus = asyncHandler(async (req, res) => {
 const getVendorOrders = asyncHandler(async (req, res) => {
     const orders = await Order.find({ vendor: req.user._id })
         .populate('buyer', 'name email mobileNumber')           // only bring buyer details you need
-        .populate('products.product', 'name price mobileNumber variety'); // populate product details inside products array
+        .populate('products.product', 'name price mobileNumber quantity unit variety'); // populate product details inside products array
 
     res.json({ success: true, data: orders });
 });
@@ -874,7 +912,7 @@ const createCoupon = asyncHandler(async (req, res) => {
         totalUsageLimit,
         startDate, 
         expiryDate, 
-        appliesTo, // Can be: "All Products", ["Fruits", "Vegetables"], or "Specific Product"
+        appliesTo,
         productIds = [], 
         status = 'Active'
     } = req.body;
@@ -900,11 +938,9 @@ const createCoupon = asyncHandler(async (req, res) => {
     let finalApplicableProductIds = [];
     let isUniversal = false;
 
-    // Case 1: All Products
     if (appliesTo === 'All Products') {
         isUniversal = true;
     } 
-    // Case 2: Multiple categories (array)
     else if (Array.isArray(appliesTo) && appliesTo.length > 0) {
         if (!productIds || productIds.length === 0) {
             return res.status(400).json({ success: false, message: 'You must select at least one product.' });
@@ -922,7 +958,6 @@ const createCoupon = asyncHandler(async (req, res) => {
 
         finalApplicableProductIds = productsInVendor.map(p => p._id);
     } 
-    // Case 3: Specific Product
     else if (appliesTo === 'Specific Product' && productIds.length === 1) {
         const product = await Product.findOne({ _id: productIds[0], vendor: creatorId });
         if (!product) return res.status(403).json({ success: false, message: 'You can only apply coupons to your own products.' });
@@ -947,6 +982,20 @@ const createCoupon = asyncHandler(async (req, res) => {
         createdBy: creatorId,
         status
     });
+
+    // ✅ 4. Send admin notification
+    await createAndSendNotification(
+        req,
+        'New Coupon Created',
+        `A new coupon "${newCoupon.code}" has been created by a vendor.`,
+        {
+            couponId: newCoupon._id,
+            vendorId: creatorId,
+            discountValue,
+            discountType,
+            appliesTo
+        }
+    );
 
     res.status(201).json({
         success: true,
@@ -1201,16 +1250,19 @@ const getUserProfile = asyncHandler(async (req, res) => {
 // @desc    Update User/Vendor Profile
 // @route   PUT /api/user/profile
 // @access  Private
+
+
 const updateUserProfile = asyncHandler(async (req, res) => {
     const { name, mobileNumber, upiId, about } = req.body;
 
     // 1️⃣ Find User
-    const user = await User.findById(req.user.id);
+    // NOTE: Using req.user._id is the safest way to find the authenticated user.
+    const user = await User.findById(req.user._id); 
     if (!user) {
         return res.status(404).json({ success: false, message: 'User not found.' });
     }
 
-    // 2️⃣ Validate Mandatory Fields
+    // 2️⃣ Validation Checks
     if (!name || !mobileNumber || !upiId) {
         return res.status(400).json({
             success: false,
@@ -1225,14 +1277,25 @@ const updateUserProfile = asyncHandler(async (req, res) => {
             message: 'Mobile number must be a valid 10-digit number.'
         });
     }
+    
+    // Check for mobile number duplication if changed
+    if (mobileNumber !== user.mobileNumber) {
+        const existingUser = await User.findOne({ mobileNumber });
+        if (existingUser) {
+            return res.status(400).json({ success: false, message: 'This mobile number is already registered.' });
+        }
+    }
 
-    // 3️⃣ Handle Profile Picture Upload
+
+    // 3️⃣ Handle Profile Picture Upload (Only if a file is present)
     if (req.file) {
         try {
+            // Upload new image to Cloudinary (req.file.path contains the temp path)
             const result = await cloudinary.uploader.upload(req.file.path, {
                 folder: 'profile-images',
             });
-            user.profilePicture = result.secure_url;
+            // Assuming your User model uses 'profileImage' or 'profilePicture'
+            user.profileImage = result.secure_url; 
         } catch (err) {
             console.error('Cloudinary error:', err);
             return res.status(500).json({ success: false, message: 'Image upload failed.' });
@@ -1244,13 +1307,14 @@ const updateUserProfile = asyncHandler(async (req, res) => {
     user.mobileNumber = mobileNumber;
     user.upiId = upiId;
 
-    // Vendor About (ensure vendorDetails exists)
+    // Vendor About (ensure vendorDetails exists and update 'about')
     user.vendorDetails = user.vendorDetails || {};
     user.vendorDetails.about = about || user.vendorDetails.about;
 
-    // 5️⃣ Handle Address Update
+    // 5️⃣ Handle Address Update (If separate address fields are sent or a full address object)
     if (req.body.address) {
         try {
+            // Safely parse JSON if coming from multipart/form-data
             user.address = typeof req.body.address === 'string'
                 ? JSON.parse(req.body.address)
                 : req.body.address;
@@ -1273,15 +1337,13 @@ const updateUserProfile = asyncHandler(async (req, res) => {
             id: updatedUser._id,
             name: updatedUser.name,
             mobileNumber: updatedUser.mobileNumber,
-            profilePicture: updatedUser.profilePicture,
+            profilePicture: updatedUser.profileImage,
             upiId: updatedUser.upiId,
             address: updatedUser.address,
             about: updatedUser.vendorDetails?.about || ''
         }
     });
 });
-
-module.exports = { updateUserProfile };
 
 
 
@@ -1339,77 +1401,81 @@ const changePassword = asyncHandler(async (req, res) => {
  * @access  Private (Authenticated User/Vendor)
  */
 const updateLocationDetails = asyncHandler(async (req, res) => {
-  const { 
-    pinCode, 
-    houseNumber, 
-    locality, 
-    city, 
-    district, 
-    latitude, 
-    longitude,
-    deliveryRegion
-  } = req.body;
+    const { 
+        pinCode, 
+        houseNumber, 
+        locality, 
+        city, 
+        district, 
+        latitude, 
+        longitude,
+        deliveryRegion
+    } = req.body;
 
-  // Validate mandatory fields
-  if (!pinCode || !houseNumber || !locality || !city || !district) {
-    return res.status(400).json({ success: false, message: 'All address fields are required.' });
-  }
-
-  // Parse deliveryRegion as number
-  const region = parseFloat(deliveryRegion);
-  if (isNaN(region) || region <= 0) {
-    return res.status(400).json({ success: false, message: 'Delivery Region must be a positive number.' });
-  }
-
-  const updateFields = {
-    'address.pinCode': pinCode,
-    'address.houseNumber': houseNumber,
-    'address.locality': locality,
-    'address.city': city,
-    'address.district': district,
-    'vendorDetails.deliveryRegion': region
-  };
-
-  // Parse latitude/longitude as numbers
-  if (latitude && longitude) {
-    const lat = parseFloat(latitude);
-    const lng = parseFloat(longitude);
-
-    if (isNaN(lat) || isNaN(lng)) {
-      return res.status(400).json({ success: false, message: 'Invalid latitude or longitude.' });
+    // --- 1. Validation ---
+    if (!pinCode || !houseNumber || !locality || !city || !district) {
+        return res.status(400).json({ success: false, message: 'All address fields are required.' });
+    }
+    
+    // Parse deliveryRegion as number
+    const region = parseFloat(deliveryRegion);
+    if (isNaN(region) || region <= 0) {
+        return res.status(400).json({ success: false, message: 'Delivery Region must be a positive number.' });
     }
 
-    updateFields['address.latitude'] = lat;
-    updateFields['address.longitude'] = lng;
-    updateFields['location'] = { type: 'Point', coordinates: [lng, lat] };
-  } else {
-    updateFields['location'] = undefined;
-  }
+    // --- 2. Build Update Object ---
+    const updateFields = {
+        // Update Address sub-document
+        'address.pinCode': pinCode,
+        'address.houseNumber': houseNumber,
+        'address.locality': locality,
+        'address.city': city,
+        'address.district': district,
+        
+        // Update delivery region in vendorDetails sub-document
+        'vendorDetails.deliveryRegion': region
+    };
 
-  const updatedUser = await User.findByIdAndUpdate(
-    req.user._id,
-    { $set: updateFields },
-    { new: true, runValidators: true }
-  ).select('-password');
+    // --- 3. Handle GeoJSON Location (Mandatory for Near You feature) ---
+    if (latitude && longitude) {
+        const lat = parseFloat(latitude);
+        const lng = parseFloat(longitude);
 
-  if (!updatedUser) {
-    return res.status(404).json({ success: false, message: 'Vendor not found.' });
-  }
+        if (isNaN(lat) || isNaN(lng)) {
+            return res.status(400).json({ success: false, message: 'Invalid latitude or longitude.' });
+        }
 
-  res.status(200).json({
-    success: true,
-    message: 'Location and delivery details updated successfully.',
-    data: {
-        address: {
-            ...updatedUser.address,
-            latitude: Number(updatedUser.address.latitude),
-            longitude: Number(updatedUser.address.longitude)
-        },
-        location: updatedUser.location,
-        deliveryRegion: `${Number(updatedUser.vendorDetails?.deliveryRegion || 0)} km` // ✅ append " km"
+        // Store latitude and longitude directly in the address for easy access (optional, but good for UI)
+        updateFields['address.latitude'] = lat;
+        updateFields['address.longitude'] = lng;
+
+        updateFields['location'] = { type: 'Point', coordinates: [lng, lat] };
+    } else {
+        updateFields['location'] = undefined;
+        updateFields['address.latitude'] = undefined; // Clear if not provided
+        updateFields['address.longitude'] = undefined;
     }
-});
+    
+    // --- 4. Update and Respond ---
+    const updatedUser = await User.findByIdAndUpdate(
+        req.user._id,
+        { $set: updateFields },
+        { new: true, runValidators: true }
+    ).select('-password');
 
+    if (!updatedUser) {
+        return res.status(404).json({ success: false, message: 'Vendor not found.' });
+    }
+
+    res.status(200).json({
+        success: true,
+        message: 'Location and delivery details updated successfully.',
+        data: {
+            address: updatedUser.address,
+            location: updatedUser.location,
+            deliveryRegion: `${Number(updatedUser.vendorDetails?.deliveryRegion || 0)} km` // Append " km" for clean response
+        }
+    });
 });
 
 const getVendorLocationDetails = asyncHandler(async (req, res) => {
