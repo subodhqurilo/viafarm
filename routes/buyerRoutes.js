@@ -9,8 +9,8 @@ const {
     reorder, getReviewsForProduct, updateReview, deleteReview, applyCouponToCart,getAllVendors,searchAllProducts,getProductsByVendorId,getProductById,
     getOrderDetails, startCheckout, getHighlightedCoupon, getPickupLocationDetails, selectPickupSlot,getProductsByName,getPickupLocationDetailsPost,
     verifyPayment, getProductsByCategory, getVendorProfileForBuyer, getProductReviews, getAvailableCouponsForBuyer, getCouponsByProductId,getDonationsReceived,
-    addAddress, getFreshAndPopularProducts, getLocalBestProducts, getAllAroundIndiaProducts, getSmartPicks,getVendorsByProductName,donateToAdmin,
-    getAddresses, setDefaultAddress, getHomePageData, getProductDetails, getFilteredProducts, getVendorsNearYou, searchProducts, generateUpiPaymentUrl
+    addAddress, getFreshAndPopularProducts, getLocalBestProducts, getAllAroundIndiaProducts, getSmartPicks,getVendorsByProductName,donateToAdmin,searchProductsByName,
+    getAddresses, setDefaultAddress, getHomePageData, getProductDetails, getFilteredProducts, getVendorsNearYou, searchProducts, generateUpiPaymentUrl,markOrderPaid
 } = require('../controllers/buyerController');
 
 const { upload } = require('../services/cloudinaryService');
@@ -40,6 +40,7 @@ router.use(authorizeRoles('Buyer'));
 router.get('/home', getHomePageData);
 router.get('/products/filters', getFilteredProducts);
 router.get('/products/by-category', getProductsByCategory);
+router.get('/products/search', searchProductsByName);
 
 router.get('/vendors-near-you', getVendorsNearYou);
 router.get('/allvendors', getAllVendors);
@@ -76,6 +77,7 @@ router.get('/orders', getBuyerOrders);
 router.get('/orders/:orderId', getOrderDetails);
 router.post('/orders/:orderId/reorder', reorder);
 router.post('/orders/verify-payment', verifyPayment);
+router.put('/:orderId/mark-paid',  markOrderPaid);
 
 // Payment & Coupon
 router.post('/payment/upi-url', generateUpiPaymentUrl); 

@@ -15,6 +15,7 @@ const { calculateOrderSummary } = require('../utils/orderUtils');
 const Donation = require('../models/Donation');
 const QRCode = require('qrcode');
 const PickupLocation = require('../models/PickupLocation');
+const { createAndSendNotification } = require('../utils/notificationUtils');
 
 // -----------------------------
 // Home & Product Discovery
@@ -720,113 +721,81 @@ const getAllVendors = asyncHandler(async (req, res) => {
 // 🛒 GET CART ITEMS
 const getCartItems = asyncHandler(async (req, res) => {
     const userId = req.user._id;
+    console.log("➡️ getCartItems called for user:", userId);
 
-    // 1️⃣ Delivery date text
     const deliveryDate = calculateEstimatedDelivery();
     const deliveryDateText = `Delivery by ${deliveryDate.formatted}`;
 
-    // 2️⃣ Empty summary defaults
     const emptySummary = { totalMRP: 0, discount: 0, deliveryCharge: 0, totalAmount: 0 };
-    const emptySummaryFormatted = {
-        TotalMRP: "₹ 0.00",
-        CouponDiscount: "₹ 0.00",
-        DeliveryCharge: "₹ 0.00",
-        TotalAmount: "₹ 0.00"
-    };
 
     try {
-        // 3️⃣ Fetch user's cart (Populate necessary fields for summary calculation)
         const cart = await Cart.findOne({ user: userId })
             .populate({
                 path: 'items.product',
-                select: 'price vendor name images variety unit' 
+                select: 'price vendor name images variety unit'
             })
             .lean();
 
-        // 4️⃣ Handle empty cart
-        if (!cart || !cart.items?.length || !cart.items.filter(i => i.product).length) {
+        if (!cart) {
+            console.log("🪹 No cart found for user:", userId);
             return res.json({
                 success: true,
-                data: {
-                    items: [],
-                    summary: emptySummaryFormatted,
-                    priceDetails: emptySummary,
-                    couponCode: ''
-                }
+                data: { items: [], summary: emptySummary, priceDetails: emptySummary, couponCode: '' }
             });
         }
 
-        // 5️⃣ Safe coordinates check
-        const user = await User.findById(userId).select('location.coordinates');
-        if (!user?.location?.coordinates || user.location.coordinates.length !== 2) {
-            return res.json({
-                success: true,
-                data: {
-                    items: cart.items.filter(i => i.product).map(i => ({
-                        id: i.product._id,
-                        name: i.product.name,
-                        subtitle: i.product.variety,
-                        mrp: i.product.price,
-                        imageUrl: i.product.images?.[0] || 'https://placehold.co/100x100/CCCCCC/333333?text=Product',
-                        quantity: i.quantity,
-                        unit: i.product.unit,
-                        deliveryText: deliveryDateText
-                    })),
-                    summary: emptySummaryFormatted,
-                    priceDetails: emptySummary,
-                    couponCode: cart.couponCode || ''
-                },
-                message: 'Delivery location not fully set. Price details may be inaccurate.'
-            });
-        }
+        console.log("🧺 Cart found:", JSON.stringify(cart.items, null, 2));
 
-        // 6️⃣ Calculate order summary safely
+        const validItems = cart.items.filter(i => i.product);
+        console.log("✅ Valid items:", validItems.length);
+
         const summaryResult = await calculateOrderSummary(cart, cart.couponCode);
-        const finalSummary = summaryResult?.summary || emptySummary;
+        const summary = summaryResult?.summary || emptySummary;
 
-        // 7️⃣ Format items for frontend
-        const formattedItems = cart.items
-            .filter(i => i.product)
-            .map(i => ({
-                id: i.product._id,
-                name: i.product.name || 'Product Name',
-                subtitle: i.product.variety || 'Hand Picked',
-                mrp: i.product.price,
-                imageUrl: i.product.images?.[0] || 'https://placehold.co/100x100/CCCCCC/333333?text=Product',
-                quantity: i.quantity,
-                unit: i.product.unit,
-                deliveryText: deliveryDateText
-            }));
+        const items = validItems.map(i => ({
+            id: i.product._id,
+            name: i.product.name,
+            subtitle: i.product.variety || '',
+            mrp: i.product.price,
+            imageUrl: i.product.images?.[0] || 'https://placehold.co/100x100',
+            quantity: i.quantity,
+            unit: i.product.unit,
+            deliveryText: deliveryDateText
+        }));
 
-        // 8️⃣ Price details (numbers and formatted strings) - **no donation**
+        console.log("🧾 Items for response:", JSON.stringify(items, null, 2));
+
         const priceDetails = {
-            totalMRP: finalSummary.totalMRP || 0,
-            couponDiscount: finalSummary.discount || 0,
-            deliveryCharge: finalSummary.deliveryCharge || 0,
-            totalAmount: finalSummary.totalAmount || 0
+            totalMRP: summary.totalMRP || 0,
+            couponDiscount: summary.discount || 0,
+            deliveryCharge: summary.deliveryCharge || 0,
+            totalAmount: summary.totalAmount || 0
         };
 
-        // 9️⃣ Send response
+        const formattedSummary = {
+            TotalMRP: `₹ ${priceDetails.totalMRP.toFixed(2)}`,
+            CouponDiscount: `₹ ${priceDetails.couponDiscount.toFixed(2)}`,
+            DeliveryCharge: `₹ ${priceDetails.deliveryCharge.toFixed(2)}`,
+            TotalAmount: `₹ ${priceDetails.totalAmount.toFixed(2)}`
+        };
+
         res.json({
             success: true,
             data: {
-                items: formattedItems,
-                summary: {
-                    TotalMRP: `₹ ${priceDetails.totalMRP.toFixed(2)}`,
-                    CouponDiscount: `₹ ${priceDetails.couponDiscount.toFixed(2)}`,
-                    DeliveryCharge: `₹ ${priceDetails.deliveryCharge.toFixed(2)}`,
-                    TotalAmount: `₹ ${priceDetails.totalAmount.toFixed(2)}`
-                },
+                items,
+                summary: formattedSummary,
                 priceDetails,
                 couponCode: cart.couponCode || ''
             }
         });
-
-    } catch (err) {
-        console.error('❌ Cart fetch error:', err);
+    } catch (error) {
+        console.error('❌ getCartItems error:', error);
         res.status(500).json({ success: false, message: 'Failed to load cart details.' });
     }
 });
+
+
+
 
 
 
@@ -841,30 +810,42 @@ const applyCouponToCart = asyncHandler(async (req, res) => {
         return res.status(400).json({ success: false, message: 'Coupon code is required.' });
     }
 
-    // 1️⃣ Fetch user's cart with populated products
+    // Fetch user's cart
     const cart = await Cart.findOne({ user: userId }).populate('items.product');
     if (!cart || !cart.items.length) {
         return res.status(404).json({ success: false, message: 'Your cart is empty.' });
     }
 
-    // 2️⃣ Validate coupon
+    // Validate coupon
     const coupon = await Coupon.findOne({
         code: code.toUpperCase(),
         status: 'Active',
         startDate: { $lte: new Date() },
         expiryDate: { $gte: new Date() }
     });
+
     if (!coupon) {
         return res.status(400).json({ success: false, message: 'Invalid, expired, or inactive coupon code.' });
     }
 
-    // 3️⃣ Check usage limit per user
-    const userUsageCount = await Order.countDocuments({ user: userId, couponCode: coupon.code });
-    if (coupon.usageLimitPerUser && userUsageCount >= coupon.usageLimitPerUser) {
-        return res.status(400).json({ success: false, message: 'You have already used this coupon the maximum allowed times.' });
+    // Check per-user usage limit using coupon.usedBy
+    const userUsage = coupon.usedBy.find(u => u.user.toString() === userId.toString());
+    if (coupon.usageLimitPerUser && userUsage?.count >= coupon.usageLimitPerUser) {
+        return res.status(400).json({
+            success: false,
+            message: `You have already used this coupon the maximum allowed times (${coupon.usageLimitPerUser}).`
+        });
     }
 
-    // 4️⃣ Calculate total MRP of cart
+    // Check total usage limit
+    if (coupon.totalUsageLimit && coupon.usedCount >= coupon.totalUsageLimit) {
+        return res.status(400).json({
+            success: false,
+            message: 'This coupon has reached its total usage limit.'
+        });
+    }
+
+    // Calculate total MRP of cart
     let totalMRP = 0;
     cart.items.forEach(item => {
         const price = item.product?.price || 0;
@@ -872,27 +853,32 @@ const applyCouponToCart = asyncHandler(async (req, res) => {
         totalMRP += price * qty;
     });
 
-    // 5️⃣ Apply coupon to totalMRP
+    // Check minimum order
+    if (coupon.minimumOrder && totalMRP < coupon.minimumOrder) {
+        return res.status(400).json({
+            success: false,
+            message: `Minimum order amount for this coupon is ₹${coupon.minimumOrder}.`
+        });
+    }
+
+    // Apply discount
     let discount = 0;
     if (coupon.discount.type === 'Percentage') {
         discount = (totalMRP * coupon.discount.value) / 100;
     } else if (coupon.discount.type === 'Fixed') {
         discount = coupon.discount.value;
     }
-
-    // 6️⃣ Cap discount so totalAmount is never negative
     if (discount > totalMRP) discount = totalMRP;
 
-    // 7️⃣ Delivery charge logic
-    const deliveryCharge = totalMRP > 500 ? 0 : 50; // example: free if > 500
-
+    // Delivery charge
+    const deliveryCharge = totalMRP > 500 ? 0 : 50;
     const totalAmount = totalMRP - discount + deliveryCharge;
 
-    // 8️⃣ Save coupon code to cart
+    // Save coupon code to cart
     cart.couponCode = code;
     await cart.save();
 
-    // 9️⃣ Respond
+    // Respond
     res.status(200).json({
         success: true,
         message: 'Coupon applied successfully.',
@@ -929,6 +915,7 @@ const applyCouponToCart = asyncHandler(async (req, res) => {
 
 
 
+
 // @desc    Add item to cart
 // @route   POST /api/buyer/cart/add
 // @access  Private/Buyer
@@ -945,6 +932,8 @@ const addItemToCart = asyncHandler(async (req, res) => {
     const { productId, quantity = 1 } = req.body;
     const userId = req.user._id;
 
+    console.log("➡️ addItemToCart called:", { userId, productId, quantity });
+
     if (!productId || quantity <= 0) {
         return res.status(400).json({
             success: false,
@@ -952,9 +941,9 @@ const addItemToCart = asyncHandler(async (req, res) => {
         });
     }
 
-    // --- 1. Fetch product details ---
+    // --- 1️⃣ Fetch product details ---
     const product = await Product.findById(productId)
-        .select('name price weightPerPiece vendor status images unit');
+        .select('name price weightPerPiece vendor status images unit variety');
 
     if (!product) {
         return res.status(404).json({ success: false, message: 'Product not found.' });
@@ -964,52 +953,60 @@ const addItemToCart = asyncHandler(async (req, res) => {
         return res.status(400).json({ success: false, message: 'Product is out of stock or invalid.' });
     }
 
-    // --- 2. Find or create user's cart ---
-    let cart = await Cart.findOne({ user: userId }).populate('items.product');
+    // --- 2️⃣ Find or create user's cart ---
+    let cart = await Cart.findOne({ user: userId });
     if (!cart) {
+        console.log("🆕 Creating new cart for user:", userId);
         cart = await Cart.create({ user: userId, items: [] });
     }
 
-    // --- 3. Clean invalid/null products from cart ---
-    cart.items = cart.items.filter(i => i.product && i.price != null);
+    console.log("🛒 Cart before adding:", JSON.stringify(cart.items, null, 2));
 
-    // --- 4. Enforce single-vendor rule ---
+    // --- 3️⃣ Vendor consistency check ---
     const existingVendors = cart.items.map(i => i.vendor?.toString()).filter(Boolean);
+
     if (existingVendors.length > 0 && existingVendors[0] !== product.vendor.toString()) {
+        console.log("🚫 Attempted to add from another vendor:", product.vendor.toString());
         return res.status(400).json({
             success: false,
-            message: 'You can only add products from one vendor at a time. Please clear your cart to add items from a different vendor.'
+            message: 'You can only add products from one vendor. Please choose products from the same vendor.'
         });
     }
 
-    // --- 5. Add or update product in cart ---
+    // --- 4️⃣ Add or update product ---
     const existingItemIndex = cart.items.findIndex(
-        i => i.product && i.product._id && i.product._id.toString() === productId
+        i => i.product && i.product.toString() === productId
     );
 
-    const newQuantity = Number(quantity);
-
     if (existingItemIndex > -1) {
-        cart.items[existingItemIndex].quantity += newQuantity;
-        cart.items[existingItemIndex].price = product.price; // update price if changed
+        console.log("🔁 Updating quantity for existing item:", productId);
+        cart.items[existingItemIndex].quantity += Number(quantity);
+        cart.items[existingItemIndex].price = product.price;
     } else {
+        console.log("➕ Adding new product:", productId);
         cart.items.push({
             product: product._id,
             vendor: product.vendor,
-            quantity: newQuantity,
+            quantity: Number(quantity),
             price: product.price
         });
     }
 
     await cart.save();
+    console.log("✅ Cart saved successfully");
 
-    // --- 6. Recalculate summary ---
+    // --- 5️⃣ Recalculate summary ---
     const summary = await calculateOrderSummary(cart, cart.couponCode);
 
-    // --- 7. Format items for frontend response ---
-    const items = cart.items.map(i => ({
+    // --- 6️⃣ Populate for response ---
+    const populatedCart = await Cart.findById(cart._id)
+        .populate('items.product', 'name price variety images unit vendor')
+        .lean();
+
+    const items = populatedCart.items.map(i => ({
         id: i.product._id,
         name: i.product.name,
+        subtitle: i.product.variety || '',
         mrp: i.price,
         imageUrl: i.product.images?.[0] || null,
         quantity: i.quantity,
@@ -1019,13 +1016,19 @@ const addItemToCart = asyncHandler(async (req, res) => {
 
     res.status(200).json({
         success: true,
-        message: 'Item added to cart successfully.',
+        message: 'Item added successfully.',
         data: {
             items,
             summary
         }
     });
 });
+
+
+
+
+
+
 
 
 
@@ -1374,12 +1377,20 @@ const placeOrder = asyncHandler(async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid or expired coupon.' });
         }
 
-        // 🟢 Check per-user usage limit
-        const usedCount = await Order.countDocuments({ buyer: userId, couponCode: coupon.code });
-        if (coupon.usageLimitPerUser && usedCount >= coupon.usageLimitPerUser) {
+        const userUsage = coupon.usedBy.find(u => u.user.toString() === userId.toString());
+        const userUsedCount = userUsage ? userUsage.count : 0;
+
+        if (coupon.usageLimitPerUser && userUsedCount >= coupon.usageLimitPerUser) {
             return res.status(400).json({
                 success: false,
                 message: `You have already used this coupon the maximum allowed times (${coupon.usageLimitPerUser}).`
+            });
+        }
+
+        if (coupon.totalUsageLimit && coupon.usedCount >= coupon.totalUsageLimit) {
+            return res.status(400).json({
+                success: false,
+                message: `This coupon has reached its total usage limit.`
             });
         }
     }
@@ -1451,27 +1462,84 @@ const placeOrder = asyncHandler(async (req, res) => {
         createdOrderIds.push(createdOrder._id);
 
         if (isOnlinePayment && vendor?.upiId) {
-            const transactionRef = `TXN-${createdOrder.orderId.replace('#', '-')}-${Date.now()}`;
-            const upiUrl = `upi://pay?pa=${encodeURIComponent(vendor.upiId)}&pn=${encodeURIComponent(vendor.name)}&am=${summary.totalAmount.toFixed(2)}&tn=${encodeURIComponent(`Payment for Order ${createdOrder.orderId}`)}&tr=${encodeURIComponent(transactionRef)}&cu=INR`;
-            const qrCodeDataUrl = await QRCode.toDataURL(upiUrl);
+  const transactionRef = `TXN-${createdOrder.orderId.replace('#', '-')}-${Date.now()}`;
+  const upiUrl = `upi://pay?pa=${encodeURIComponent(vendor.upiId)}&pn=${encodeURIComponent(vendor.name)}&am=${summary.totalAmount.toFixed(2)}&tn=${encodeURIComponent(`Payment for Order ${createdOrder.orderId}`)}&tr=${encodeURIComponent(transactionRef)}&cu=INR`;
+  const qrCodeDataUrl = await QRCode.toDataURL(upiUrl);
 
-            payments.push({
-                orderId: createdOrder._id,
-                vendorName: vendor.name,
-                upiId: vendor.upiId,
-                amount: summary.totalAmount.toFixed(2),
-                discount: summary.discount || 0,
-                upiUrl,
-                qrCode: qrCodeDataUrl,
-                transactionRef
-            });
-        }
+  // 🕒 Expiry after 2 minutes
+  const qrExpiry = new Date(Date.now() + 2 * 60 * 1000);
+
+  createdOrder.qrExpiry = qrExpiry;
+  await createdOrder.save();
+
+  payments.push({
+    orderId: createdOrder._id,
+    vendorName: vendor.name,
+    upiId: vendor.upiId,
+    amount: Math.round(summary.totalAmount.toFixed(2)),
+    discount: summary.discount || 0,
+    upiUrl,
+    qrCode: qrCodeDataUrl,
+    transactionRef,
+    qrExpiry,
+  });
+
+  // 🧹 Automatically close QR after 2 minutes
+  setTimeout(async () => {
+    const order = await Order.findById(createdOrder._id);
+    if (order && !order.isPaid) {
+      order.qrClosed = true; // Frontend can use this to hide QR
+      await order.save();
+      console.log(`🕒 QR expired for Order: ${order.orderId}`);
+    }
+  }, 2 * 60 * 1000);
+}
+
+
     }
 
-    // --- 7️⃣ Clear cart ---
-    await Cart.deleteOne({ user: userId });
+    // --- 7️⃣ Update coupon usage counts ---
+    if (couponCode && coupon) {
+        coupon.usedCount = (coupon.usedCount || 0) + 1;
 
-    // --- 8️⃣ Respond ---
+        const existingUser = coupon.usedBy.find(u => u.user.toString() === userId.toString());
+        if (existingUser) {
+            existingUser.count += 1;
+        } else {
+            coupon.usedBy.push({ user: userId, count: 1 });
+        }
+
+        if (coupon.totalUsageLimit && coupon.usedCount >= coupon.totalUsageLimit) {
+            coupon.status = 'Expired';
+        }
+
+        await coupon.save();
+    }
+
+    // --- 8️⃣ Clear cart ---
+    const deleteAfter = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
+
+await Cart.updateOne(
+  { user: userId },
+  { deleteAt: deleteAfter } // add a field in schema
+);
+
+
+    // ✅ 9️⃣ Send notification to Admin via Socket.IO and save in DB
+    await createAndSendNotification(
+        req,
+        'New Order Placed',
+        `A new order has been placed by user ${req.user.name || req.user._id}.`,
+        {
+            userId,
+            orderIds: createdOrderIds,
+            totalAmount: grandTotalAmount.toFixed(2),
+            paymentMethod,
+            deliveryType,
+        }
+    );
+
+    // --- 🔟 Respond ---
     res.status(201).json({
         success: true,
         message: isOnlinePayment
@@ -1484,6 +1552,10 @@ const placeOrder = asyncHandler(async (req, res) => {
         payments
     });
 });
+
+
+
+
 
 
 
@@ -3370,7 +3442,21 @@ const donateToAdmin = asyncHandler(async (req, res) => {
     status: isOnline ? 'Pending' : 'Completed',
   });
 
-  // --- 4. Respond ---
+  // --- 4. Send admin notification ---
+  await createAndSendNotification(
+    req,
+    'New Donation Received',
+    `You have received a donation of ₹${amount.toFixed(2)} from a user.`,
+    {
+      donationId: donation._id,
+      donorId: userId,
+      amount,
+      paymentMethod,
+      transactionRef
+    }
+  );
+
+  // --- 5. Respond ---
   res.status(201).json({
     success: true,
     message: isOnline
@@ -3386,6 +3472,7 @@ const donateToAdmin = asyncHandler(async (req, res) => {
     transactionRef,
   });
 });
+
 const getDonationsReceived = asyncHandler(async (req, res) => {
     const { page = 1, limit = 12, sortBy = 'createdAt', sortOrder = -1 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -3429,11 +3516,65 @@ const getDonationsReceived = asyncHandler(async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to retrieve donation data.' });
     }
 });
+const searchProductsByName = asyncHandler(async (req, res) => {
+  const { name } = req.query;
+
+  let query = {};
+
+  // If "name" is provided, filter by it (case-insensitive)
+  if (name && name.trim() !== '') {
+    query.name = { $regex: name.trim(), $options: 'i' };
+  }
+
+  // Fetch products from DB
+  const products = await Product.find(query).populate('vendor', 'name');
+
+  // Handle no products
+  if (!products || products.length === 0) {
+    return res.status(200).json({
+      success: true,
+      message: 'No products found.',
+      products: [],
+    });
+  }
+
+  // Return all products or filtered results
+  res.status(200).json({
+    success: true,
+    count: products.length,
+    products,
+  });
+});
+
+
+const markOrderPaid = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+  const { orderId } = req.params;
+
+  const order = await Order.findOne({ _id: orderId, buyer: userId });
+  if (!order) {
+    return res.status(404).json({ success: false, message: "Order not found." });
+  }
+
+  if (order.isPaid) {
+    return res.status(400).json({ success: false, message: "Order already marked as paid." });
+  }
+
+  order.isPaid = true;
+  order.orderStatus = "Confirmed";
+  await order.save();
+
+  res.json({
+    success: true,
+    message: "Payment confirmed and QR closed.",
+  });
+});
+
 
 
 module.exports = {
-    getHomePageData,getProductsByVendorId,donateToAdmin,getDonationsReceived,
-    getProductDetails,
+    getHomePageData,getProductsByVendorId,donateToAdmin,getDonationsReceived,searchProductsByName,
+    getProductDetails, markOrderPaid,
     getFilteredProducts,
     getVendorsNearYou,
     getCartItems,

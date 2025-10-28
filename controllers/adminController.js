@@ -12,6 +12,7 @@ const mongoose = require('mongoose');   // <-- ADD THIS
 const NotificationSettings = require('../models/NotificationSettings');
 const CustomerSupport = require('../models/CustomerSupport'); 
  const StaticPage = require('../models/StaticPage');
+const { createAndSendNotification } = require('../utils/notificationUtils');
 
 const Address = require('../models/Address');
 
@@ -230,14 +231,17 @@ const addOrUpdateNutritionalValue = asyncHandler(async (req, res) => {
 // @route   DELETE /api/admin/products/:id
 // @access  Private/Admin
 const deleteProduct = asyncHandler(async (req, res) => {
-    const product = await Product.findById(req.params.id);
-    if (product) {
-        await product.remove();
-        res.json({ message: 'Product removed' });
+    const productId = req.params.id;
+
+    const deletedProduct = await Product.findByIdAndDelete(productId);
+
+    if (deletedProduct) {
+        res.status(200).json({ success: true, message: 'Product removed successfully.' });
     } else {
-        res.status(404).json({ message: 'Product not found' });
+        res.status(404).json({ success: false, message: 'Product not found.' });
     }
 });
+
 
 // @desc    Get all vendors for admin view
 // @route   GET /api/admin/vendors
@@ -873,8 +877,7 @@ const deleteBanner = asyncHandler(async (req, res) => {
     const banner = await Banner.findById(req.params.id);
 
     if (!banner) {
-        res.status(404);
-        throw new Error('Banner not found');
+        return res.status(404).json({ success: false, message: 'Banner not found' });
     }
 
     // Delete image from Cloudinary if public_id exists
@@ -887,8 +890,8 @@ const deleteBanner = asyncHandler(async (req, res) => {
         }
     }
 
-    // Remove banner from database
-    await banner.remove();
+    // ✅ Delete the banner from database
+    await Banner.findByIdAndDelete(req.params.id);
 
     res.status(200).json({
         success: true,
@@ -896,6 +899,7 @@ const deleteBanner = asyncHandler(async (req, res) => {
         bannerId: req.params.id
     });
 });
+
 
 
 // @desc    Get all categories
@@ -1098,19 +1102,44 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
 // @access  Private/Admin
 const updateCoupon = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const updates = req.body;
+    const updates = { ...req.body };
 
-    const coupon = await Coupon.findByIdAndUpdate(id, updates, { 
-        new: true, 
-        runValidators: true 
-    });
+    // Prevent overwriting usedCount or usedBy accidentally
+    delete updates.usedCount;
+    delete updates.usedBy;
+
+    // Convert code to uppercase if provided
+    if (updates.code) updates.code = updates.code.toUpperCase();
+
+    // Validate appliesTo values if provided
+    if (updates.appliesTo) {
+        const validCategories = ['All Products', 'Fruits', 'Vegetables', 'Plants', 'Seeds', 'Handicrafts'];
+        const invalid = updates.appliesTo.filter(cat => !validCategories.includes(cat));
+        if (invalid.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: `Invalid category in appliesTo: ${invalid.join(', ')}`
+            });
+        }
+    }
+
+    const coupon = await Coupon.findByIdAndUpdate(
+        id,
+        updates,
+        { new: true, runValidators: true }
+    );
 
     if (!coupon) {
         return res.status(404).json({ success: false, message: 'Coupon not found.' });
     }
 
-    res.status(200).json({ success: true, message: 'Coupon updated successfully.', data: coupon });
+    res.status(200).json({
+        success: true,
+        message: 'Coupon updated successfully.',
+        data: coupon
+    });
 });
+
 
 // @desc    Delete a coupon by ID
 // @route   DELETE /api/admin/coupons/:id
