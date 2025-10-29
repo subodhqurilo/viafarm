@@ -27,6 +27,17 @@ const { createAndSendNotification } = require('../utils/notificationUtils');
 
 // Add this at the top or above your controller function
 
+function getDistanceKm(lat1, lon1, lat2, lon2) {
+  const toRad = (v) => (v * Math.PI) / 180;
+  const R = 6371; // Earth radius in km
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return (R * c).toFixed(2); // round to 2 decimals
+}
 
 
 
@@ -168,7 +179,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
 
     // 1️⃣ Fetch Product with Vendor
     const product = await Product.findById(id)
-        .populate('vendor', 'name address mobileNumber weightPerPiece rating location');
+        .populate('vendor', 'name address mobileNumber weightPerPiece rating location profilePicture');
 
     if (!product) {
         return res.status(404).json({ success: false, message: "Product not found." });
@@ -217,7 +228,8 @@ const getProductDetails = asyncHandler(async (req, res) => {
                 mobileNumber: product.vendor.mobileNumber,
                 rating: product.vendor.rating || 0,
                 address: product.vendor.address || {}, // full address object
-                location: product.vendor.location || {} // coordinates and type
+                location: product.vendor.location || {} ,// coordinates and type
+                profilePicture: product.vendor.profilePicture,
             },
             reviews: {
                 totalCount: await Review.countDocuments({ product: id }),
@@ -353,54 +365,93 @@ const getAllAroundIndiaProducts = asyncHandler(async (req, res) => {
 // controllers/buyerController.js
 
 const getSmartPicks = asyncHandler(async (req, res) => {
-    const { category, limit = 10 } = req.query;
+  const { category } = req.query;
+  const userId = req.user._id;
 
-    // Filter: products in stock and optionally by category
-    const filter = { status: 'In Stock' };
-    if (category) {
-        filter.category = category;
+  // ✅ Get Buyer (for location)
+  const buyer = await User.findById(userId).select('location');
+  if (!buyer?.location?.coordinates?.length) {
+    return res.status(400).json({
+      success: false,
+      message: 'User location not found. Please set your delivery address.',
+    });
+  }
+
+  const [buyerLon, buyerLat] = buyer.location.coordinates;
+
+  // ✅ Haversine formula — distance between two lat/lon points
+  const getDistanceKm = (lat1, lon1, lat2, lon2) => {
+    const toRad = (v) => (v * Math.PI) / 180;
+    const R = 6371; // Earth's radius (km)
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) *
+        Math.cos(toRad(lat2)) *
+        Math.sin(dLon / 2) ** 2;
+    return (R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(2);
+  };
+
+  // ✅ Product filter
+  const filter = { status: 'In Stock' };
+  if (category) filter.category = category;
+
+  // ✅ Fetch all products
+  const products = await Product.find(filter)
+    .sort({ rating: -1, createdAt: -1 })
+    .populate('vendor', 'name profilePicture location');
+
+  if (!products.length) {
+    return res.status(404).json({
+      success: false,
+      message: category
+        ? `No smart picks found for category: ${category}`
+        : 'No smart picks found at this time.',
+    });
+  }
+
+  // ✅ Format each product
+  const formatted = products.map((product) => {
+    const image = product.images?.[0] || null;
+    let distance = 'N/A';
+
+    if (product.vendor?.location?.coordinates?.length) {
+      const [vendorLon, vendorLat] = product.vendor.location.coordinates;
+      distance = `${getDistanceKm(
+        buyerLat,
+        buyerLon,
+        vendorLat,
+        vendorLon
+      )} km`;
     }
 
-    // Fetch products, sorted by rating (highest first), then by latest
-    const products = await Product.find(filter)
-        .sort({ rating: -1, createdAt: -1 })
-        .limit(parseInt(limit))
-        .populate('vendor', 'name profilePicture');
+    return {
+      id: product._id,
+      name: product.name,
+      price: product.price,
+      unit: product.unit || '',
+      weightPerPiece: product.weightPerPiece,
+      rating: product.rating || 0,
+      ratingCount: product.ratingCount || 0,
+      image,
+      vendor: {
+        id: product.vendor?._id,
+        name: product.vendor?.name || 'Unknown Vendor',
+        profilePicture: product.vendor?.profilePicture || null,
+      },
+      distanceFromVendor: distance, // ✅ Added field
+    };
+  });
 
-    if (products.length === 0) {
-        const message = category
-            ? `No smart picks found for category: ${category}`
-            : 'No smart picks found at this time.';
-        return res.status(404).json({ success: false, message });
-    }
-
-    // Format products for frontend
-    const formatted = products.map(product => {
-        const image = product.images && product.images.length > 0 ? product.images[0] : null;
-
-        return {
-            id: product._id,
-            name: product.name,
-            weightPerPiece: product.weightPerPiece,
-            price: product.price,
-            unit: product.unit || '',
-            rating: product.rating || 0,         // Now shows updated average rating
-            ratingCount: product.ratingCount || 0, // Number of reviews
-            image,
-            vendor: {
-                id: product.vendor?._id,
-                name: product.vendor?.name || 'Unknown Vendor',
-                profilePicture: product.vendor?.profilePicture || null
-            }
-        };
-    });
-
-    res.status(200).json({
-        success: true,
-        count: formatted.length,
-        data: formatted
-    });
+  // ✅ Response
+  res.status(200).json({
+    success: true,
+    count: formatted.length,
+    data: formatted,
+  });
 });
+
 
 
 
@@ -411,6 +462,7 @@ const getSmartPicks = asyncHandler(async (req, res) => {
 // @desc    Get all products grouped by category for the logged-in vendor
 // @route   GET /api/vendor/products/by-category
 // @access  Private/Vendor
+
 const getProductsByCategory = asyncHandler(async (req, res) => {
     const { category } = req.query;
 
@@ -426,6 +478,7 @@ const getProductsByCategory = asyncHandler(async (req, res) => {
         data: products,
     });
 });
+
 
 
 
@@ -720,79 +773,109 @@ const getAllVendors = asyncHandler(async (req, res) => {
 
 // 🛒 GET CART ITEMS
 const getCartItems = asyncHandler(async (req, res) => {
-    const userId = req.user._id;
-    console.log("➡️ getCartItems called for user:", userId);
+  const userId = req.user._id;
 
-    const deliveryDate = calculateEstimatedDelivery();
-    const deliveryDateText = `Delivery by ${deliveryDate.formatted}`;
+  const deliveryDate = calculateEstimatedDelivery();
+  const deliveryDateText = `Delivery by ${deliveryDate.formatted}`;
 
-    const emptySummary = { totalMRP: 0, discount: 0, deliveryCharge: 0, totalAmount: 0 };
+  const emptySummary = {
+    totalMRP: 0,
+    discount: 0,
+    deliveryCharge: 0,
+    totalAmount: 0,
+  };
 
-    try {
-        const cart = await Cart.findOne({ user: userId })
-            .populate({
-                path: 'items.product',
-                select: 'price vendor name images variety unit'
-            })
-            .lean();
+  try {
+    const cart = await Cart.findOne({ user: userId })
+      .populate({
+        path: 'items.product',
+        select: 'price vendor name images variety unit',
+        populate: {
+          path: 'vendor',
+          select:
+            'name mobileNumber email upiId address vendorDetails profilePicture status location',
+        },
+      })
+      .lean();
 
-        if (!cart) {
-            console.log("🪹 No cart found for user:", userId);
-            return res.json({
-                success: true,
-                data: { items: [], summary: emptySummary, priceDetails: emptySummary, couponCode: '' }
-            });
-        }
-
-        console.log("🧺 Cart found:", JSON.stringify(cart.items, null, 2));
-
-        const validItems = cart.items.filter(i => i.product);
-        console.log("✅ Valid items:", validItems.length);
-
-        const summaryResult = await calculateOrderSummary(cart, cart.couponCode);
-        const summary = summaryResult?.summary || emptySummary;
-
-        const items = validItems.map(i => ({
-            id: i.product._id,
-            name: i.product.name,
-            subtitle: i.product.variety || '',
-            mrp: i.product.price,
-            imageUrl: i.product.images?.[0] || 'https://placehold.co/100x100',
-            quantity: i.quantity,
-            unit: i.product.unit,
-            deliveryText: deliveryDateText
-        }));
-
-        console.log("🧾 Items for response:", JSON.stringify(items, null, 2));
-
-        const priceDetails = {
-            totalMRP: summary.totalMRP || 0,
-            couponDiscount: summary.discount || 0,
-            deliveryCharge: summary.deliveryCharge || 0,
-            totalAmount: summary.totalAmount || 0
-        };
-
-        const formattedSummary = {
-            TotalMRP: `₹ ${priceDetails.totalMRP.toFixed(2)}`,
-            CouponDiscount: `₹ ${priceDetails.couponDiscount.toFixed(2)}`,
-            DeliveryCharge: `₹ ${priceDetails.deliveryCharge.toFixed(2)}`,
-            TotalAmount: `₹ ${priceDetails.totalAmount.toFixed(2)}`
-        };
-
-        res.json({
-            success: true,
-            data: {
-                items,
-                summary: formattedSummary,
-                priceDetails,
-                couponCode: cart.couponCode || ''
-            }
-        });
-    } catch (error) {
-        console.error('❌ getCartItems error:', error);
-        res.status(500).json({ success: false, message: 'Failed to load cart details.' });
+    if (!cart) {
+      return res.json({
+        success: true,
+        data: {
+          items: [],
+          summary: emptySummary,
+          priceDetails: emptySummary,
+          couponCode: '',
+        },
+      });
     }
+
+    const validItems = cart.items.filter((i) => i.product);
+
+    const summaryResult = await calculateOrderSummary(cart, cart.couponCode);
+    const summary = summaryResult?.summary || emptySummary;
+
+    const items = validItems.map((i) => {
+      const vendor = i.product.vendor || {};
+      return {
+        id: i.product._id,
+        name: i.product.name,
+        subtitle: i.product.variety || '',
+        mrp: i.product.price,
+        imageUrl: i.product.images?.[0] || 'https://placehold.co/100x100',
+        quantity: i.quantity,
+        unit: i.product.unit,
+        deliveryText: deliveryDateText,
+        vendor: {
+          id: vendor._id,
+          name: vendor.name,
+          mobileNumber: vendor.mobileNumber,
+          email: vendor.email,
+          upiId: vendor.upiId,
+          contactNo: vendor.vendorDetails?.contactNo,
+          about: vendor.vendorDetails?.about,
+          location: vendor.vendorDetails?.location,
+          deliveryRegion: vendor.vendorDetails?.deliveryRegion,
+          totalOrders: vendor.vendorDetails?.totalOrders,
+          profilePicture: vendor.profilePicture,
+          address: vendor.address || {},
+          geoLocation: vendor.location?.coordinates || [0, 0],
+          status: vendor.status,
+        },
+      };
+    });
+
+    const priceDetails = {
+      totalMRP: summary.totalMRP || 0,
+      couponDiscount: summary.discount || 0,
+      deliveryCharge: summary.deliveryCharge || 0,
+      totalAmount: summary.totalAmount || 0,
+    };
+
+    const formattedSummary = {
+      TotalMRP: `₹ ${priceDetails.totalMRP.toFixed(2)}`,
+      CouponDiscount: `₹ ${priceDetails.couponDiscount.toFixed(2)}`,
+      DeliveryCharge: `₹ ${priceDetails.deliveryCharge.toFixed(2)}`,
+      TotalAmount: `₹ ${priceDetails.totalAmount.toFixed(2)}`,
+    };
+
+    res.json({
+      success: true,
+      data: {
+        items,
+        summary: formattedSummary,
+        priceDetails,
+        couponCode: cart.couponCode || '',
+      },
+    });
+  } catch (error) {
+    console.error('❌ getCartItems error:', error);
+    res
+      .status(500)
+      .json({ success: false, message: 'Failed to load cart details.' });
+  }
 });
+
 
 
 
@@ -932,7 +1015,6 @@ const addItemToCart = asyncHandler(async (req, res) => {
     const { productId, quantity = 1 } = req.body;
     const userId = req.user._id;
 
-    console.log("➡️ addItemToCart called:", { userId, productId, quantity });
 
     if (!productId || quantity <= 0) {
         return res.status(400).json({
@@ -956,17 +1038,14 @@ const addItemToCart = asyncHandler(async (req, res) => {
     // --- 2️⃣ Find or create user's cart ---
     let cart = await Cart.findOne({ user: userId });
     if (!cart) {
-        console.log("🆕 Creating new cart for user:", userId);
         cart = await Cart.create({ user: userId, items: [] });
     }
 
-    console.log("🛒 Cart before adding:", JSON.stringify(cart.items, null, 2));
 
     // --- 3️⃣ Vendor consistency check ---
     const existingVendors = cart.items.map(i => i.vendor?.toString()).filter(Boolean);
 
     if (existingVendors.length > 0 && existingVendors[0] !== product.vendor.toString()) {
-        console.log("🚫 Attempted to add from another vendor:", product.vendor.toString());
         return res.status(400).json({
             success: false,
             message: 'You can only add products from one vendor. Please choose products from the same vendor.'
@@ -979,11 +1058,9 @@ const addItemToCart = asyncHandler(async (req, res) => {
     );
 
     if (existingItemIndex > -1) {
-        console.log("🔁 Updating quantity for existing item:", productId);
         cart.items[existingItemIndex].quantity += Number(quantity);
         cart.items[existingItemIndex].price = product.price;
     } else {
-        console.log("➕ Adding new product:", productId);
         cart.items.push({
             product: product._id,
             vendor: product.vendor,
@@ -993,7 +1070,6 @@ const addItemToCart = asyncHandler(async (req, res) => {
     }
 
     await cart.save();
-    console.log("✅ Cart saved successfully");
 
     // --- 5️⃣ Recalculate summary ---
     const summary = await calculateOrderSummary(cart, cart.couponCode);
@@ -1350,8 +1426,14 @@ const placeOrder = asyncHandler(async (req, res) => {
         return res.status(400).json({ success: false, message: 'Cash payment is only allowed for Pickup orders.' });
     }
 
-    if (deliveryType === 'Pickup' && !pickupSlot) {
-        return res.status(400).json({ success: false, message: 'Pickup slot is required for pickup orders.' });
+    // --- 🕒 Validate pickup slot ---
+    if (deliveryType === 'Pickup') {
+        if (!pickupSlot || !pickupSlot.date || !pickupSlot.startTime || !pickupSlot.endTime) {
+            return res.status(400).json({
+                success: false,
+                message: 'Pickup slot must include date, startTime, and endTime.'
+            });
+        }
     }
 
     // --- 3️⃣ Validate Address ---
@@ -1436,6 +1518,7 @@ const placeOrder = asyncHandler(async (req, res) => {
 
         const vendor = await User.findById(vendorId).select('name upiId').lean();
 
+        // ✅ Create Order with proper pickup slot format
         const newOrder = new Order({
             orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
             buyer: userId,
@@ -1452,7 +1535,11 @@ const placeOrder = asyncHandler(async (req, res) => {
             orderType: deliveryType,
             orderStatus,
             shippingAddress: shippingAddress || null,
-            pickupSlot: pickupSlot || null,
+            pickupSlot: deliveryType === 'Pickup' ? {
+                date: pickupSlot.date,
+                startTime: pickupSlot.startTime,
+                endTime: pickupSlot.endTime
+            } : null,
             comments: comments || '',
             paymentMethod,
             isPaid
@@ -1461,41 +1548,39 @@ const placeOrder = asyncHandler(async (req, res) => {
         const createdOrder = await newOrder.save();
         createdOrderIds.push(createdOrder._id);
 
+        // --- 💰 Generate UPI Payment (if applicable) ---
         if (isOnlinePayment && vendor?.upiId) {
-  const transactionRef = `TXN-${createdOrder.orderId.replace('#', '-')}-${Date.now()}`;
-  const upiUrl = `upi://pay?pa=${encodeURIComponent(vendor.upiId)}&pn=${encodeURIComponent(vendor.name)}&am=${summary.totalAmount.toFixed(2)}&tn=${encodeURIComponent(`Payment for Order ${createdOrder.orderId}`)}&tr=${encodeURIComponent(transactionRef)}&cu=INR`;
-  const qrCodeDataUrl = await QRCode.toDataURL(upiUrl);
+            const transactionRef = `TXN-${createdOrder.orderId.replace('#', '-')}-${Date.now()}`;
+            const upiUrl = `upi://pay?pa=${encodeURIComponent(vendor.upiId)}&pn=${encodeURIComponent(vendor.name)}&am=${summary.totalAmount.toFixed(2)}&tn=${encodeURIComponent(`Payment for Order ${createdOrder.orderId}`)}&tr=${encodeURIComponent(transactionRef)}&cu=INR`;
+            const qrCodeDataUrl = await QRCode.toDataURL(upiUrl);
 
-  // 🕒 Expiry after 2 minutes
-  const qrExpiry = new Date(Date.now() + 2 * 60 * 1000);
+            // 🕒 Expiry after 2 minutes
+            const qrExpiry = new Date(Date.now() + 2 * 60 * 1000);
 
-  createdOrder.qrExpiry = qrExpiry;
-  await createdOrder.save();
+            createdOrder.qrExpiry = qrExpiry;
+            await createdOrder.save();
 
-  payments.push({
-    orderId: createdOrder._id,
-    vendorName: vendor.name,
-    upiId: vendor.upiId,
-    amount: Math.round(summary.totalAmount.toFixed(2)),
-    discount: summary.discount || 0,
-    upiUrl,
-    qrCode: qrCodeDataUrl,
-    transactionRef,
-    qrExpiry,
-  });
+            payments.push({
+                orderId: createdOrder._id,
+                vendorName: vendor.name,
+                upiId: vendor.upiId,
+                amount: Math.round(summary.totalAmount.toFixed(2)),
+                discount: summary.discount || 0,
+                upiUrl,
+                qrCode: qrCodeDataUrl,
+                transactionRef,
+                qrExpiry,
+            });
 
-  // 🧹 Automatically close QR after 2 minutes
-  setTimeout(async () => {
-    const order = await Order.findById(createdOrder._id);
-    if (order && !order.isPaid) {
-      order.qrClosed = true; // Frontend can use this to hide QR
-      await order.save();
-      console.log(`🕒 QR expired for Order: ${order.orderId}`);
-    }
-  }, 2 * 60 * 1000);
-}
-
-
+            // 🧹 Automatically close QR after 2 minutes
+            setTimeout(async () => {
+                const order = await Order.findById(createdOrder._id);
+                if (order && !order.isPaid) {
+                    order.qrClosed = true; // Frontend can use this to hide QR
+                    await order.save();
+                }
+            }, 2 * 60 * 1000);
+        }
     }
 
     // --- 7️⃣ Update coupon usage counts ---
@@ -1518,14 +1603,9 @@ const placeOrder = asyncHandler(async (req, res) => {
 
     // --- 8️⃣ Clear cart ---
     const deleteAfter = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
+    await Cart.updateOne({ user: userId }, { deleteAt: deleteAfter });
 
-await Cart.updateOne(
-  { user: userId },
-  { deleteAt: deleteAfter } // add a field in schema
-);
-
-
-    // ✅ 9️⃣ Send notification to Admin via Socket.IO and save in DB
+    // ✅ 9️⃣ Notify Admin
     await createAndSendNotification(
         req,
         'New Order Placed',
@@ -1539,7 +1619,7 @@ await Cart.updateOne(
         }
     );
 
-    // --- 🔟 Respond ---
+    // --- 🔟 Response ---
     res.status(201).json({
         success: true,
         message: isOnlinePayment
@@ -1549,9 +1629,11 @@ await Cart.updateOne(
         totalAmountToPay: grandTotalAmount.toFixed(2),
         totalDiscount: totalDiscount.toFixed(2),
         paymentMethod,
-        payments
+        payments,
+        pickupSlot: deliveryType === 'Pickup' ? pickupSlot : null
     });
 });
+
 
 
 
@@ -1897,8 +1979,6 @@ const getHighlightedCoupon = asyncHandler(async (req, res) => {
     }
 
     // 3️⃣ Log the type of coupon for debugging
-    console.log(`Selected coupon: ${bestCoupon.code}`);
-    console.log(`Applies to: ${bestCoupon.appliesTo}`);
     if (bestCoupon.applicableId) console.log(`Applicable ID: ${bestCoupon.applicableId}`);
 
     // 4️⃣ Return response

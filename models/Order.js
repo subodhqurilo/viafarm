@@ -60,9 +60,13 @@ orderStatus: {
   shippingAddress: {
     type: Object, // embedded shipping address object
   },
+  
   pickupSlot: {
-    type: Date,
-  },
+  date: { type: Date, required: true },
+  startTime: { type: String, required: true },
+  endTime: { type: String, required: true }
+},
+
   paymentMethod: {
     type: String,
     default: 'UPI',

@@ -60,6 +60,7 @@ router.get('/update-location', vendorController.getVendorLocationDetails);
 
 router.post('/change-password', vendorController.changePassword);
 router.post('/logout', vendorController.logout);
+router.put('/updatestatus', vendorController.updateUserStatus);
 
 // -------------------------
 // Role-based protection (Vendor only routes)
