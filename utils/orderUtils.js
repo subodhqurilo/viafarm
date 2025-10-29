@@ -46,7 +46,6 @@ async function getDeliveryCharge(buyerId, vendorId, totalWeightKg = 1) {
 
         return parseFloat(charge.toFixed(2));
     } catch (err) {
-        console.error('Delivery charge calc error:', err);
         return 20;
     }
 }

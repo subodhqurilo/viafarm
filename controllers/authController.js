@@ -203,14 +203,9 @@ exports.login = async (req, res) => {
   const { mobileNumber, password } = req.body;
 
   try {
-    console.log("🔹 Login attempt:", { mobileNumber, password });
 
     const user = await User.findOne({ mobileNumber });
-    console.log("🔹 User found:", user ? {
-      mobileNumber: user.mobileNumber,
-      isVerified: user.isVerified,
-      password: user.password
-    } : null);
+
 
     if (!user || !user.isVerified) {
       return res.status(400).json({ status: 'error', message: 'User not found or not verified.' });
@@ -225,14 +220,12 @@ exports.login = async (req, res) => {
 
     // Use schema method to compare
     const isMatch = await user.matchPassword(password);
-    console.log("🔹 Password match result:", isMatch);
 
     if (!isMatch) {
       return res.status(400).json({ status: 'error', message: 'Invalid credentials.' });
     }
 
     const token = generateToken(user);
-    console.log("🔹 JWT generated:", token);
 
     res.status(200).json({
       status: 'success',
@@ -241,7 +234,6 @@ exports.login = async (req, res) => {
     });
 
   } catch (err) {
-    console.error("🔹 Login error:", err);
     res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
   }
 };
@@ -364,7 +356,6 @@ exports.forgotPassword = async (req, res) => {
       // Optional: send OTP via SMS in production
       // await smsService.sendOTP(mobileNumber, otp);
 
-      console.log(`🔐 OTP for ${mobileNumber}: ${otp}`); // remove in production
     }
 
     res.status(200).json({
@@ -470,13 +461,11 @@ exports.adminSignup = asyncHandler(async (req, res) => {
 exports.adminLogin = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
 
-  console.log("🔹 Admin login attempt:", { email, password });
 
   if (!email || !password)
     return res.status(400).json({ success: false, message: 'Email and password are required.' });
 
   const user = await User.findOne({ email });
-  console.log("🔹 Admin user found:", user ? { email: user.email, role: user.role } : null);
 
   if (!user)
     return res.status(401).json({ success: false, message: 'Invalid credentials.' });
@@ -486,7 +475,6 @@ exports.adminLogin = asyncHandler(async (req, res) => {
 
   // Compare password using bcrypt
   const isMatch = await bcrypt.compare(password, user.password);
-  console.log("🔹 Password match:", isMatch);
 
   if (!isMatch)
     return res.status(401).json({ success: false, message: 'Invalid password' });
@@ -535,8 +523,6 @@ exports.adminrequestPasswordReset = asyncHandler(async (req, res) => {
     user.passwordResetExpires = Date.now() + 60 * 60 * 1000; // 1 hour
 
     await user.save();
-console.log("✅ Saved reset token in DB:", user.passwordResetToken);
-console.log("⏳ Expires at:", user.passwordResetExpires);
     // Construct reset URL (raw token in URL)
     const resetUrl = `${req.protocol}://${req.get('host')}/api/auth/reset-password/${resetToken}`;
 
@@ -579,8 +565,6 @@ exports.adminresetPassword = asyncHandler(async (req, res) => {
     const rawToken = req.params.token;
     const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
 
-    console.log("🔑 Raw token from URL:", rawToken);
-    console.log("🔒 Hashed token from URL:", hashedToken);
 
     const { password, confirmPassword } = req.body;
 
@@ -598,7 +582,6 @@ exports.adminresetPassword = asyncHandler(async (req, res) => {
     });
 
     if (!user) {
-        console.log("❌ No user found for:", hashedToken);
         return res.status(400).json({ success: false, message: 'Invalid or expired token.' });
     }
 

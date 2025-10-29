@@ -83,7 +83,6 @@ const getDashboardData = asyncHandler(async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("❌ Dashboard Error:", error);
     res.status(500).json({
       success: false,
       message: "Failed to fetch dashboard data.",
@@ -809,6 +808,33 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
     });
 });
 
+const updateUserStatus = asyncHandler(async (req, res) => {
+    const { status } = req.body; // Expected: "Active" or "Inactive"
+    const userId = req.user._id; // ✅ Vendor's own ID from token
+
+    if (!status || !['Active', 'Inactive'].includes(status)) {
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid status. Must be Active or Inactive.'
+        });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+        userId,
+        { $set: { status } },
+        { new: true, runValidators: true }
+    ).select('name role status mobileNumber');
+
+    if (!updatedUser) {
+        return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    res.status(200).json({
+        success: true,
+        message: `Your status has been updated to ${status}.`,
+        data: updatedUser
+    });
+});
 
 
 
@@ -1556,7 +1582,7 @@ const logout = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-    getDashboardData,
+    getDashboardData,updateUserStatus,
     getVendorProducts,
     addProduct,
     updateProduct,

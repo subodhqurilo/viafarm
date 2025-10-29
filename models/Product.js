@@ -62,7 +62,7 @@ weightPerPiece: {
     type: Date,
     default: Date.now,
   },
-  rating: { type: Number, default: 0 },       // Average rating
+  rating: { type: Number, default: 5 },       // Average rating
   ratingCount: { type: Number, default: 0 },
 }, { timestamps: true });
 

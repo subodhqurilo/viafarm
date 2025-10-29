@@ -65,11 +65,10 @@ const couponSchema = new mongoose.Schema({
   vendor: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: function() {
-      // Only required if coupon is NOT for all products
-      return !this.appliesTo.includes('All Products');
-    }
+    required: false, // ✅ not required, so admin coupons can skip this
+    default: null
   },
+
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     required: true,

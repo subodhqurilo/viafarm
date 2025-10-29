@@ -25,14 +25,12 @@ exports.sendOTP = async (mobile, otp) => {
 
     const response = await axios.get(apiUrl);
 
-    console.log("📩 SMS API Raw Response:", response.data);
 
     if (
       response.data?.status === "OK" ||
       response.data?.type === "SUCCESS" ||
       (typeof response.data === "string" && response.data.includes("SUCCESS"))
     ) {
-      console.log(`✅ OTP (${otp}) sent successfully to ${mobile}`);
       return true;
     } else {
       console.error("❌ SMS sending failed:", response.data);

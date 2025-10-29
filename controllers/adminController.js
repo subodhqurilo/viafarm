@@ -825,6 +825,7 @@ const getBannersByPlacement = asyncHandler(async (req, res) => {
 
 const createBanner = asyncHandler(async (req, res) => {
     // 1️⃣ Check if files are uploaded
+    
     if (!req.files || req.files.length === 0) {
         res.status(400);
         throw new Error('At least one image file is required');
@@ -1007,50 +1008,75 @@ const getCategoryById = asyncHandler(async (req, res) => {
 // @route   GET /api/admin/manage-app/coupons
 // @access  Private/Admin
 const createCoupon = asyncHandler(async (req, res) => {
-    const adminId = req.user._id; // Admin creating the coupon
-    const {
-        code,
-        discount, // { value: Number, type: 'Percentage'|'Fixed' }
-        minimumOrder = 0,
-        usageLimitPerUser = 1,
-        totalUsageLimit = 0,
-        startDate,
-        expiryDate,
-        appliesTo = ['All Products'], // Array of categories
-        applicableProducts = [] // Optional: array of product IDs
-    } = req.body;
+    try {
+        const adminId = req.user._id; // Admin creating the coupon
 
-    // 1️⃣ Check if coupon code exists
-    const existingCoupon = await Coupon.findOne({ code: code.toUpperCase() });
-    if (existingCoupon) {
-        return res.status(400).json({ success: false, message: 'Coupon code already exists.' });
+        const {
+            code,
+            discount, // { value: Number, type: 'Percentage' | 'Fixed' }
+            minimumOrder = 0,
+            usageLimitPerUser = 1,
+            totalUsageLimit = 0,
+            startDate,
+            expiryDate,
+            appliesTo = [], // e.g. ['All Products'] or ['Fruits', 'Plants']
+            applicableProducts = [] // Optional: product IDs
+        } = req.body;
+
+        // 1️⃣ Required fields
+        if (!code || !discount || !discount.value || !discount.type || !startDate || !expiryDate) {
+            return res.status(400).json({
+                success: false,
+                message: 'Missing required fields (code, discount, startDate, expiryDate).'
+            });
+        }
+
+        // 2️⃣ Check if coupon code already exists
+        const existingCoupon = await Coupon.findOne({ code: code.toUpperCase() });
+        if (existingCoupon) {
+            return res.status(400).json({ success: false, message: 'Coupon code already exists.' });
+        }
+
+        // 3️⃣ Validate dates
+        if (new Date(expiryDate) <= new Date(startDate)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Expiry date must be after start date.'
+            });
+        }
+
+        // 4️⃣ Normalize data
+        const upperCaseCode = code.toUpperCase();
+
+        // 5️⃣ Create the coupon
+        const newCoupon = await Coupon.create({
+            code: upperCaseCode,
+            discount,
+            minimumOrder,
+            usageLimitPerUser,
+            totalUsageLimit,
+            startDate,
+            expiryDate,
+            appliesTo: appliesTo.length > 0 ? appliesTo : ['All Products'],
+            applicableProducts,
+            vendor: null, // null = global (admin coupon)
+            createdBy: adminId
+        });
+
+        // 6️⃣ Response
+        res.status(201).json({
+            success: true,
+            message: 'Coupon created successfully.',
+            data: newCoupon
+        });
+    } catch (error) {
+        console.error('❌ Error creating coupon:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to create coupon.',
+            error: error.message
+        });
     }
-
-    // 2️⃣ Validate dates
-    if (new Date(expiryDate) <= new Date(startDate)) {
-        return res.status(400).json({ success: false, message: 'Expiry date must be after start date.' });
-    }
-
-    // 3️⃣ Create coupon (vendor=null => applicable to all vendors)
-    const newCoupon = await Coupon.create({
-        code: code.toUpperCase(),
-        discount,
-        minimumOrder,
-        usageLimitPerUser,
-        totalUsageLimit,
-        startDate,
-        expiryDate,
-        appliesTo,
-        applicableProducts,
-        vendor: null,       // null indicates coupon applies to all vendors
-        createdBy: adminId
-    });
-
-    res.status(201).json({
-        success: true,
-        message: 'Coupon created successfully and is applicable to all vendors.',
-        data: newCoupon
-    });
 });
 
 
@@ -1061,36 +1087,33 @@ const createCoupon = asyncHandler(async (req, res) => {
 // @route   GET /api/admin/coupons
 // @access  Private/Admin
 const getAdminCoupons = asyncHandler(async (req, res) => {
-    const { q, status, page = 1, limit = 12 } = req.query;
+  const { q, status } = req.query;
+  const user = req.user || {};
 
-    // Build query object
-    const query = {};
-    if (q) {
-        query.code = { $regex: q, $options: 'i' }; // search by code (case-insensitive)
-    }
-    if (status) {
-        query.status = status;
-    }
+  const query = {};
 
-    // Pagination
-    const pageNumber = parseInt(page) || 1;
-    const pageSize = parseInt(limit) || 12;
+  // 🔍 Optional filters
+  if (q) query.code = { $regex: q, $options: 'i' };
+  if (status) query.status = status;
 
-    const coupons = await Coupon.find(query)
-        .skip((pageNumber - 1) * pageSize)
-        .limit(pageSize)
-        .sort({ createdAt: -1 });
+  // 🔒 Restrict vendors to their own coupons
+  if (user.role === 'vendor') {
+    query.createdBy = user._id;
+  }
 
-    const totalCoupons = await Coupon.countDocuments(query);
+  // 🧾 Fetch all coupons without pagination
+  const coupons = await Coupon.find(query)
+    .populate('createdBy', 'name email role')
+    .sort({ createdAt: -1 });
 
-    res.status(200).json({
-        success: true,
-        data: coupons,
-        page: pageNumber,
-        pages: Math.ceil(totalCoupons / pageSize),
-        total: totalCoupons,
-    });
+  res.status(200).json({
+    success: true,
+    count: coupons.length,
+    data: coupons,
+  });
 });
+
+
 
 
 
@@ -1104,14 +1127,21 @@ const updateCoupon = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const updates = { ...req.body };
 
-    // Prevent overwriting usedCount or usedBy accidentally
-    delete updates.usedCount;
-    delete updates.usedBy;
+    // 1️⃣ Validate ID
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: 'Invalid coupon ID.' });
+    }
 
-    // Convert code to uppercase if provided
-    if (updates.code) updates.code = updates.code.toUpperCase();
+    // 2️⃣ Protect system fields
+    const protectedFields = ['usedCount', 'usedBy', 'createdBy', 'vendor'];
+    protectedFields.forEach(field => delete updates[field]);
 
-    // Validate appliesTo values if provided
+    // 3️⃣ Auto uppercase coupon code
+    if (updates.code) {
+        updates.code = updates.code.toUpperCase();
+    }
+
+    // 4️⃣ Validate category (appliesTo)
     if (updates.appliesTo) {
         const validCategories = ['All Products', 'Fruits', 'Vegetables', 'Plants', 'Seeds', 'Handicrafts'];
         const invalid = updates.appliesTo.filter(cat => !validCategories.includes(cat));
@@ -1123,22 +1153,34 @@ const updateCoupon = asyncHandler(async (req, res) => {
         }
     }
 
-    const coupon = await Coupon.findByIdAndUpdate(
-        id,
-        updates,
-        { new: true, runValidators: true }
-    );
+    // 5️⃣ Validate dates
+    if (updates.startDate && updates.expiryDate) {
+        if (new Date(updates.expiryDate) <= new Date(updates.startDate)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Expiry date must be after start date.'
+            });
+        }
+    }
+
+    // 6️⃣ Update coupon
+    const coupon = await Coupon.findByIdAndUpdate(id, updates, {
+        new: true,
+        runValidators: true
+    });
 
     if (!coupon) {
         return res.status(404).json({ success: false, message: 'Coupon not found.' });
     }
 
+    // 7️⃣ Response
     res.status(200).json({
         success: true,
         message: 'Coupon updated successfully.',
         data: coupon
     });
 });
+
 
 
 // @desc    Delete a coupon by ID

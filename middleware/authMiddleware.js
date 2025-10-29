@@ -31,12 +31,9 @@ const authMiddleware = async (req, res, next) => {
 
 // Role-based authorization middleware
 const authorizeRoles = (...allowedRoles) => {
-    console.log("j",allowedRoles)
   return (req, res, next) => {
-        console.log('Decoded user:', req.user.role); // <-- check what role is
 
     if (!req.user || !allowedRoles.includes(req.user.role)) {
-          console.log('User role not allowed:', req.user.role, 'Allowed roles:', allowedRoles);
 []
       return res.status(403).json({ message: `Access denied: ${req.user.role}` });
     }
