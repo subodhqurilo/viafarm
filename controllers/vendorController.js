@@ -1259,7 +1259,8 @@ const getUserProfile = asyncHandler(async (req, res) => {
         upiId: user.upiId,
         address: user.address,
         language: user.language,
-        about: vendorDetails.about || '' // now safe and always returns string
+        about: vendorDetails.about || '', // now safe and always returns string
+        status :user.status,
     };
 
     // Include extra vendor info if role is Vendor
@@ -1279,97 +1280,108 @@ const getUserProfile = asyncHandler(async (req, res) => {
 
 
 const updateUserProfile = asyncHandler(async (req, res) => {
-    const { name, mobileNumber, upiId, about } = req.body;
+  const { name, mobileNumber, upiId, about, status } = req.body;
 
-    // 1️⃣ Find User
-    // NOTE: Using req.user._id is the safest way to find the authenticated user.
-    const user = await User.findById(req.user._id); 
-    if (!user) {
-        return res.status(404).json({ success: false, message: 'User not found.' });
-    }
+  // 1️⃣ Find User
+  const user = await User.findById(req.user._id);
+  if (!user) {
+    return res.status(404).json({ success: false, message: 'User not found.' });
+  }
 
-    // 2️⃣ Validation Checks
-    if (!name || !mobileNumber || !upiId) {
-        return res.status(400).json({
-            success: false,
-            message: 'Name, Mobile Number, and UPI Id are mandatory fields.'
-        });
-    }
-
-    // Optional: Mobile number validation (10 digits)
-    if (!/^\d{10}$/.test(mobileNumber)) {
-        return res.status(400).json({
-            success: false,
-            message: 'Mobile number must be a valid 10-digit number.'
-        });
-    }
-    
-    // Check for mobile number duplication if changed
-    if (mobileNumber !== user.mobileNumber) {
-        const existingUser = await User.findOne({ mobileNumber });
-        if (existingUser) {
-            return res.status(400).json({ success: false, message: 'This mobile number is already registered.' });
-        }
-    }
-
-
-    // 3️⃣ Handle Profile Picture Upload (Only if a file is present)
-    if (req.file) {
-        try {
-            // Upload new image to Cloudinary (req.file.path contains the temp path)
-            const result = await cloudinary.uploader.upload(req.file.path, {
-                folder: 'profile-images',
-            });
-            // Assuming your User model uses 'profileImage' or 'profilePicture'
-            user.profileImage = result.secure_url; 
-        } catch (err) {
-            console.error('Cloudinary error:', err);
-            return res.status(500).json({ success: false, message: 'Image upload failed.' });
-        }
-    }
-
-    // 4️⃣ Update Text Fields
-    user.name = name;
-    user.mobileNumber = mobileNumber;
-    user.upiId = upiId;
-
-    // Vendor About (ensure vendorDetails exists and update 'about')
-    user.vendorDetails = user.vendorDetails || {};
-    user.vendorDetails.about = about || user.vendorDetails.about;
-
-    // 5️⃣ Handle Address Update (If separate address fields are sent or a full address object)
-    if (req.body.address) {
-        try {
-            // Safely parse JSON if coming from multipart/form-data
-            user.address = typeof req.body.address === 'string'
-                ? JSON.parse(req.body.address)
-                : req.body.address;
-        } catch (e) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid address format. Must be valid JSON.'
-            });
-        }
-    }
-
-    // 6️⃣ Save User
-    const updatedUser = await user.save();
-
-    // 7️⃣ Respond
-    res.json({
-        success: true,
-        message: 'Profile updated successfully',
-        data: {
-            id: updatedUser._id,
-            name: updatedUser.name,
-            mobileNumber: updatedUser.mobileNumber,
-            profilePicture: updatedUser.profileImage,
-            upiId: updatedUser.upiId,
-            address: updatedUser.address,
-            about: updatedUser.vendorDetails?.about || ''
-        }
+  // 2️⃣ Validation Checks
+  if (!name || !mobileNumber || !upiId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Name, Mobile Number, and UPI Id are mandatory fields.',
     });
+  }
+
+  if (!/^\d{10}$/.test(mobileNumber)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Mobile number must be a valid 10-digit number.',
+    });
+  }
+
+  // ✅ Prevent duplicate mobile numbers (only if changed)
+  if (mobileNumber !== user.mobileNumber) {
+    const existingUser = await User.findOne({ mobileNumber });
+    if (existingUser) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'This mobile number is already registered.' });
+    }
+  }
+
+  // 3️⃣ Handle Profile Picture Upload
+  if (req.file) {
+    try {
+      const result = await cloudinary.uploader.upload(req.file.path, {
+        folder: 'profile-images',
+      });
+      user.profileImage = result.secure_url;
+    } catch (err) {
+      console.error('Cloudinary error:', err);
+      return res.status(500).json({ success: false, message: 'Image upload failed.' });
+    }
+  }
+
+  // 4️⃣ Update Basic Info
+  user.name = name;
+  user.mobileNumber = mobileNumber;
+  user.upiId = upiId;
+
+  // 5️⃣ Update Vendor About Info
+  user.vendorDetails = user.vendorDetails || {};
+  user.vendorDetails.about = about || user.vendorDetails.about;
+
+  // 6️⃣ Handle Address Update
+  if (req.body.address) {
+    try {
+      user.address =
+        typeof req.body.address === 'string'
+          ? JSON.parse(req.body.address)
+          : req.body.address;
+    } catch (e) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid address format. Must be valid JSON.',
+      });
+    }
+  }
+
+  // 7️⃣ Update User Status (Active / Inactive)
+  if (status) {
+    const allowedStatuses = ['Active', 'Inactive'];
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status. Allowed values: Active or Inactive.',
+      });
+    }
+    user.status = status;
+  }
+
+  // 8️⃣ Save Updated User
+  const updatedUser = await user.save();
+
+  // 9️⃣ Response
+  res.status(200).json({
+    success: true,
+    message: 'Profile updated successfully',
+    data: {
+      id: updatedUser._id,
+      name: updatedUser.name,
+      mobileNumber: updatedUser.mobileNumber,
+      upiId: updatedUser.upiId,
+      profilePicture: updatedUser.profileImage,
+      address: updatedUser.address,
+      about: updatedUser.vendorDetails?.about || '',
+      status: updatedUser.status, // 🟢 Added
+    },
+  });
 });
+
 
 
 

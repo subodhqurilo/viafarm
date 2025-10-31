@@ -247,118 +247,229 @@ const getProductDetails = asyncHandler(async (req, res) => {
 
 
 const getFreshAndPopularProducts = asyncHandler(async (req, res) => {
-    try {
-        const products = await Product.find({ status: 'In Stock' })
-            .sort({ rating: -1, createdAt: -1 }) // Popular first, then fresh
-            .limit(10) // Limit to 10 results
-            .populate('vendor', 'name'); // Show vendor name
+  const buyer = await User.findById(req.user._id).select('location');
 
-        res.status(200).json({
-            success: true,
-            data: products
-        });
-    } catch (error) {
-        console.error("Error fetching fresh & popular products:", error);
-        res.status(500).json({
-            success: false,
-            message: "Failed to fetch fresh and popular products"
-        });
+  // 📏 Helper inside controller for clarity
+  const getDistanceKm = (lat1, lon1, lat2, lon2) => {
+    const toRad = (v) => (v * Math.PI) / 180;
+    const R = 6371; // km
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  const products = await Product.find({ status: 'In Stock' })
+    .populate('vendor', 'name location')
+    .sort({ rating: -1, createdAt: -1 })
+    .limit(10);
+
+  const enriched = products.map((p) => {
+    let distanceText = 'N/A';
+    if (p.vendor?.location?.coordinates && buyer?.location?.coordinates) {
+      const [vendorLng, vendorLat] = p.vendor.location.coordinates;
+      const [buyerLng, buyerLat] = buyer.location.coordinates;
+
+      const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
+
+      if (!isNaN(distance)) {
+        distanceText = `${distance.toFixed(2)} km away`;
+      }
     }
+
+    return {
+      ...p.toObject(),
+      distance: distanceText,
+    };
+  });
+
+  res.status(200).json({
+    success: true,
+    count: enriched.length,
+    data: enriched,
+  });
 });
+
+
+
 
 const getLocalBestProducts = asyncHandler(async (req, res) => {
-    const { lat, lng, maxDistance = 10000 } = req.query; // default 10km
+  const { lat, lng, maxDistance = 50000 } = req.query; // default: 50 km
+  const latitude = parseFloat(lat);
+  const longitude = parseFloat(lng);
 
-    const latitude = parseFloat(lat);
-    const longitude = parseFloat(lng);
+  // 🚨 If location invalid or missing → show fallback products
+  if (!lat || !lng || isNaN(latitude) || isNaN(longitude)) {
+    const fallbackProducts = await Product.find({ status: 'In Stock' })
+      .sort({ rating: -1 })
+      .limit(10)
+      .select('name images')
+      .populate('vendor', 'name status');
 
-    if (!lat || !lng || isNaN(latitude) || isNaN(longitude)) {
-        // Fallback if location not provided or invalid
-        const fallbackProducts = await Product.find({ status: 'In Stock' })
-            .sort({ rating: -1 })
-            .limit(10)
-            .select('name images') // Only select name and images
-            .populate('vendor', 'name'); // Only vendor name
+    return res.status(200).json({
+      success: true,
+      message:
+        'Location not provided or invalid. Showing top-rated products from all vendors.',
+      data: fallbackProducts
+        .filter(p => p.vendor?.status === 'Active')
+        .map(p => ({
+          name: p.name,
+          image: p.images?.[0] || null,
+          vendorName: p.vendor?.name || 'Unknown Vendor',
+          distance: null,
+        })),
+    });
+  }
 
-        return res.status(200).json({
-            success: true,
-            message: "Location not provided or invalid, showing popular products from all vendors.",
-            data: fallbackProducts.map(p => ({
-                name: p.name,
-                image: p.images?.[0] || null,
-                vendorName: p.vendor?.name || 'Unknown Vendor'
-            }))
-        });
+  try {
+    // 🧭 Find nearby active vendors
+    const localVendors = await User.find({
+      status: 'Active', // ✅ Only active vendors
+      location: {
+        $near: {
+          $geometry: { type: 'Point', coordinates: [longitude, latitude] },
+          $maxDistance: parseInt(maxDistance),
+        },
+      },
+    }).select('_id name location status');
+
+    const vendorIds = localVendors.map(v => v._id);
+
+    if (vendorIds.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No active local vendors found in your area.',
+      });
     }
 
-    try {
-        // Find vendors near the given lat/lng
-        const localVendors = await User.find({
-            role: "Vendor",
-            status: "Active",
-            location: {
-                $near: {
-                    $geometry: { type: "Point", coordinates: [longitude, latitude] },
-                    $maxDistance: parseInt(maxDistance)
-                }
-            }
-        }).select('_id');
+    // 📦 Get nearby top-rated products (only in stock)
+    const localBestProducts = await Product.find({
+      vendor: { $in: vendorIds },
+      status: 'In Stock',
+    })
+      .sort({ rating: -1, createdAt: -1 })
+      .limit(20)
+      .select('name images vendor')
+      .populate('vendor', 'name location status');
 
-        const vendorIds = localVendors.map(vendor => vendor._id);
+    // 📏 Helper: Calculate distance (Haversine formula)
+    const getDistanceKm = (lat1, lon1, lat2, lon2) => {
+      const toRad = v => (v * Math.PI) / 180;
+      const R = 6371;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    };
 
-        if (vendorIds.length === 0) {
-            return res.status(404).json({ success: false, message: "No local vendors found in your area." });
+    // 🧮 Attach vendor distance to each product
+    const productsWithDistance = localBestProducts
+      .filter(p => p.vendor?.status === 'Active')
+      .map(p => {
+        const vendorLoc = p.vendor?.location?.coordinates;
+        let distance = null;
+        if (vendorLoc && vendorLoc.length === 2) {
+          distance = getDistanceKm(latitude, longitude, vendorLoc[1], vendorLoc[0]);
         }
+        return {
+          name: p.name,
+          image: p.images?.[0] || null,
+          vendorName: p.vendor?.name || 'Unknown Vendor',
+          distance: distance ? parseFloat(distance.toFixed(2)) : null, // km
+        };
+      });
 
-        // Get top-rated products from those vendors
-        const localBestProducts = await Product.find({
-            vendor: { $in: vendorIds },
-            status: 'In Stock'
-        })
-            .sort({ rating: -1, createdAt: -1 })
-            .limit(20)
-            .select('name images') // Only name and images
-            .populate('vendor', 'name'); // Only vendor name
-
-        res.status(200).json({
-            success: true,
-            count: localBestProducts.length,
-            data: localBestProducts.map(p => ({
-                name: p.name,
-                image: p.images?.[0] || null,
-                vendorName: p.vendor?.name || 'Unknown Vendor'
-            }))
-        });
-    } catch (err) {
-        console.error("Error fetching local best products:", err);
-        res.status(500).json({ success: false, message: "Failed to fetch local products. Please check the GeoJSON index." });
-    }
+    res.status(200).json({
+      success: true,
+      count: productsWithDistance.length,
+      data: productsWithDistance,
+    });
+  } catch (err) {
+    console.error('Error fetching local best products:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch local products. Please check the GeoJSON index.',
+    });
+  }
 });
+
+
+
+
 
 
 const getAllAroundIndiaProducts = asyncHandler(async (req, res) => {
-    // Fetch all in-stock products that can be delivered across India
-    const products = await Product.find({ 
-        status: 'In Stock', 
-        allIndiaDelivery: true 
-    })
-        .sort({ rating: -1, salesCount: -1 }) // Sort by rating first, then sales
-        .populate('vendor', 'name'); // Populate vendor details
+  const buyer = await User.findById(req.user._id).select('location');
 
-    if (products.length === 0) {
-        return res.status(404).json({
-            success: false,
-            message: 'No All India delivery products found.'
-        });
+  // 📏 Helper: Haversine formula (distance in km)
+  const getDistanceKm = (lat1, lon1, lat2, lon2) => {
+    const toRad = (v) => (v * Math.PI) / 180;
+    const R = 6371; // Earth radius in km
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  // 🟢 Step 1: Find all active vendors
+  const activeVendors = await User.find({ role: 'Vendor', status: 'Active' }).select('_id');
+  const activeVendorIds = activeVendors.map(v => v._id);
+
+  // 🟢 Step 2: Fetch all products with All India delivery & active vendor
+  const products = await Product.find({
+    status: 'In Stock',
+    allIndiaDelivery: true,
+    vendor: { $in: activeVendorIds }
+  })
+    .sort({ rating: -1, salesCount: -1 })
+    .populate('vendor', 'name location status');
+
+  if (products.length === 0) {
+    return res.status(404).json({
+      success: false,
+      message: 'No All India delivery products found.'
+    });
+  }
+
+  // 🧮 Step 3: Enrich with distance (if buyer and vendor have location)
+  const enrichedProducts = products.map((p) => {
+    let distanceText = 'N/A';
+    if (p.vendor?.location?.coordinates && buyer?.location?.coordinates) {
+      const [vendorLng, vendorLat] = p.vendor.location.coordinates;
+      const [buyerLng, buyerLat] = buyer.location.coordinates;
+
+      const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
+      if (!isNaN(distance)) {
+        distanceText = `${distance.toFixed(2)} km away`;
+      }
     }
 
-    res.status(200).json({
-        success: true,
-        message: 'All India delivery products fetched successfully.',
-        count: products.length,
-        data: products
-    });
+    return {
+      ...p.toObject(),
+      distance: distanceText
+    };
+  });
+
+  // ✅ Step 4: Send Response
+  res.status(200).json({
+    success: true,
+    message: 'All India delivery products fetched successfully.',
+    count: enrichedProducts.length,
+    data: enrichedProducts
+  });
 });
+
 
 
 
@@ -379,10 +490,10 @@ const getSmartPicks = asyncHandler(async (req, res) => {
 
   const [buyerLon, buyerLat] = buyer.location.coordinates;
 
-  // ✅ Haversine formula — distance between two lat/lon points
+  // 📏 Helper: Haversine formula — distance between two lat/lon points (in km)
   const getDistanceKm = (lat1, lon1, lat2, lon2) => {
     const toRad = (v) => (v * Math.PI) / 180;
-    const R = 6371; // Earth's radius (km)
+    const R = 6371;
     const dLat = toRad(lat2 - lat1);
     const dLon = toRad(lon2 - lon1);
     const a =
@@ -393,14 +504,21 @@ const getSmartPicks = asyncHandler(async (req, res) => {
     return (R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(2);
   };
 
-  // ✅ Product filter
-  const filter = { status: 'In Stock' };
+  // ✅ Step 1: Find all Active Vendors
+  const activeVendors = await User.find({ role: 'Vendor', status: 'Active' }).select('_id');
+  const activeVendorIds = activeVendors.map(v => v._id);
+
+  // ✅ Step 2: Product filter (only in-stock & from active vendors)
+  const filter = {
+    status: 'In Stock',
+    vendor: { $in: activeVendorIds },
+  };
   if (category) filter.category = category;
 
-  // ✅ Fetch all products
+  // ✅ Step 3: Fetch products with vendor details
   const products = await Product.find(filter)
     .sort({ rating: -1, createdAt: -1 })
-    .populate('vendor', 'name profilePicture location');
+    .populate('vendor', 'name profilePicture location status');
 
   if (!products.length) {
     return res.status(404).json({
@@ -411,7 +529,7 @@ const getSmartPicks = asyncHandler(async (req, res) => {
     });
   }
 
-  // ✅ Format each product
+  // ✅ Step 4: Format each product
   const formatted = products.map((product) => {
     const image = product.images?.[0] || null;
     let distance = 'N/A';
@@ -423,7 +541,7 @@ const getSmartPicks = asyncHandler(async (req, res) => {
         buyerLon,
         vendorLat,
         vendorLon
-      )} km`;
+      )} km away`;
     }
 
     return {
@@ -440,11 +558,11 @@ const getSmartPicks = asyncHandler(async (req, res) => {
         name: product.vendor?.name || 'Unknown Vendor',
         profilePicture: product.vendor?.profilePicture || null,
       },
-      distanceFromVendor: distance, // ✅ Added field
+      distanceFromVendor: distance,
     };
   });
 
-  // ✅ Response
+  // ✅ Step 5: Response
   res.status(200).json({
     success: true,
     count: formatted.length,
@@ -459,25 +577,87 @@ const getSmartPicks = asyncHandler(async (req, res) => {
 
 
 
+
+
 // @desc    Get all products grouped by category for the logged-in vendor
 // @route   GET /api/vendor/products/by-category
 // @access  Private/Vendor
 
-const getProductsByCategory = asyncHandler(async (req, res) => {
-    const { category } = req.query;
 
-    if (!category) {
-        return res.status(400).json({ success: false, message: "Category is required" });
+
+// 🛒 Controller: Get products by category (with distance)
+const getProductsByCategory = asyncHandler(async (req, res) => {
+  const { category } = req.query;
+  const buyer = await User.findById(req.user._id).select('location');
+  const buyerLocation = buyer?.location?.coordinates;
+
+  if (!category) {
+    return res.status(400).json({ success: false, message: "Category is required" });
+  }
+
+  // 📏 Helper: Haversine formula (distance in km)
+  const getDistanceKm = (lat1, lon1, lat2, lon2) => {
+    const toRad = (v) => (v * Math.PI) / 180;
+    const R = 6371; // Earth's radius in km
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  // 🧩 Step 1: Find all active vendors
+  const activeVendors = await User.find({ role: 'Vendor', status: 'Active' }).select('_id');
+  const activeVendorIds = activeVendors.map(v => v._id);
+
+  // 🧩 Step 2: Base query for products
+  const productQuery = {
+    category,
+    status: 'In Stock',
+    vendor: { $in: activeVendorIds },
+  };
+
+  // 🟢 Step 3: Fetch products with vendor details
+  const products = await Product.find(productQuery)
+    .populate('vendor', 'name location')
+    .sort({ createdAt: -1, rating: -1 });
+
+  // 🧮 Step 4: Enrich with distance
+  const enriched = products.map(p => {
+    let distanceText = 'N/A';
+
+    if (p.vendor?.location?.coordinates && buyerLocation) {
+      const [vendorLng, vendorLat] = p.vendor.location.coordinates;
+      const [buyerLng, buyerLat] = buyerLocation;
+      const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
+      distanceText = `${parseFloat(distance.toFixed(2))} km away`;
     }
 
-    const products = await Product.find({ category }).populate("vendor", "name");
+    return {
+      ...p.toObject(),
+      distance: distanceText, // ✅ formatted as "3.2 km away"
+    };
+  });
 
-    res.status(200).json({
-        success: true,
-        count: products.length,
-        data: products,
-    });
+  // ✅ Step 5: Send response
+  res.status(200).json({
+    success: true,
+    count: enriched.length,
+    data: enriched,
+  });
 });
+
+
+
+
+
+
+
+
+
 
 
 
@@ -500,110 +680,91 @@ const getStaticPageContent = asyncHandler(async (req, res) => {
 // ...
 
 const getVendorsNearYou = asyncHandler(async (req, res) => {
-    // 1. Extract location and maximum distance
-    // The buyer's device/frontend must send these parameters (lat, lng) to the API.
-    const { lat, lng, maxDistance = 5000 } = req.query;
+  const { lat, lng, maxDistance = 5000 } = req.query;
 
-    // ✅ Helper: Format the categories (Re-introduced for the requested format)
-    const formatCategories = async (vendorId) => {
-        const categories = await Product.distinct('category', { vendor: vendorId }) || [];
-        const displayCategories = categories.slice(0, 2);
-        const count = categories.length;
+  // ✅ Helper: Get all categories (no slicing)
+  const formatCategories = async (vendorId) => {
+    const categories = await Product.distinct("category", { vendor: vendorId }) || [];
+    return categories.length > 0 ? categories.join(", ") : "No categories listed";
+  };
 
-        let categoryText = displayCategories.join(', ');
-        if (count > 2) {
-            categoryText += ` (+${count - 2})`;
-        } else if (count === 0) {
-            categoryText = 'No categories listed';
+  // ❌ If location not provided
+  if (!lat || !lng) {
+    const vendors = await User.find({ role: "Vendor", status: "Active", isApproved: true })
+      .limit(10)
+      .select("name profilePicture _id address");
+
+    const enrichedFallbackVendors = await Promise.all(
+      vendors.map(async (vendor) => ({
+        id: vendor._id,
+        name: vendor.name,
+        profilePicture: vendor.profilePicture || "https://default-image-url.com/default.png",
+        distance: "N/A",
+        categories: await formatCategories(vendor._id),
+      }))
+    );
+
+    return res.status(200).json({
+      success: true,
+      count: enrichedFallbackVendors.length,
+      vendors: enrichedFallbackVendors,
+      message: "Location not provided by client, showing popular vendors instead.",
+    });
+  }
+
+  const latitude = parseFloat(lat);
+  const longitude = parseFloat(lng);
+
+  if (isNaN(latitude) || isNaN(longitude)) {
+    return res.status(400).json({ success: false, message: "Invalid latitude or longitude." });
+  }
+
+  try {
+    // 🧭 Find vendors near user (only active + approved)
+    const vendors = await User.find({
+      role: "Vendor",
+      status: "Active",
+      isApproved: true,
+      location: {
+        $near: {
+          $geometry: { type: "Point", coordinates: [longitude, latitude] },
+          $maxDistance: parseInt(maxDistance),
+        },
+      },
+    }).select("name profilePicture location");
+
+    // 🧮 Calculate distance and attach categories
+    const enrichedVendors = await Promise.all(
+      vendors.map(async (vendor) => {
+        let distance = "N/A";
+        if (vendor.location?.coordinates?.length === 2) {
+          const [vendorLng, vendorLat] = vendor.location.coordinates;
+          distance = calculateDistance(latitude, longitude, vendorLat, vendorLng).toFixed(1);
         }
-        return categoryText;
-    };
 
-    // 2. Fallback or Validation if location not provided
-    if (!lat || !lng) {
-        // If the location is not provided by the buyer's device, return an appropriate fallback message 
-        // and a list of random/popular vendors (this logic is largely inherited from your original code).
-        const vendors = await User.find({ role: 'Vendor', status: 'Active', isApproved: true })
-            .limit(10)
-            .select('name profilePicture _id address');
+        return {
+          id: vendor._id,
+          name: vendor.name,
+          profilePicture: vendor.profilePicture || "https://default-image-url.com/default.png",
+          distance: distance !== "N/A" ? `${distance} km away` : "N/A",
+          categories: await formatCategories(vendor._id),
+        };
+      })
+    );
 
-        const enrichedFallbackVendors = await Promise.all(
-            vendors.map(async vendor => ({
-                id: vendor._id,
-                name: vendor.name,
-                profilePicture: vendor.profilePicture || 'https://default-image-url.com/default.png',
-                distance: 'N/A',
-                categories: await formatCategories(vendor._id)
-            }))
-        );
-
-        return res.status(200).json({
-            success: true,
-            count: enrichedFallbackVendors.length,
-            vendors: enrichedFallbackVendors,
-            message: "Location not provided by client, showing popular vendors instead."
-        });
-    }
-
-    const latitude = parseFloat(lat);
-    const longitude = parseFloat(lng);
-
-    if (isNaN(latitude) || isNaN(longitude)) {
-        return res.status(400).json({ success: false, message: "Invalid latitude or longitude." });
-    }
-
-    // 3. Main Logic: Find vendors near user using GeoJSON
-    try {
-        const vendors = await User.find({
-            role: "Vendor",
-            status: "Active",
-            isApproved: true,
-            location: {
-                $near: {
-                    $geometry: { type: "Point", coordinates: [longitude, latitude] },
-                    $maxDistance: parseInt(maxDistance)
-                }
-            }
-        })
-            // Select required fields + location for distance calculation
-            .select('name profilePicture location');
-
-        // 4. Calculate Distance and Format Response
-        const enrichedVendors = await Promise.all(
-            vendors.map(async vendor => {
-                let distance = 'N/A';
-                if (vendor.location?.coordinates?.length === 2) {
-                    // Coordinates are stored as [longitude, latitude] in GeoJSON
-                    const [vendorLng, vendorLat] = vendor.location.coordinates;
-
-                    // ✅ Automatic Distance Calculation
-                    distance = calculateDistance(latitude, longitude, vendorLat, vendorLng).toFixed(1);
-                }
-
-                return {
-                    id: vendor._id,
-                    name: vendor.name,
-                    profilePicture: vendor.profilePicture || 'https://default-image-url.com/default.png',
-                    distance: distance !== 'N/A' ? `${distance} km away` : 'N/A',
-                    categories: await formatCategories(vendor._id)
-                };
-            })
-        );
-
-        res.status(200).json({
-            success: true,
-            count: enrichedVendors.length,
-            vendors: enrichedVendors
-        });
-    } catch (err) {
-        console.error("Error fetching nearby vendors:", err);
-        // This usually means a problem with the GeoJSON index setup in MongoDB.
-        res.status(500).json({
-            success: false,
-            message: "Failed to fetch nearby vendors. Check GeoJSON index.",
-            error: err.message
-        });
-    }
+    res.status(200).json({
+      success: true,
+      count: enrichedVendors.length,
+      vendors: enrichedVendors,
+    });
+  } catch (err) {
+    console.error("Error fetching nearby vendors:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch nearby vendors. Check GeoJSON index.",
+      error: err.message,
+    });
+  }
 });
 
 const formatCategories = async (vendorId) => {
@@ -629,7 +790,7 @@ const getAllVendors = asyncHandler(async (req, res) => {
     const {
         lat,
         lng,
-        maxDistance = 5000,
+        maxDistance = 50000,
         page = 1,
         limit = 10,
         q,
@@ -1602,8 +1763,12 @@ const placeOrder = asyncHandler(async (req, res) => {
     }
 
     // --- 8️⃣ Clear cart ---
-    const deleteAfter = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
-    await Cart.updateOne({ user: userId }, { deleteAt: deleteAfter });
+    // --- 8️⃣ Clear cart immediately after order placement ---
+await Cart.findOneAndUpdate(
+  { user: userId },
+  { $set: { items: [] } } // empty the items array
+);
+
 
     // ✅ 9️⃣ Notify Admin
     await createAndSendNotification(

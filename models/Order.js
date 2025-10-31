@@ -62,10 +62,26 @@ orderStatus: {
   },
   
   pickupSlot: {
-  date: { type: Date, required: true },
-  startTime: { type: String, required: true },
-  endTime: { type: String, required: true }
+  date: {
+    type: String,
+    required: function () {
+      return this.deliveryType === 'Pickup';
+    },
+  },
+  startTime: {
+    type: String,
+    required: function () {
+      return this.deliveryType === 'Pickup';
+    },
+  },
+  endTime: {
+    type: String,
+    required: function () {
+      return this.deliveryType === 'Pickup';
+    },
+  },
 },
+
 
   paymentMethod: {
     type: String,
