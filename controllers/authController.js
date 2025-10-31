@@ -9,6 +9,7 @@ const asyncHandler = require('express-async-handler');
 const crypto = require('crypto');
 const sendEmail = require('../services/emailService');
 const Notification = require('../models/Notification');
+const { createAndSendNotification } = require('../utils/notificationUtils');
 
 // ===== Helpers =====
 // Top of authController.js

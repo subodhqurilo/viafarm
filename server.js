@@ -1,5 +1,4 @@
 // server.js
-
 const express = require('express');
 const dotenv = require('dotenv');
 const connectDB = require('./config/db');
@@ -7,55 +6,62 @@ const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
 
-// Load env variables
 dotenv.config();
-
-// Connect to MongoDB
 connectDB();
 
 const app = express();
 
-// Middleware
-app.use(cors());
+app.use(cors({
+  origin: "http://localhost:3000", // during testing; later replace with your actual URLs
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  credentials: true
+}));
 app.use(express.json());
-app.use(express.urlencoded({extended:true}))
 
-// ✅ Create HTTP server
 const server = http.createServer(app);
 
-// ✅ Setup Socket.IO
 const io = new Server(server, {
-  cors: {
-    origin: "*", // or specify your admin panel URL for security
-    methods: ["GET", "POST"]
-  }
+  cors: { origin: "http://localhost:3000", methods: ["GET", "POST"] }
 });
 
-// ✅ Handle socket connections
-io.on('connection', (socket) => {
-  console.log('Admin connected:', socket.id);
+// 🟢 Store online users
+let onlineUsers = {};
 
+io.on('connection', (socket) => {
+  console.log('🔌 User connected:', socket.id);
+
+  // When user joins (frontend should send userId + role)
+  socket.on('registerUser', ({ userId, role }) => {
+    if (userId) {
+      onlineUsers[userId] = { socketId: socket.id, role };
+      console.log(`✅ ${role} registered: ${userId}`);
+    }
+  });
+
+  // When user disconnects
   socket.on('disconnect', () => {
-    console.log('Admin disconnected:', socket.id);
+    for (const [userId, info] of Object.entries(onlineUsers)) {
+      if (info.socketId === socket.id) {
+        console.log(`❌ ${info.role} disconnected: ${userId}`);
+        delete onlineUsers[userId];
+        break;
+      }
+    }
   });
 });
 
-// ✅ Make io available to all routes/controllers
+// Make io & users map available globally
 app.set('io', io);
+app.set('onlineUsers', onlineUsers);
 
 // Routes
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/buyer', require('./routes/buyerRoutes'));
 app.use('/api/vendor', require('./routes/vendorRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
+app.use('/api/notifications', require('./routes/notificationRoutes'));
 
-// Default route
-app.get('/', (req, res) => {
-  res.send('API is running...');
-});
+app.get('/', (req, res) => res.send('API running...'));
 
-// Start server
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
