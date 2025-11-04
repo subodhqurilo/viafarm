@@ -969,32 +969,71 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
 
 
 const updateUserStatus = asyncHandler(async (req, res) => {
-    const { status } = req.body; // Expected: "Active" or "Inactive"
-    const userId = req.user._id; // ✅ Vendor's own ID from token
+  const { status } = req.body; // Expected: "Active" or "Inactive"
+  const userId = req.user._id; // Vendor's ID from token
 
-    if (!status || !['Active', 'Inactive'].includes(status)) {
-        return res.status(400).json({
-            success: false,
-            message: 'Invalid status. Must be Active or Inactive.'
-        });
-    }
-
-    const updatedUser = await User.findByIdAndUpdate(
-        userId,
-        { $set: { status } },
-        { new: true, runValidators: true }
-    ).select('name role status mobileNumber');
-
-    if (!updatedUser) {
-        return res.status(404).json({ success: false, message: 'User not found.' });
-    }
-
-    res.status(200).json({
-        success: true,
-        message: `Your status has been updated to ${status}.`,
-        data: updatedUser
+  // 1️⃣ Validate status
+  if (!status || !["Active", "Inactive"].includes(status)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid status. Must be Active or Inactive.",
     });
+  }
+
+  // 2️⃣ Update vendor status
+  const updatedUser = await User.findByIdAndUpdate(
+    userId,
+    { $set: { status } },
+    { new: true, runValidators: true }
+  ).select("name role status mobileNumber");
+
+  if (!updatedUser) {
+    return res
+      .status(404)
+      .json({ success: false, message: "User not found." });
+  }
+
+  // 3️⃣ 🔔 Send Notifications
+
+  // 👨‍💼 Notify Admin
+  await createAndSendNotification(
+    req,
+    "Vendor Status Changed",
+    `${updatedUser.name} (${updatedUser.mobileNumber}) has changed their status to "${status}".`,
+    {
+      vendorId: updatedUser._id,
+      vendorName: updatedUser.name,
+      status,
+    },
+    "Admin" // Notify all Admins
+  );
+
+  // 🧍‍♂️ Notify All Buyers
+  let buyerMessage =
+    status === "Active"
+      ? `${updatedUser.name}'s store is now active again! You can browse their products.`
+      : `${updatedUser.name}'s store is now inactive temporarily.`;
+
+  await createAndSendNotification(
+    req,
+    "Vendor Status Update",
+    buyerMessage,
+    {
+      vendorId: updatedUser._id,
+      vendorName: updatedUser.name,
+      status,
+    },
+    "Buyer" // Notify all buyers
+  );
+
+  // 4️⃣ ✅ Send Response
+  res.status(200).json({
+    success: true,
+    message: `Your status has been updated to ${status}, and notifications sent to Admin and Buyers.`,
+    data: updatedUser,
+  });
 });
+
 
 
 
@@ -1105,17 +1144,20 @@ const createCoupon = asyncHandler(async (req, res) => {
 
   const creatorId = req.user._id;
 
-  // --- 1️⃣ Basic Validation ---
+  // 1️⃣ Validate required fields
   if (!code || !discountValue || !startDate || !expiryDate) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Missing required fields." });
+    return res.status(400).json({
+      success: false,
+      message: "Missing required fields (code, discountValue, startDate, expiryDate).",
+    });
   }
 
+  // 2️⃣ Check duplicate code
   if (await Coupon.findOne({ code: code.toUpperCase() })) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Coupon code already exists." });
+    return res.status(400).json({
+      success: false,
+      message: "Coupon code already exists.",
+    });
   }
 
   const start = new Date(startDate);
@@ -1127,7 +1169,7 @@ const createCoupon = asyncHandler(async (req, res) => {
     });
   }
 
-  // --- 2️⃣ Determine applicable products ---
+  // 3️⃣ Determine applicable products
   let finalApplicableProductIds = [];
   let isUniversal = false;
 
@@ -1150,8 +1192,7 @@ const createCoupon = asyncHandler(async (req, res) => {
     if (productsInVendor.length !== productIds.length) {
       return res.status(403).json({
         success: false,
-        message:
-          "Selected products must belong to your account and chosen categories.",
+        message: "Selected products must belong to your account and chosen categories.",
       });
     }
 
@@ -1169,12 +1210,13 @@ const createCoupon = asyncHandler(async (req, res) => {
     }
     finalApplicableProductIds = [product._id];
   } else {
-    return res
-      .status(400)
-      .json({ success: false, message: "Invalid selection for coupon applicability." });
+    return res.status(400).json({
+      success: false,
+      message: "Invalid selection for coupon applicability.",
+    });
   }
 
-  // --- 3️⃣ Create and Save Coupon ---
+  // 4️⃣ Create the coupon
   const newCoupon = await Coupon.create({
     code: code.toUpperCase(),
     discount: { value: parseFloat(discountValue), type: discountType },
@@ -1190,9 +1232,9 @@ const createCoupon = asyncHandler(async (req, res) => {
     status,
   });
 
-  // --- 4️⃣ Notifications ---
+  // 5️⃣ 🔔 Send Notifications
   try {
-    // ✅ a. Notify Admin
+    // 👨‍💼 Notify Admin(s)
     await createAndSendNotification(
       req,
       "New Coupon Created",
@@ -1203,14 +1245,14 @@ const createCoupon = asyncHandler(async (req, res) => {
         discountValue,
         discountType,
       },
-      "Admin" // Send to all admins
+      "Admin"
     );
 
-    // ✅ b. Notify Vendor personally
+    // 🧍‍♂️ Notify Vendor (personal)
     await createAndSendNotification(
       req,
-      "Coupon Created Successfully",
-      `Your coupon "${newCoupon.code}" has been created successfully.`,
+      "Coupon Created Successfully 🎉",
+      `Your coupon "${newCoupon.code}" has been created successfully!`,
       {
         couponId: newCoupon._id,
         discountValue,
@@ -1218,13 +1260,13 @@ const createCoupon = asyncHandler(async (req, res) => {
         expiryDate,
       },
       "Vendor",
-      creatorId // specific vendor
+      creatorId
     );
 
-    // ✅ c. Notify All Buyers
+    // 👥 Notify All Buyers
     await createAndSendNotification(
       req,
-      "New Coupon Available!",
+      "New Coupon Available 🎟️",
       `A new coupon "${newCoupon.code}" is now live! Use it to get ${discountValue}${discountType === "Percentage" ? "%" : "₹"} off your next purchase.`,
       {
         couponId: newCoupon._id,
@@ -1232,21 +1274,20 @@ const createCoupon = asyncHandler(async (req, res) => {
         discountType,
         expiryDate,
       },
-      "Buyer", // send to all buyers
-      null,
-      true // optional flag for "send to all buyers"
+      "Buyer"
     );
   } catch (err) {
-    console.error("Notification sending failed:", err);
+    console.error("❌ Notification sending failed:", err.message);
   }
 
-  // --- 5️⃣ Response ---
+  // 6️⃣ ✅ Response
   res.status(201).json({
     success: true,
-    message: "Coupon created successfully.",
+    message: "Coupon created successfully and notifications sent to Admin, Vendor, and Buyers.",
     data: newCoupon,
   });
 });
+
 
 
 
@@ -1309,20 +1350,24 @@ module.exports = { getVendorCoupons };
 const updateVendorCoupon = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
+  // 1️⃣ Validate Coupon ID
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return res.status(400).json({ success: false, message: "Invalid coupon ID." });
   }
 
+  // 2️⃣ Find Coupon
   const coupon = await Coupon.findById(id);
   if (!coupon) {
     return res.status(404).json({ success: false, message: "Coupon not found." });
   }
 
+  // 3️⃣ Authorization Check
   if (coupon.vendor.toString() !== req.user._id.toString()) {
-    return res
-      .status(403)
-      .json({ success: false, message: "Not authorized to update this coupon." });
+    return res.status(403).json({ success: false, message: "Not authorized to update this coupon." });
   }
+
+  // 4️⃣ Keep track of old discount for price drop detection
+  const oldDiscountValue = coupon.discount?.value;
 
   const {
     code,
@@ -1331,14 +1376,14 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
     productIds,
     minimumOrder,
     usageLimitPerUser,
-    status,
     totalUsageLimit,
     startDate,
     expiryDate,
+    status,
     category,
   } = req.body;
 
-  // --- 1️⃣ Update basic fields ---
+  // --- 5️⃣ Update Basic Fields ---
   if (code) coupon.code = code.toUpperCase();
   if (discount && typeof discount === "object") {
     coupon.discount.value = discount.value ?? coupon.discount.value;
@@ -1352,13 +1397,14 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
   if (startDate) coupon.startDate = new Date(startDate);
   if (expiryDate) coupon.expiryDate = new Date(expiryDate);
 
-  // --- 2️⃣ Handle appliesTo field ---
+  // --- 6️⃣ Handle appliesTo logic ---
   if (appliesTo !== undefined) {
     if (Array.isArray(appliesTo) && appliesTo.length > 0) {
       if (!productIds || productIds.length === 0) {
-        return res
-          .status(400)
-          .json({ success: false, message: "You must select at least one product." });
+        return res.status(400).json({
+          success: false,
+          message: "You must select at least one product.",
+        });
       }
 
       const productsInVendor = await Product.find({
@@ -1370,8 +1416,7 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
       if (productsInVendor.length !== productIds.length) {
         return res.status(403).json({
           success: false,
-          message:
-            "Selected products must belong to your account and chosen categories.",
+          message: "Selected products must belong to your account and chosen categories.",
         });
       }
 
@@ -1395,18 +1440,16 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
         coupon.applicableProducts = [product._id];
       }
     } else {
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid appliesTo value." });
+      return res.status(400).json({ success: false, message: "Invalid appliesTo value." });
     }
   }
 
-  // --- 3️⃣ Save updated coupon ---
+  // --- 7️⃣ Save Updated Coupon ---
   const updatedCoupon = await coupon.save();
 
-  // --- 4️⃣ Notifications ---
+  // --- 8️⃣ Notifications ---
   try {
-    // ✅ a. Notify Admin
+    // 👨‍💼 a. Notify Admin
     await createAndSendNotification(
       req,
       "Coupon Updated",
@@ -1420,10 +1463,10 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
       "Admin"
     );
 
-    // ✅ b. Notify Vendor (self)
+    // 🧍‍♂️ b. Notify Vendor (personal)
     await createAndSendNotification(
       req,
-      "Your Coupon Has Been Updated",
+      "Coupon Updated Successfully",
       `Your coupon "${updatedCoupon.code}" has been successfully updated.`,
       {
         couponId: updatedCoupon._id,
@@ -1434,34 +1477,36 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
       req.user._id
     );
 
-    // ✅ c. Notify All Buyers if discount value or status changed
+    // 👥 c. Notify All Buyers only if discount value decreased (price drop)
     if (
-      discount ||
-      (status && status.toLowerCase() === "active")
+      discount &&
+      typeof discount.value === "number" &&
+      discount.value > oldDiscountValue
     ) {
+      // Lower discount means coupon became worse — skip
+    } else if (
+      discount &&
+      typeof discount.value === "number" &&
+      discount.value < oldDiscountValue
+    ) {
+      // Price drop: bigger discount percentage or value
       await createAndSendNotification(
         req,
-        "Coupon Updated!",
-        `Coupon "${updatedCoupon.code}" has been updated — enjoy ${
-          updatedCoupon.discount.value
-        }${
-          updatedCoupon.discount.type === "Percentage" ? "%" : "₹"
-        } off before ${updatedCoupon.expiryDate.toLocaleDateString()}.`,
+        "Coupon Price Drop Alert 💸",
+        `Good news! Coupon "${updatedCoupon.code}" now gives you ${updatedCoupon.discount.value}${updatedCoupon.discount.type === "Percentage" ? "%" : "₹"} OFF (was ${oldDiscountValue}${updatedCoupon.discount.type === "Percentage" ? "%" : "₹"}).`,
         {
           couponId: updatedCoupon._id,
-          discount: updatedCoupon.discount,
-          expiryDate: updatedCoupon.expiryDate,
+          oldDiscount: oldDiscountValue,
+          newDiscount: updatedCoupon.discount.value,
         },
-        "Buyer",
-        null,
-        true // broadcast
+        "Buyer" // broadcast to all buyers
       );
     }
   } catch (err) {
-    console.error("Notification sending failed:", err);
+    console.error("❌ Notification sending failed:", err);
   }
 
-  // --- 5️⃣ Respond ---
+  // --- 9️⃣ Respond ---
   res.status(200).json({
     success: true,
     message: "Coupon updated successfully.",
@@ -1475,79 +1520,64 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
 
 
 
+
 const deleteVendorCoupon = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const vendorId = req.user._id;
 
-  // --- 1️⃣ Validate coupon ID ---
+  // 1️⃣ Validate coupon ID
   if (!id || !mongoose.Types.ObjectId.isValid(id)) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Invalid or missing coupon ID." });
+    return res.status(400).json({
+      success: false,
+      message: "Invalid or missing coupon ID.",
+    });
   }
 
-  // --- 2️⃣ Fetch the coupon ---
+  // 2️⃣ Find coupon
   const coupon = await Coupon.findById(id);
   if (!coupon) {
-    return res
-      .status(404)
-      .json({ success: false, message: "Coupon not found." });
+    return res.status(404).json({
+      success: false,
+      message: "Coupon not found.",
+    });
   }
 
-  // --- 3️⃣ Authorization check ---
+  // 3️⃣ Authorization check
   if (coupon.vendor.toString() !== vendorId.toString()) {
-    return res
-      .status(403)
-      .json({ success: false, message: "You are not authorized to delete this coupon." });
+    return res.status(403).json({
+      success: false,
+      message: "You are not authorized to delete this coupon.",
+    });
   }
 
-  // --- 4️⃣ Delete coupon ---
+  // 4️⃣ Delete coupon
   await Coupon.findByIdAndDelete(id);
 
-  // --- 5️⃣ Notifications ---
+  // 5️⃣ Notify only the vendor (personal)
   try {
-    // ✅ a. Notify Admin
     await createAndSendNotification(
       req,
-      "Coupon Deleted",
-      `Vendor ${req.user.name || "A vendor"} deleted coupon "${coupon.code}".`,
-      { couponId: id, vendorId },
-      "Admin"
-    );
-
-    // ✅ b. Notify Vendor (self)
-    await createAndSendNotification(
-      req,
-      "Coupon Deleted Successfully",
-      `Your coupon "${coupon.code}" has been deleted.`,
-      { couponId: id },
+      "Coupon Deleted Successfully 🗑️",
+      `Your coupon "${coupon.code}" has been deleted successfully.`,
+      {
+        couponId: id,
+        code: coupon.code,
+      },
       "Vendor",
-      vendorId
+      vendorId // 🎯 Personal vendor notification
     );
-
-    // ✅ c. Notify All Buyers (if coupon was active)
-    if (coupon.status === "Active") {
-      await createAndSendNotification(
-        req,
-        "Coupon No Longer Available",
-        `The coupon "${coupon.code}" is no longer active.`,
-        { couponId: id, code: coupon.code },
-        "Buyer",
-        null,
-        true // broadcast to all buyers
-      );
-    }
   } catch (err) {
     console.error("Notification sending failed:", err);
   }
 
-  // --- 6️⃣ Respond ---
+  // 6️⃣ Response
   res.status(200).json({
     success: true,
-    message: "Coupon deleted successfully.",
+    message: `Coupon "${coupon.code}" deleted successfully.`,
     data: { couponId: id, code: coupon.code },
   });
 });
+
 
 
 
@@ -1660,7 +1690,10 @@ const updateUserProfile = asyncHandler(async (req, res) => {
       user.profileImage = result.secure_url;
     } catch (err) {
       console.error("Cloudinary error:", err);
-      return res.status(500).json({ success: false, message: "Profile image upload failed." });
+      return res.status(500).json({
+        success: false,
+        message: "Profile image upload failed.",
+      });
     }
   }
 
@@ -1673,12 +1706,14 @@ const updateUserProfile = asyncHandler(async (req, res) => {
         )
       );
       const farmImageUrls = uploads.map((u) => u.secure_url);
-
       user.vendorDetails = user.vendorDetails || {};
       user.vendorDetails.farmImages = farmImageUrls;
     } catch (err) {
       console.error("Cloudinary farm upload error:", err);
-      return res.status(500).json({ success: false, message: "Farm images upload failed." });
+      return res.status(500).json({
+        success: false,
+        message: "Farm images upload failed.",
+      });
     }
   }
 
@@ -1721,21 +1756,28 @@ const updateUserProfile = asyncHandler(async (req, res) => {
   // 9️⃣ Save Updated User
   const updatedUser = await user.save();
 
-  // 🔟 ✅ Send Personal Notification to Vendor
-  try {
-    await createAndSendNotification(
-      req,
-      "Profile Updated Successfully",
-      "Your vendor profile has been updated successfully.",
-      { userId: updatedUser._id },
-      "Vendor",
-      updatedUser._id // personal vendor notification
-    );
-  } catch (err) {
-    console.error("Notification sending failed:", err);
+  // 🔟 🔔 Send Personal Notification (Vendor only)
+  if (updatedUser.role === "Vendor") {
+    try {
+      await createAndSendNotification(
+        req,
+        "Profile Updated Successfully 🛠️",
+        `Hello ${updatedUser.name}, your vendor profile has been updated successfully.`,
+        {
+          userId: updatedUser._id,
+          name: updatedUser.name,
+          mobileNumber: updatedUser.mobileNumber,
+          upiId: updatedUser.upiId,
+        },
+        "Vendor", // userType
+        updatedUser._id // 🎯 personal vendor ID
+      );
+    } catch (err) {
+      console.error("❌ Notification sending failed:", err);
+    }
   }
 
-  // 1️⃣1️⃣ Response
+  // ✅ 11️⃣ Response
   res.status(200).json({
     success: true,
     message: "Profile updated successfully",
@@ -1752,6 +1794,7 @@ const updateUserProfile = asyncHandler(async (req, res) => {
     },
   });
 });
+
 
 
 module.exports = { updateUserProfile };
