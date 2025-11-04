@@ -572,6 +572,7 @@ const getSmartPicks = asyncHandler(async (req, res) => {
       weightPerPiece: product.weightPerPiece,
       rating: product.rating || 0,
       ratingCount: product.ratingCount || 0,
+      quantity: product.quantity,
       image,
       vendor: {
         id: product.vendor?._id,
