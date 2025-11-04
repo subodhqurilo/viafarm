@@ -128,4 +128,4 @@ async function calculateOrderSummary(cartOrItems, couponCode, deliveryType = 'De
     };
 }
 
-module.exports = { calculateOrderSummary };
+module.exports = { calculateOrderSummary,getDeliveryCharge };

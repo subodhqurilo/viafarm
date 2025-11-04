@@ -11,7 +11,7 @@ const Address = require('../models/Address');
 const Review = require('../models/Review');
 const { upload, cloudinary } = require('../services/cloudinaryService');
 const Coupon = require('../models/Coupon');
-const { calculateOrderSummary } = require('../utils/orderUtils');
+const { calculateOrderSummary ,getDeliveryCharge } = require('../utils/orderUtils');
 const Donation = require('../models/Donation');
 const QRCode = require('qrcode');
 const PickupLocation = require('../models/PickupLocation');
@@ -1916,44 +1916,54 @@ const verifyPayment = asyncHandler(async (req, res) => {
 
 
 const getBuyerOrders = asyncHandler(async (req, res) => {
-    const buyerId = req.user._id;
+  const buyerId = req.user._id;
 
-    // 1. Fetch orders
-    const orders = await Order.find({ buyer: buyerId }).sort({ createdAt: -1 }).lean();
+  // 1️⃣ Fetch all orders for the buyer
+  const orders = await Order.find({ buyer: buyerId })
+    .sort({ createdAt: -1 })
+    .lean();
 
-    // 2. Deeply populate product and vendor details for each item
-    const populatedOrders = await Promise.all(
-        orders.map(async (order) => {
-            const items = Array.isArray(order.products) ? await Promise.all( // Assuming 'products' field holds item array
-                order.products.map(async (item) => {
-                    if (!item || !item.product) return null;
+  // 2️⃣ Populate product + vendor (with address & profilePicture)
+  const populatedOrders = await Promise.all(
+    orders.map(async (order) => {
+      const items = Array.isArray(order.products)
+        ? await Promise.all(
+            order.products.map(async (item) => {
+              if (!item || !item.product) return null;
 
-                    const product = await Product.findById(item.product)
-                        .select('name images unit quantity weightPerPiece price vendor')
-                        .lean();
-                    if (!product) return null;
+              const product = await Product.findById(item.product)
+                .select('name images unit quantity weightPerPiece price vendor')
+                .lean();
+              if (!product) return null;
 
-                    const vendor = await User.findById(product.vendor)
-                        .select('name') // Only need vendor name for list view
-                        .lean();
+              // Get vendor details
+              const vendor = await User.findById(product.vendor)
+                .select('name address profilePicture mobileNumber')
+                .lean();
 
-                    return {
-                        ...item,
-                        product,
-                        vendor
-                    };
-                })
-            ) : [];
+              return {
+                ...item,
+                product,
+                vendor,
+              };
+            })
+          )
+        : [];
 
-            return {
-                ...order,
-                items: items.filter(Boolean)
-            };
-        })
-    );
+      return {
+        ...order,
+        items: items.filter(Boolean),
+      };
+    })
+  );
 
-    res.status(200).json({ success: true, orders: populatedOrders });
+  // 3️⃣ Send response
+  res.status(200).json({
+    success: true,
+    orders: populatedOrders,
+  });
 });
+
 
 
 
@@ -1984,7 +1994,7 @@ const getOrderDetails = asyncHandler(async (req, res) => {
   // ✅ 3. Fetch product and vendor details
   const products = await Product.find({ _id: { $in: productIds } })
     .select("name images variety price unit vendor quantity weightPerPiece description category")
-    .populate("vendor", "name profilePicture mobileNumber address vendorDetails.about")
+    .populate("vendor", "name profilePicture mobileNumber address vendorDetails.about location state deliveryRegion")
     .lean();
 
   // ✅ 4. Fetch all product reviews in one query
@@ -1994,7 +2004,7 @@ const getOrderDetails = asyncHandler(async (req, res) => {
     .select("product rating comment images createdAt")
     .lean();
 
-  // ✅ 5. Organize reviews by productId
+  // ✅ 5. Group reviews by product
   const reviewsMap = reviews.reduce((acc, review) => {
     const pid = review.product.toString();
     acc[pid] = acc[pid] || [];
@@ -2009,7 +2019,7 @@ const getOrderDetails = asyncHandler(async (req, res) => {
     return acc;
   }, {});
 
-  // ✅ 6. Combine order items with product, vendor, and review details
+  // ✅ 6. Merge order items with product & vendor details
   const items = order.products
     .map((item) => {
       const product = products.find((p) => p._id.toString() === item.product.toString());
@@ -2038,21 +2048,45 @@ const getOrderDetails = asyncHandler(async (req, res) => {
             null,
           profilePicture: vendor.profilePicture,
           about: vendor.vendorDetails?.about || "",
+          location: vendor.location,
+          state: vendor.state,
+          deliveryRegion: vendor.deliveryRegion,
         },
         reviews: reviewsMap[product._id.toString()] || [],
       };
     })
     .filter(Boolean);
 
-  // ✅ 7. Extract unique vendors
-  const vendors = Object.values(
-    items.reduce((acc, item) => {
-      if (!acc[item.vendor.id]) acc[item.vendor.id] = item.vendor;
-      return acc;
-    }, {})
-  );
+  // ✅ 7. Group items by vendor
+  const vendorGroups = items.reduce((acc, item) => {
+    const vendorId = item.vendor.id.toString();
+    if (!acc[vendorId]) acc[vendorId] = { vendor: item.vendor, items: [] };
+    acc[vendorId].items.push(item);
+    return acc;
+  }, {});
 
-  // ✅ 8. Format date utility
+  // ✅ 8. Calculate delivery charges per vendor (skip if paymentMethod is UPI)
+  const vendorList = [];
+  for (const [vendorId, group] of Object.entries(vendorGroups)) {
+    const totalWeight = group.items.reduce(
+      (sum, i) => sum + (i.weightPerPiece || 0.2) * i.quantity,
+      0
+    );
+
+    let deliveryCharge = 0;
+
+    // 👇 Skip calculation if payment is via UPI
+    if (order.paymentMethod !== "UPI") {
+      deliveryCharge = await getDeliveryCharge(req.user._id, vendorId, totalWeight);
+    }
+
+    vendorList.push({
+      ...group.vendor,
+      deliveryCharge,
+    });
+  }
+
+  // ✅ 9. Format date
   const formatDate = (date) =>
     date
       ? new Date(date).toLocaleDateString("en-IN", {
@@ -2062,7 +2096,7 @@ const getOrderDetails = asyncHandler(async (req, res) => {
         })
       : null;
 
-  // ✅ 9. Final response
+  // ✅ 10. Final response
   res.status(200).json({
     success: true,
     order: {
@@ -2079,7 +2113,7 @@ const getOrderDetails = asyncHandler(async (req, res) => {
       pickupSlot: order.pickupSlot || null,
       comments: order.comments || "",
       shippingAddress: order.shippingAddress || {},
-      vendors,
+      vendors: vendorList,
       items,
     },
   });
