@@ -34,8 +34,10 @@ router.get("/public/products/:category", vendorController.getVendorProductsByCat
 // -------------------------
 // Orders
 // -------------------------
-router.get('/orders', vendorController.getVendorOrders);
 router.put('/orders/:id/update-status', vendorController.updateOrderStatus);
+
+router.get('/orders', vendorController.getVendorOrders);
+
 
 router.get('/orders/stats', vendorController.getVendorOrderStats);
 router.get('/orders/monthly', vendorController.getMonthlyOrders);

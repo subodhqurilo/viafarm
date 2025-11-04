@@ -8,8 +8,11 @@ const Category = require('../models/Category');
 const { upload, cloudinary } = require('../services/cloudinaryService');
 const Coupon = require('../models/Coupon');
 const Address = require('../models/Address');
+const Notification = require('../models/Notification');
 
 const { createAndSendNotification } = require('../utils/notificationUtils'); // ✅ Import your helper
+const { Expo } = require("expo-server-sdk");
+const expo = new Expo();
 
 
 // -------------------------------
@@ -405,45 +408,41 @@ const addProduct = asyncHandler(async (req, res) => {
 
   const vendorId = req.user._id;
 
-  // --- 1️⃣ Vendor Approval Check ---
+  // 1️⃣ Verify vendor approval
   const vendor = await User.findById(vendorId);
   if (!vendor || !vendor.isApproved) {
     return res.status(403).json({
       success: false,
-      message: "Your account is not approved. Cannot add products.",
+      message: "Your account is not approved. You cannot add products yet.",
     });
   }
 
-  // --- 2️⃣ Mandatory Field Validation ---
+  // 2️⃣ Validate required fields
   if (!name || !category || !variety || !price || !quantity || !unit) {
     return res.status(400).json({
       success: false,
-      message: "Missing required fields.",
+      message: "Please fill in all required fields.",
     });
   }
 
-  if (
-    isNaN(price) ||
-    isNaN(quantity) ||
-    Number(price) <= 0 ||
-    Number(quantity) <= 0
-  ) {
+  // 3️⃣ Validate numeric values
+  if (isNaN(price) || isNaN(quantity) || price <= 0 || quantity <= 0) {
     return res.status(400).json({
       success: false,
-      message: "Price and Quantity must be valid positive numbers.",
+      message: "Price and Quantity must be positive numeric values.",
     });
   }
 
-  // --- 3️⃣ Validation for "pc" unit ---
+  // 4️⃣ Validate “pc” unit requirement
   if (unit === "pc" && (!weightPerPiece || typeof weightPerPiece !== "string")) {
     return res.status(400).json({
       success: false,
       message:
-        'When selling by piece (pc), you must specify the weight per piece (e.g., "400g").',
+        'When selling by piece (pc), please specify weight per piece (e.g., "400g").',
     });
   }
 
-  // --- 4️⃣ Upload Product Images to Cloudinary ---
+  // 5️⃣ Upload images to Cloudinary
   let images = [];
   if (req.files && req.files.length > 0) {
     try {
@@ -454,10 +453,10 @@ const addProduct = asyncHandler(async (req, res) => {
         images.push(result.secure_url);
       }
     } catch (err) {
+      console.error("Cloudinary upload error:", err);
       return res.status(500).json({
         success: false,
         message: "Image upload failed. Please try again.",
-        error: err.message,
       });
     }
   } else {
@@ -467,7 +466,7 @@ const addProduct = asyncHandler(async (req, res) => {
     });
   }
 
-  // --- 5️⃣ Create Product in Database ---
+  // 6️⃣ Create product in database
   const isAllIndiaDelivery =
     allIndiaDelivery === "true" || allIndiaDelivery === true;
 
@@ -486,12 +485,13 @@ const addProduct = asyncHandler(async (req, res) => {
     weightPerPiece: unit === "pc" ? weightPerPiece : null,
   });
 
-  // --- 6️⃣ Notifications ---
-  // ✅ a. Send to Admin
+  // 7️⃣ 🔔 Notifications
+
+  // 👨‍💼 Admin (personal notification)
   await createAndSendNotification(
     req,
-    "New Product Added",
-    `${vendor.name} added a new product: ${newProduct.name}.`,
+    "🆕 New Product Added",
+    `${vendor.name} just added a new product "${newProduct.name}".`,
     {
       productId: newProduct._id,
       vendorId,
@@ -499,42 +499,31 @@ const addProduct = asyncHandler(async (req, res) => {
       price,
       quantity,
     },
-    "Admin" // 👈 only admins will get this
+    "Admin" // All Admin users
   );
 
-  // ✅ b. Send to Vendor (self)
+  // 🧑‍🌾 Vendor (personal confirmation)
   await createAndSendNotification(
     req,
-    "Product Added Successfully",
-    `Your product "${newProduct.name}" has been added successfully.`,
+    "✅ Product Added Successfully",
+    `Your product "${newProduct.name}" has been added successfully and is now in stock.`,
     {
       productId: newProduct._id,
       category,
       price,
     },
     "Vendor",
-    vendorId // 👈 specific vendor
+    vendorId // Personal vendor ID
   );
 
-  // ✅ c. (Optional) Send to All Buyers or All Users
-  // Uncomment this if you want to notify everyone
-  /*
-  await createAndSendNotification(
-    req,
-    "New Product Available!",
-    `${vendor.name} just added "${newProduct.name}" — check it out now!`,
-    { productId: newProduct._id },
-    "All" // 👈 broadcast to all
-  );
-  */
-
-  // --- 7️⃣ Response ---
+  // 8️⃣ Send Response
   res.status(201).json({
     success: true,
-    message: "Product added successfully.",
+    message: "Product added successfully and notifications sent.",
     data: newProduct,
   });
 });
+
 
 
 
@@ -550,18 +539,20 @@ const updateProduct = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
 
-  // 1️⃣ Find Product
+  // 1️⃣ Find product
   const product = await Product.findById(id);
   if (!product) {
     return res.status(404).json({ success: false, message: "Product not found." });
   }
 
-  // 2️⃣ Authorization Check
+  // 2️⃣ Vendor Authorization
   if (product.vendor.toString() !== req.user._id.toString()) {
-    return res.status(401).json({ success: false, message: "Not authorized to update this product." });
+    return res
+      .status(401)
+      .json({ success: false, message: "Not authorized to update this product." });
   }
 
-  // 3️⃣ Allowed Fields
+  // 3️⃣ Define allowed fields
   const allowedFields = [
     "name",
     "category",
@@ -577,13 +568,14 @@ const updateProduct = asyncHandler(async (req, res) => {
 
   const updateFields = {};
 
-  // 4️⃣ Process Field Updates
+  // 4️⃣ Validate and prepare updates
   for (const field of allowedFields) {
     if (updates[field] !== undefined) {
       if (field === "price" || field === "quantity") {
         updateFields[field] = Number(updates[field]);
       } else if (field === "allIndiaDelivery") {
-        updateFields[field] = updates[field] === true || updates[field] === "true";
+        updateFields[field] =
+          updates[field] === true || updates[field] === "true";
       } else if (typeof updates[field] === "string") {
         updateFields[field] = updates[field].trim();
       } else {
@@ -592,14 +584,15 @@ const updateProduct = asyncHandler(async (req, res) => {
     }
   }
 
-  // 5️⃣ Validation for "pc" unit
+  // 5️⃣ Validation for “pc” unit
   const finalUnit = updateFields.unit || product.unit;
   if (finalUnit === "pc") {
     const weight = updateFields.weightPerPiece || product.weightPerPiece;
     if (!weight || typeof weight !== "string") {
       return res.status(400).json({
         success: false,
-        message: 'When selling by piece (pc), you must specify "weightPerPiece" (e.g., "400g").',
+        message:
+          'When selling by piece (pc), please specify "weightPerPiece" (e.g., "400g").',
       });
     }
     updateFields.weightPerPiece = weight;
@@ -607,7 +600,7 @@ const updateProduct = asyncHandler(async (req, res) => {
     updateFields.weightPerPiece = null;
   }
 
-  // 6️⃣ Handle Image Uploads
+  // 6️⃣ Handle image upload (optional)
   if (req.files && req.files.length > 0) {
     try {
       const uploadedImages = [];
@@ -619,6 +612,7 @@ const updateProduct = asyncHandler(async (req, res) => {
       }
       updateFields.images = uploadedImages;
     } catch (error) {
+      console.error("Cloudinary upload error:", error);
       return res.status(500).json({
         success: false,
         message: "Image upload failed.",
@@ -627,55 +621,58 @@ const updateProduct = asyncHandler(async (req, res) => {
     }
   }
 
-  // --- Capture old price before update ---
+  // --- Save old price before updating ---
   const oldPrice = product.price;
 
-  // 7️⃣ Update the Product
+  // 7️⃣ Update product in DB
   const updatedProduct = await Product.findByIdAndUpdate(
     id,
     { $set: updateFields },
     { new: true, runValidators: true }
-  );
+  ).populate("vendor", "name _id");
 
-  const vendor = await User.findById(req.user._id);
+  // 8️⃣ 🔔 Notifications
 
-  // 8️⃣ Notification Logic
-
-  // ✅ a. Always notify Vendor (personal)
+  // 🧑‍🌾 Vendor (personal)
   await createAndSendNotification(
     req,
-    "Product Updated Successfully",
+    "✅ Product Updated",
     `Your product "${updatedProduct.name}" was updated successfully.`,
-    { productId: updatedProduct._id },
+    {
+      productId: updatedProduct._id,
+      newPrice: updatedProduct.price,
+      oldPrice,
+    },
     "Vendor",
-    vendor._id
+    updatedProduct.vendor._id
   );
 
-  // ✅ b. Notify all Buyers only if price drops
+  // 🛒 Buyers (only if price dropped)
   if (
     updateFields.price !== undefined &&
     Number(updateFields.price) < Number(oldPrice)
   ) {
     await createAndSendNotification(
       req,
-      "Price Drop Alert 💰",
-      `${updatedProduct.name} is now available for ₹${updateFields.price} (was ₹${oldPrice})!`,
+      "💰 Price Drop Alert!",
+      `Good news! "${updatedProduct.name}" is now ₹${updateFields.price} (was ₹${oldPrice}). Hurry up before stock runs out!`,
       {
         productId: updatedProduct._id,
         oldPrice,
         newPrice: updateFields.price,
       },
-      "Buyer" // send to all buyers
+      "Buyer" // 👈 sends to all buyers
     );
   }
 
-  // 9️⃣ Response
+  // ✅ 9️⃣ Final response
   res.status(200).json({
     success: true,
     message: "Product updated successfully.",
     data: updatedProduct,
   });
 });
+
 
 
 
@@ -809,25 +806,68 @@ const deleteProduct = asyncHandler(async (req, res) => {
 // @route   PUT /api/vendor/products/:id/status
 // @access  Private/Vendor
 const updateProductStatus = asyncHandler(async (req, res) => {
-    const product = await Product.findById(req.params.id);
+  const { id } = req.params;
+  const { status } = req.body;
 
-    if (!product) {
-        return res.status(404).json({ success: false, message: 'Product not found' });
-    }
+  // 1️⃣ Find Product
+  const product = await Product.findById(id).populate("vendor", "name _id");
+  if (!product) {
+    return res.status(404).json({ success: false, message: "Product not found." });
+  }
 
-    if (product.vendor.toString() !== req.user._id.toString()) {
-        return res.status(401).json({ success: false, message: 'Not authorized' });
-    }
+  // 2️⃣ Vendor Authorization
+  if (product.vendor._id.toString() !== req.user._id.toString()) {
+    return res.status(401).json({ success: false, message: "Not authorized to update this product." });
+  }
 
-    product.status = req.body.status;
-    const updatedProduct = await product.save();
+  // 3️⃣ Update Product Status
+  product.status = status;
+  const updatedProduct = await product.save();
 
-    res.json({
-        success: true,
-        message: 'Product status updated',
-        data: updatedProduct,
-    });
+  // 4️⃣ 🔔 Send Notifications
+
+  // 👨‍💼 Admin Notification
+  await createAndSendNotification(
+    req,
+    "Product Status Updated",
+    `${product.vendor.name} changed the status of "${updatedProduct.name}" to "${status}".`,
+    {
+      productId: updatedProduct._id,
+      vendorId: product.vendor._id,
+      status,
+    },
+    "Admin" // ✅ Notify all admins
+  );
+
+  // 🛒 Buyer Notification (Broadcast)
+  let message = "";
+  if (status === "In Stock") {
+    message = `Good news! "${updatedProduct.name}" is now back in stock. Shop now!`;
+  } else if (status === "Out of Stock" || status === "Inactive") {
+    message = `Heads up! "${updatedProduct.name}" is now out of stock.`;
+  } else {
+    message = `The status of "${updatedProduct.name}" has been updated to "${status}".`;
+  }
+
+  await createAndSendNotification(
+    req,
+    "Product Availability Update",
+    message,
+    {
+      productId: updatedProduct._id,
+      status,
+    },
+    "Buyer" // ✅ Notify all buyers
+  );
+
+  // 5️⃣ Response
+  res.status(200).json({
+    success: true,
+    message: "Product status updated and notifications sent.",
+    data: updatedProduct,
+  });
 });
+
 
 // -------------------------------
 // Order Management
@@ -854,49 +894,50 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
 
   // 1️⃣ Find the order
   const order = await Order.findById(req.params.id)
-    .populate("products.product buyer vendor")
-    .select("+orderStatus");
+    .populate("products.product buyer vendor", "name _id email");
 
   if (!order) {
     return res.status(404).json({
       success: false,
-      message: "Order not found",
+      message: "Order not found.",
     });
   }
 
-  // 2️⃣ Only vendor who owns the order can update
+  // 2️⃣ Authorization: Only vendor who owns this order can update
   if (order.vendor._id.toString() !== req.user._id.toString()) {
     return res.status(401).json({
       success: false,
-      message: "Not authorized",
+      message: "Not authorized to update this order.",
     });
   }
 
-  // 3️⃣ Update order status
+  // 3️⃣ Update status
   order.orderStatus = status;
   const updatedOrder = await order.save();
 
-  // 4️⃣ Send Notifications
+  // 4️⃣ 🔔 Send Notifications
   try {
-    // 🧍‍♂️ Notify Buyer
+    // 🧍‍♂️ Personal Buyer Notification
     await createAndSendNotification(
       req,
       "Order Status Updated",
-      `Your order #${order._id} status has been updated to "${status}".`,
+      `Your order (${order._id}) status has been updated to "${status}".`,
       {
         orderId: order._id,
+        status,
         vendorId: order.vendor._id,
-        products: order.products,
+        vendorName: order.vendor.name,
       },
       "Buyer",
-      order.buyer._id
+      order.buyer._id // 🎯 personal buyer
     );
 
-    // 👨‍💼 Notify Admin
+    // (Optional) 👨‍💼 Notify Admin — if you ever want to log status changes
+    /*
     await createAndSendNotification(
       req,
-      "Order Status Changed",
-      `${order.vendor.name} updated order #${order._id} status to "${status}".`,
+      "Order Status Changed by Vendor",
+      `${order.vendor.name} updated order (${order._id}) status to "${status}".`,
       {
         orderId: order._id,
         buyerId: order.buyer._id,
@@ -905,21 +946,24 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
       },
       "Admin"
     );
+    */
   } catch (err) {
-    console.error("Notification sending failed:", err);
+    console.error("❌ Notification sending failed:", err.message);
   }
 
-  // 5️⃣ Response with renamed field (orderStatus → status)
+  // 5️⃣ Prepare response (rename orderStatus → status)
   const responseOrder = updatedOrder.toObject();
   responseOrder.status = responseOrder.orderStatus;
   delete responseOrder.orderStatus;
 
-  res.json({
+  // ✅ Final Response
+  res.status(200).json({
     success: true,
-    message: "Order status updated",
+    message: `Order status updated to "${status}" and buyer notified.`,
     data: responseOrder,
   });
 });
+
 
 
 
