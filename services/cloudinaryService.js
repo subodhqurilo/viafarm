@@ -5,12 +5,14 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
+// 🔹 Cloudinary Config
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// 🔹 Storage Setup
 const storage = new CloudinaryStorage({
   cloudinary,
   params: {
@@ -19,9 +21,20 @@ const storage = new CloudinaryStorage({
   },
 });
 
-const upload = multer({ storage }); // For routes
+// ✅ 5 MB Limit + Validation
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB in bytes
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/jpg'];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error('Only .jpg, .jpeg, and .png formats are allowed!'));
+    }
+    cb(null, true);
+  },
+});
 
-// Helper functions for controller usage
+// 🔹 Helper functions for controller usage
 const cloudinaryUpload = (filePath, folder = 'farm-ecomm-products') => {
   return cloudinary.uploader.upload(filePath, { folder });
 };

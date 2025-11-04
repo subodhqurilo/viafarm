@@ -1,6 +1,5 @@
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
-
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const User = require('../models/User');
@@ -10,18 +9,12 @@ const Coupon = require('../models/Coupon');
 const Address = require('../models/Address');
 const Notification = require('../models/Notification');
 
-const { createAndSendNotification } = require('../utils/notificationUtils'); // ✅ Import your helper
+const { createAndSendNotification } = require('../utils/notificationUtils'); 
 const { Expo } = require("expo-server-sdk");
 const expo = new Expo();
 
 
-// -------------------------------
-// Vendor Dashboard
-// -------------------------------
 
-// @desc    Get vendor dashboard data
-// @route   GET /api/vendor/dashboard
-// @access  Private/Vendor
 const getDashboardData = asyncHandler(async (req, res) => {
   try {
     const vendorId = req.user._id;
@@ -373,14 +366,6 @@ const getTodaysOrders = asyncHandler(async (req, res) => {
 });
 
 
-
-// -------------------------------
-// Product Management
-// -------------------------------
-
-// @desc    Get all products for the logged-in vendor
-// @route   GET /api/vendor/products
-// @access  Private/Vendor
 const getVendorProducts = asyncHandler(async (req, res) => {
     const vendorId = req.user._id;
     const products = await Product.find({ vendor: vendorId });
@@ -388,9 +373,6 @@ const getVendorProducts = asyncHandler(async (req, res) => {
 });
 
 
-// @desc    Add a new product
-// @route   POST /api/vendor/products/add
-// @access  Private/Vendor
 
 
 const addProduct = asyncHandler(async (req, res) => {
@@ -525,16 +507,6 @@ const addProduct = asyncHandler(async (req, res) => {
 });
 
 
-
-
-
-
-
-
-
-// @desc    Update an existing product
-// @route   PUT /api/vendor/products/:id
-// @access  Private/Vendor
 const updateProduct = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
@@ -675,8 +647,6 @@ const updateProduct = asyncHandler(async (req, res) => {
 
 
 
-
-
 const getProductById = asyncHandler(async (req, res) => {
     const { id } = req.params;
 
@@ -745,11 +715,6 @@ const getProductById = asyncHandler(async (req, res) => {
 
 
 
-
-
-// @desc    Delete a product
-// @route   DELETE /api/vendor/products/:id
-// @access  Private/Vendor
 const deleteProduct = asyncHandler(async (req, res) => {
     const { id } = req.params;
 
@@ -802,9 +767,7 @@ const deleteProduct = asyncHandler(async (req, res) => {
 });
 
 
-// @desc    Update product stock/status
-// @route   PUT /api/vendor/products/:id/status
-// @access  Private/Vendor
+
 const updateProductStatus = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
@@ -869,13 +832,6 @@ const updateProductStatus = asyncHandler(async (req, res) => {
 });
 
 
-// -------------------------------
-// Order Management
-// -------------------------------
-
-// @desc    Get all orders for the logged-in vendor
-// @route   GET /api/vendor/orders
-// @access  Private/Vendor
 const getVendorOrders = asyncHandler(async (req, res) => {
     const orders = await Order.find({ vendor: req.user._id })
         .populate('buyer', 'name email mobileNumber')           // only bring buyer details you need
@@ -886,9 +842,6 @@ const getVendorOrders = asyncHandler(async (req, res) => {
 
 
 
-// @desc    Update an order's status
-// @route   PUT /api/vendor/orders/:id/update-status
-// @access  Private/Vendor
 const updateOrderStatus = asyncHandler(async (req, res) => {
   const { status } = req.body;
 
@@ -1096,20 +1049,9 @@ const getVendorProductsByCategory = asyncHandler(async (req, res) => {
 });
 
 
-
-
-
-// -------------------------------
 // Coupon Management
-// -------------------------------
 
-// @desc    Get coupons for the logged-in vendor
-// @route   GET /api/vendor/coupons
-// @access  Private/Vendor
 
-// @desc    Get a single coupon by ID
-// @route   GET /api/vendor/coupons/:id
-// @access  Private/Vendor
 const getVendorCouponById = asyncHandler(async (req, res) => {
     const coupon = await Coupon.findById(req.params.id);
 
@@ -1131,7 +1073,7 @@ const createCoupon = asyncHandler(async (req, res) => {
   const {
     code,
     discountValue,
-    discountType = "Percentage",
+    discountType = "Percentage", // Default
     minimumOrder = 0,
     usageLimitPerUser = 1,
     totalUsageLimit,
@@ -1148,18 +1090,29 @@ const createCoupon = asyncHandler(async (req, res) => {
   if (!code || !discountValue || !startDate || !expiryDate) {
     return res.status(400).json({
       success: false,
-      message: "Missing required fields (code, discountValue, startDate, expiryDate).",
+      message:
+        "Missing required fields (code, discountValue, startDate, expiryDate).",
     });
   }
 
-  // 2️⃣ Check duplicate code
-  if (await Coupon.findOne({ code: code.toUpperCase() })) {
+  // 2️⃣ Validate discount type
+  if (!["Fixed", "Percentage"].includes(discountType)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid discountType. Must be 'Fixed' or 'Percentage'.",
+    });
+  }
+
+  // 3️⃣ Check duplicate code
+  const existingCoupon = await Coupon.findOne({ code: code.toUpperCase() });
+  if (existingCoupon) {
     return res.status(400).json({
       success: false,
       message: "Coupon code already exists.",
     });
   }
 
+  // 4️⃣ Validate date range
   const start = new Date(startDate);
   const expiry = new Date(expiryDate);
   if (expiry <= start) {
@@ -1169,7 +1122,7 @@ const createCoupon = asyncHandler(async (req, res) => {
     });
   }
 
-  // 3️⃣ Determine applicable products
+  // 5️⃣ Determine applicable products
   let finalApplicableProductIds = [];
   let isUniversal = false;
 
@@ -1192,7 +1145,8 @@ const createCoupon = asyncHandler(async (req, res) => {
     if (productsInVendor.length !== productIds.length) {
       return res.status(403).json({
         success: false,
-        message: "Selected products must belong to your account and chosen categories.",
+        message:
+          "Selected products must belong to your account and chosen categories.",
       });
     }
 
@@ -1216,10 +1170,13 @@ const createCoupon = asyncHandler(async (req, res) => {
     });
   }
 
-  // 4️⃣ Create the coupon
+  // 6️⃣ Create the coupon
   const newCoupon = await Coupon.create({
     code: code.toUpperCase(),
-    discount: { value: parseFloat(discountValue), type: discountType },
+    discount: {
+      value: parseFloat(discountValue),
+      type: discountType, // only one — validated above
+    },
     appliesTo,
     applicableProducts: isUniversal ? [] : finalApplicableProductIds,
     startDate: start,
@@ -1232,7 +1189,7 @@ const createCoupon = asyncHandler(async (req, res) => {
     status,
   });
 
-  // 5️⃣ 🔔 Send Notifications
+  // 7️⃣ 🔔 Send Notifications
   try {
     // 👨‍💼 Notify Admin(s)
     await createAndSendNotification(
@@ -1267,7 +1224,9 @@ const createCoupon = asyncHandler(async (req, res) => {
     await createAndSendNotification(
       req,
       "New Coupon Available 🎟️",
-      `A new coupon "${newCoupon.code}" is now live! Use it to get ${discountValue}${discountType === "Percentage" ? "%" : "₹"} off your next purchase.`,
+      `A new coupon "${newCoupon.code}" is now live! Use it to get ${discountValue}${
+        discountType === "Percentage" ? "%" : "₹"
+      } off your next purchase.`,
       {
         couponId: newCoupon._id,
         discountValue,
@@ -1280,20 +1239,14 @@ const createCoupon = asyncHandler(async (req, res) => {
     console.error("❌ Notification sending failed:", err.message);
   }
 
-  // 6️⃣ ✅ Response
+  // 8️⃣ ✅ Response
   res.status(201).json({
     success: true,
-    message: "Coupon created successfully and notifications sent to Admin, Vendor, and Buyers.",
+    message:
+      "Coupon created successfully and notifications sent to Admin, Vendor, and Buyers.",
     data: newCoupon,
   });
 });
-
-
-
-
-
-
-
 
 
 
@@ -1337,13 +1290,6 @@ const getVendorCoupons = asyncHandler(async (req, res) => {
     data: coupons
   });
 });
-
-module.exports = { getVendorCoupons };
-
-
-
-
-
 
 
 // Update a coupon
@@ -1515,12 +1461,6 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
 });
 
 
-
-
-
-
-
-
 const deleteVendorCoupon = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const vendorId = req.user._id;
@@ -1579,25 +1519,6 @@ const deleteVendorCoupon = asyncHandler(async (req, res) => {
 });
 
 
-
-
-
-
-
-
-
-
-
-// -------------------------------
-// Vendor Profile & Settings
-// -------------------------------
-
-// @desc    Get vendor profile details
-// @route   GET /api/vendor/profile
-// @access  Private/Vendor
-
-
-
 const getUserProfile = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user.id).select('-password'); 
   if (!user) {
@@ -1632,16 +1553,6 @@ const getUserProfile = asyncHandler(async (req, res) => {
 
   res.status(200).json({ success: true, user: responseData });
 });
-
-
-
-
-
-// @desc    Update User/Vendor Profile
-// @route   PUT /api/user/profile
-// @access  Private
-
-
 
 
 const updateUserProfile = asyncHandler(async (req, res) => {
@@ -1796,17 +1707,6 @@ const updateUserProfile = asyncHandler(async (req, res) => {
 });
 
 
-
-module.exports = { updateUserProfile };
-
-
-
-
-
-
-
-
-
 const uploadProfileImage = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user.id);
   if (!user) {
@@ -1858,10 +1758,6 @@ const uploadProfileImage = asyncHandler(async (req, res) => {
   });
 });
 
-
-// @desc    Change password
-// @route   POST /api/vendor/change-password
-// @access  Private/Vendor
 const changePassword = asyncHandler(async (req, res) => {
   const { password, confirmPassword } = req.body;
 
@@ -1906,15 +1802,6 @@ const changePassword = asyncHandler(async (req, res) => {
 });
 
 
-
-
-
-/**
- * @desc    Updates the authenticated user's address and GeoJSON location.
- * GeoJSON coordinates (latitude/longitude) are optional.
- * @route   PUT /api/user/profile/location
- * @access  Private (Authenticated User/Vendor)
- */
 const updateLocationDetails = asyncHandler(async (req, res) => {
     const { 
         pinCode, 
@@ -2063,9 +1950,7 @@ const reportUserIssue = asyncHandler(async (req, res) => {
     res.status(201).json({ success: true, message: 'Issue reported successfully.' });
 });
 
-// @desc    Logout
-// @route   POST /api/vendor/logout
-// @access  Private/Vendor
+
 const logout = asyncHandler(async (req, res) => {
     res.json({ success: true, message: 'Logged out successfully' });
 });
@@ -2080,7 +1965,7 @@ module.exports = {
     getVendorOrders,
     updateOrderStatus,
     getVendorCoupons,
-    getVendorCouponById,       // <-- add this
+    getVendorCouponById,       
     createCoupon,
     updateVendorCoupon,
     deleteVendorCoupon,
@@ -2091,7 +1976,7 @@ module.exports = {
     changePassword,getVendorProductsByCategory,
     logout,
     uploadProfileImage,
-    updateLocationDetails,   // <-- missing
+    updateLocationDetails,   
     updateUserLanguage,
     updateOrderStatus,
     getMonthlyOrders,

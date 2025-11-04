@@ -5,13 +5,13 @@ const Order = require('../models/Order');
 const Banner = require('../models/Banner');
 const Coupon = require('../models/Coupon');
 const Category = require('../models/Category');
-const Cart = require("../models/Cart");        // 👈 add this
+const Cart = require("../models/Cart");
 const Wishlist = require("../models/Wishlist");
 const { cloudinary, cloudinaryUpload, cloudinaryDestroy, upload } = require('../services/cloudinaryService');
-const mongoose = require('mongoose');   // <-- ADD THIS
+const mongoose = require('mongoose');
 const NotificationSettings = require('../models/NotificationSettings');
-const CustomerSupport = require('../models/CustomerSupport'); 
- const StaticPage = require('../models/StaticPage');
+const CustomerSupport = require('../models/CustomerSupport');
+const StaticPage = require('../models/StaticPage');
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const Notification = require('../models/Notification');
 const { Expo } = require("expo-server-sdk");
@@ -20,93 +20,77 @@ const expo = new Expo();
 const Address = require('../models/Address');
 
 
-
-
-// @desc    Get admin dashboard stats
-// @route   GET /api/admin/dashboard
-// @access  Private/Admin
-// A simple function to calculate the numeric percentage change.
-
-// A robust function to calculate the numeric percentage change.
-
-
-// @desc    Get key dashboard statistics
-// @route   GET /api/admin/dashboard/stats
-// @access  Private/Admin
 const calculateChange = (current, previous) => {
-  if (previous === 0) return current === 0 ? 0 : 100;
-  return ((current - previous) / previous) * 100;
+    if (previous === 0) return current === 0 ? 0 : 100;
+    return ((current - previous) / previous) * 100;
 };
 
 // Format the change into a readable string (e.g., "+12%" or "-8%")
 const formatChange = (value) => {
-  const prefix = value >= 0 ? '+' : '';
-  return `${prefix}${value.toFixed(1)}%`;
+    const prefix = value >= 0 ? '+' : '';
+    return `${prefix}${value.toFixed(1)}%`;
 };
 
-// Main Controller
+
 const getDashboardStats = asyncHandler(async (req, res) => {
-  const oneMonthAgo = new Date();
-  oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
 
-  // 1️⃣ Vendors (Active)
-  const activeVendors = await User.countDocuments({ role: 'Vendor', status: 'Active' });
-  const activeVendorsPrevious = await User.countDocuments({
-    role: 'Vendor',
-    status: 'Active',
-    createdAt: { $lt: oneMonthAgo },
-  });
+    // 1️⃣ Vendors (Active)
+    const activeVendors = await User.countDocuments({ role: 'Vendor', status: 'Active' });
+    const activeVendorsPrevious = await User.countDocuments({
+        role: 'Vendor',
+        status: 'Active',
+        createdAt: { $lt: oneMonthAgo },
+    });
 
-  // 2️⃣ Buyers (Active)
-  const activeBuyers = await User.countDocuments({ role: 'Buyer', status: 'Active' });
-  const activeBuyersPrevious = await User.countDocuments({
-    role: 'Buyer',
-    status: 'Active',
-    createdAt: { $lt: oneMonthAgo },
-  });
+    // 2️⃣ Buyers (Active)
+    const activeBuyers = await User.countDocuments({ role: 'Buyer', status: 'Active' });
+    const activeBuyersPrevious = await User.countDocuments({
+        role: 'Buyer',
+        status: 'Active',
+        createdAt: { $lt: oneMonthAgo },
+    });
 
-  // 3️⃣ Products (In Stock)
-  const activeProducts = await Product.countDocuments({ status: 'In Stock' });
-  const activeProductsPrevious = await Product.countDocuments({
-    status: 'In Stock',
-    createdAt: { $lt: oneMonthAgo },
-  });
+    // 3️⃣ Products (In Stock)
+    const activeProducts = await Product.countDocuments({ status: 'In Stock' });
+    const activeProductsPrevious = await Product.countDocuments({
+        status: 'In Stock',
+        createdAt: { $lt: oneMonthAgo },
+    });
 
-  // 4️⃣ Orders (Confirmed or In Process)
-  const orderFilter = { orderStatus: { $in: ['Confirmed', 'In Process'] } };
-  const activeOrders = await Order.countDocuments(orderFilter);
-  const activeOrdersPrevious = await Order.countDocuments({
-    ...orderFilter,
-    createdAt: { $lt: oneMonthAgo },
-  });
+    // 4️⃣ Orders (Confirmed or In Process)
+    const orderFilter = { orderStatus: { $in: ['Confirmed', 'In Process'] } };
+    const activeOrders = await Order.countDocuments(orderFilter);
+    const activeOrdersPrevious = await Order.countDocuments({
+        ...orderFilter,
+        createdAt: { $lt: oneMonthAgo },
+    });
 
-  // Helper: Build stat object
-  const buildStat = (current, previous) => {
-    const changeValue = calculateChange(current, previous);
-    return {
-      current,
-      change: formatChange(changeValue),
-      increased: current >= previous, // ✅ true if increased, false if decreased
+    // Helper: Build stat object
+    const buildStat = (current, previous) => {
+        const changeValue = calculateChange(current, previous);
+        return {
+            current,
+            change: formatChange(changeValue),
+            increased: current >= previous, // ✅ true if increased, false if decreased
+        };
     };
-  };
 
-  // Final Response Object
-  const stats = {
-    vendors: buildStat(activeVendors, activeVendorsPrevious),
-    buyers: buildStat(activeBuyers, activeBuyersPrevious),
-    products: buildStat(activeProducts, activeProductsPrevious),
-    orders: buildStat(activeOrders, activeOrdersPrevious),
-  };
+    // Final Response Object
+    const stats = {
+        vendors: buildStat(activeVendors, activeVendorsPrevious),
+        buyers: buildStat(activeBuyers, activeBuyersPrevious),
+        products: buildStat(activeProducts, activeProductsPrevious),
+        orders: buildStat(activeOrders, activeOrdersPrevious),
+    };
 
-  res.status(200).json({
-    success: true,
-    data: stats,
-  });
+    res.status(200).json({
+        success: true,
+        data: stats,
+    });
 });
 
-// @desc    Get recent activities (e.g., new registrations)
-// @route   GET /api/admin/dashboard/recent-activity
-// @access  Private/Admin
 const getRecentActivity = asyncHandler(async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
@@ -131,49 +115,43 @@ const getRecentActivity = asyncHandler(async (req, res) => {
     });
 });
 
-// @desc    Get all products for admin view
-// @route   GET /api/admin/products
-// @access  Private/Admin
 const getProducts = asyncHandler(async (req, res) => {
-  const { q, category } = req.query;
+    const { q, category } = req.query;
 
-  const query = {};
+    const query = {};
 
-  // 🔍 Search by product name or vendor name
-  if (q) {
-    const matchingVendors = await User.find({
-      role: "Vendor",
-      name: { $regex: q, $options: "i" },
-    }).select("_id");
+    // 🔍 Search by product name or vendor name
+    if (q) {
+        const matchingVendors = await User.find({
+            role: "Vendor",
+            name: { $regex: q, $options: "i" },
+        }).select("_id");
 
-    const vendorIds = matchingVendors.map((vendor) => vendor._id);
+        const vendorIds = matchingVendors.map((vendor) => vendor._id);
 
-    query.$or = [
-      { name: { $regex: q, $options: "i" } },
-      { vendor: { $in: vendorIds } },
-    ];
-  }
+        query.$or = [
+            { name: { $regex: q, $options: "i" } },
+            { vendor: { $in: vendorIds } },
+        ];
+    }
 
-  // 🏷️ Filter by category
-  if (category) {
-    query.category = { $regex: category, $options: "i" };
-  }
+    // 🏷️ Filter by category
+    if (category) {
+        query.category = { $regex: category, $options: "i" };
+    }
 
-  // 📦 Fetch all matching products
-  const products = await Product.find(query)
-    .populate("vendor", "name")
-    .select("name category price unit createdAt")
-    .sort({ createdAt: -1 });
+    // 📦 Fetch all matching products
+    const products = await Product.find(query)
+        .populate("vendor", "name")
+        .select("name category price unit createdAt")
+        .sort({ createdAt: -1 });
 
-  res.status(200).json({
-    success: true,
-    total: products.length,
-    data: products,
-  });
+    res.status(200).json({
+        success: true,
+        total: products.length,
+        data: products,
+    });
 });
-
-
-
 
 
 const getAdminProductDetails = asyncHandler(async (req, res) => {
@@ -198,191 +176,178 @@ const getAdminProductDetails = asyncHandler(async (req, res) => {
     });
 });
 
-
-
 const addOrUpdateNutritionalValue = asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  const { servingSize, nutrients, additionalNote } = req.body;
+    const { id } = req.params;
+    const { servingSize, nutrients, additionalNote } = req.body;
 
-  // 1️⃣ Update Product nutritional details
-  const product = await Product.findByIdAndUpdate(
-    id,
-    {
-      nutritionalValue: { servingSize, nutrients, additionalNote },
-    },
-    { new: true, runValidators: true }
-  ).populate("vendor", "name _id expoPushToken");
-
-  if (!product) {
-    return res.status(404).json({
-      success: false,
-      message: "Product not found.",
-    });
-  }
-
-  // 2️⃣ Initialize socket and online users
-  const io = req.app.get("io");
-  const onlineUsers = req.app.get("onlineUsers");
-
-  // 3️⃣ Notification templates
-  const vendorNotification = {
-    title: "Product Updated by Admin 🧾",
-    message: `Admin has updated nutritional information for your product "${product.name}".`,
-    type: "info",
-    receiver: product.vendor._id,
-    sender: req.user._id,
-    role: "Vendor",
-  };
-
-  const adminNotification = {
-    title: "Update Successful ✅",
-    message: `You successfully updated nutritional information for "${product.name}".`,
-    type: "success",
-    receiver: req.user._id,
-    sender: req.user._id,
-    role: "Admin",
-  };
-
-  // 4️⃣ Save notifications in DB
-  await Notification.insertMany([
-    { ...vendorNotification, relatedProduct: product._id },
-    { ...adminNotification, relatedProduct: product._id },
-  ]);
-
-  // 5️⃣ Real-time socket notifications
-  const vendorId = product.vendor?._id?.toString();
-  const adminId = req.user._id.toString();
-
-  // Vendor (web socket)
-  if (vendorId && onlineUsers[vendorId]) {
-    io.to(onlineUsers[vendorId].socketId).emit("notification", vendorNotification);
-  }
-
-  // Admin (web socket)
-  if (onlineUsers[adminId]) {
-    io.to(onlineUsers[adminId].socketId).emit("notification", adminNotification);
-  }
-
-  // 6️⃣ Send Expo Push Notification (for vendor mobile app)
-  if (product.vendor?.expoPushToken && Expo.isExpoPushToken(product.vendor.expoPushToken)) {
-    try {
-      await expo.sendPushNotificationsAsync([
+    // 1️⃣ Update Product nutritional details
+    const product = await Product.findByIdAndUpdate(
+        id,
         {
-          to: product.vendor.expoPushToken,
-          sound: "default",
-          title: vendorNotification.title,
-          body: vendorNotification.message,
-          data: { productId: product._id },
+            nutritionalValue: { servingSize, nutrients, additionalNote },
         },
-      ]);
-    } catch (expoError) {
-      console.error("Expo push send error:", expoError);
-    }
-  }
+        { new: true, runValidators: true }
+    ).populate("vendor", "name _id expoPushToken");
 
-  // 7️⃣ Response
-  res.status(200).json({
-    success: true,
-    message: "Nutritional value updated successfully and notifications sent.",
-    data: product.nutritionalValue,
-  });
+    if (!product) {
+        return res.status(404).json({
+            success: false,
+            message: "Product not found.",
+        });
+    }
+
+    // 2️⃣ Initialize socket and online users
+    const io = req.app.get("io");
+    const onlineUsers = req.app.get("onlineUsers");
+
+    // 3️⃣ Notification templates
+    const vendorNotification = {
+        title: "Product Updated by Admin 🧾",
+        message: `Admin has updated nutritional information for your product "${product.name}".`,
+        type: "info",
+        receiver: product.vendor._id,
+        sender: req.user._id,
+        role: "Vendor",
+    };
+
+    const adminNotification = {
+        title: "Update Successful ✅",
+        message: `You successfully updated nutritional information for "${product.name}".`,
+        type: "success",
+        receiver: req.user._id,
+        sender: req.user._id,
+        role: "Admin",
+    };
+
+    // 4️⃣ Save notifications in DB
+    await Notification.insertMany([
+        { ...vendorNotification, relatedProduct: product._id },
+        { ...adminNotification, relatedProduct: product._id },
+    ]);
+
+    // 5️⃣ Real-time socket notifications
+    const vendorId = product.vendor?._id?.toString();
+    const adminId = req.user._id.toString();
+
+    // Vendor (web socket)
+    if (vendorId && onlineUsers[vendorId]) {
+        io.to(onlineUsers[vendorId].socketId).emit("notification", vendorNotification);
+    }
+
+    // Admin (web socket)
+    if (onlineUsers[adminId]) {
+        io.to(onlineUsers[adminId].socketId).emit("notification", adminNotification);
+    }
+
+    // 6️⃣ Send Expo Push Notification (for vendor mobile app)
+    if (product.vendor?.expoPushToken && Expo.isExpoPushToken(product.vendor.expoPushToken)) {
+        try {
+            await expo.sendPushNotificationsAsync([
+                {
+                    to: product.vendor.expoPushToken,
+                    sound: "default",
+                    title: vendorNotification.title,
+                    body: vendorNotification.message,
+                    data: { productId: product._id },
+                },
+            ]);
+        } catch (expoError) {
+            console.error("Expo push send error:", expoError);
+        }
+    }
+
+    // 7️⃣ Response
+    res.status(200).json({
+        success: true,
+        message: "Nutritional value updated successfully and notifications sent.",
+        data: product.nutritionalValue,
+    });
 });
 
-
-
-
-
-
-
-
-
-// @desc    Delete a product
-// @route   DELETE /api/admin/products/:id
-// @access  Private/Admin
 const deleteProduct = asyncHandler(async (req, res) => {
-  const productId = req.params.id;
+    const productId = req.params.id;
 
-  // 1️⃣ Find product before deleting
-  const product = await Product.findById(productId).populate("vendor", "_id name expoPushToken");
+    // 1️⃣ Find product before deleting
+    const product = await Product.findById(productId).populate("vendor", "_id name expoPushToken");
 
-  if (!product) {
-    return res.status(404).json({
-      success: false,
-      message: "Product not found.",
-    });
-  }
+    if (!product) {
+        return res.status(404).json({
+            success: false,
+            message: "Product not found.",
+        });
+    }
 
-  // 2️⃣ Delete product
-  await product.deleteOne();
+    // 2️⃣ Delete product
+    await product.deleteOne();
 
-  // 3️⃣ Get io, online users, and Notification model
-  const io = req.app.get("io");
-  const onlineUsers = req.app.get("onlineUsers");
+    // 3️⃣ Get io, online users, and Notification model
+    const io = req.app.get("io");
+    const onlineUsers = req.app.get("onlineUsers");
 
-  // 4️⃣ Notify the vendor personally (DB + Socket + Expo)
-  const vendorId = product.vendor?._id?.toString();
-  if (vendorId) {
-    const vendorNotification = {
-      title: "Product Deleted 🗑️",
-      message: `Admin has deleted your product "${product.name}".`,
-      type: "warning",
-      sender: req.user._id,
-      receiver: vendorId,
-      role: "Vendor",
-      relatedProduct: product._id,
+    // 4️⃣ Notify the vendor personally (DB + Socket + Expo)
+    const vendorId = product.vendor?._id?.toString();
+    if (vendorId) {
+        const vendorNotification = {
+            title: "Product Deleted 🗑️",
+            message: `Admin has deleted your product "${product.name}".`,
+            type: "warning",
+            sender: req.user._id,
+            receiver: vendorId,
+            role: "Vendor",
+            relatedProduct: product._id,
+        };
+
+        // Save in DB
+        await Notification.create(vendorNotification);
+
+        // Send real-time notification (Socket)
+        if (onlineUsers[vendorId]) {
+            io.to(onlineUsers[vendorId].socketId).emit("notification", vendorNotification);
+        }
+
+        // Send Expo Push Notification (Mobile App)
+        if (product.vendor.expoPushToken && Expo.isExpoPushToken(product.vendor.expoPushToken)) {
+            try {
+                await expo.sendPushNotificationsAsync([
+                    {
+                        to: product.vendor.expoPushToken,
+                        sound: "default",
+                        title: vendorNotification.title,
+                        body: vendorNotification.message,
+                        data: { productId: product._id },
+                    },
+                ]);
+            } catch (error) {
+                console.error("Expo push error:", error);
+            }
+        }
+    }
+
+    // 5️⃣ Notify the admin (self confirmation)
+    const adminId = req.user._id.toString();
+    const adminNotification = {
+        title: "Product Removed ✅",
+        message: `You successfully deleted the product "${product.name}".`,
+        type: "success",
+        sender: adminId,
+        receiver: adminId,
+        role: "Admin",
+        relatedProduct: product._id,
     };
 
     // Save in DB
-    await Notification.create(vendorNotification);
+    await Notification.create(adminNotification);
 
-    // Send real-time notification (Socket)
-    if (onlineUsers[vendorId]) {
-      io.to(onlineUsers[vendorId].socketId).emit("notification", vendorNotification);
+    // Send via socket (web)
+    if (onlineUsers[adminId]) {
+        io.to(onlineUsers[adminId].socketId).emit("notification", adminNotification);
     }
 
-    // Send Expo Push Notification (Mobile App)
-    if (product.vendor.expoPushToken && Expo.isExpoPushToken(product.vendor.expoPushToken)) {
-      try {
-        await expo.sendPushNotificationsAsync([
-          {
-            to: product.vendor.expoPushToken,
-            sound: "default",
-            title: vendorNotification.title,
-            body: vendorNotification.message,
-            data: { productId: product._id },
-          },
-        ]);
-      } catch (error) {
-        console.error("Expo push error:", error);
-      }
-    }
-  }
-
-  // 5️⃣ Notify the admin (self confirmation)
-  const adminId = req.user._id.toString();
-  const adminNotification = {
-    title: "Product Removed ✅",
-    message: `You successfully deleted the product "${product.name}".`,
-    type: "success",
-    sender: adminId,
-    receiver: adminId,
-    role: "Admin",
-    relatedProduct: product._id,
-  };
-
-  // Save in DB
-  await Notification.create(adminNotification);
-
-  // Send via socket (web)
-  if (onlineUsers[adminId]) {
-    io.to(onlineUsers[adminId].socketId).emit("notification", adminNotification);
-  }
-
-  // 6️⃣ Final API Response
-  res.status(200).json({
-    success: true,
-    message: "Product removed successfully and notifications sent.",
-  });
+    // 6️⃣ Final API Response
+    res.status(200).json({
+        success: true,
+        message: "Product removed successfully and notifications sent.",
+    });
 });
 
 
@@ -394,37 +359,37 @@ const deleteProduct = asyncHandler(async (req, res) => {
 // @route   GET /api/admin/vendors
 // @access  Private/Admin
 const getVendors = asyncHandler(async (req, res) => {
-  const { q, status } = req.query;
+    const { q, status } = req.query;
 
-  const query = { role: 'Vendor' };
+    const query = { role: 'Vendor' };
 
-  // 🔍 Search by name
-  if (q) {
-    query.name = { $regex: q, $options: 'i' };
-  }
+    // 🔍 Search by name
+    if (q) {
+        query.name = { $regex: q, $options: 'i' };
+    }
 
-  // ⚙️ Filter by status
-  if (status) {
-    query.status = status;
-  }
+    // ⚙️ Filter by status
+    if (status) {
+        query.status = status;
+    }
 
-  // ✅ Fetch all vendors (no pagination)
-  const vendors = await User.find(query)
-    .select('name address mobileNumber status profilePicture')
-    .sort({ createdAt: -1 });
+    // ✅ Fetch all vendors (no pagination)
+    const vendors = await User.find(query)
+        .select('name address mobileNumber status profilePicture')
+        .sort({ createdAt: -1 });
 
-  res.status(200).json({
-    success: true,
-    total: vendors.length,
-    data: vendors.map(vendor => ({
-      _id: vendor._id,
-      name: vendor.name,
-      mobileNumber: vendor.mobileNumber,
-      status: vendor.status,
-      profilePicture: vendor.profilePicture,
-      address: vendor.address // Include full address object
-    }))
-  });
+    res.status(200).json({
+        success: true,
+        total: vendors.length,
+        data: vendors.map(vendor => ({
+            _id: vendor._id,
+            name: vendor.name,
+            mobileNumber: vendor.mobileNumber,
+            status: vendor.status,
+            profilePicture: vendor.profilePicture,
+            address: vendor.address // Include full address object
+        }))
+    });
 });
 
 
@@ -440,7 +405,7 @@ const getVendorDetails = asyncHandler(async (req, res) => {
     // Fetch vendor by ID
     const vendor = await User.findById(id)
         .select('name address mobileNumber profilePicture  status vendorDetails role rejectionReason'); // include rejectionReason
-    
+
     if (!vendor || vendor.role !== 'Vendor') {
         return res.status(404).json({ success: false, message: 'Vendor not found.' });
     }
@@ -471,388 +436,353 @@ const getVendorDetails = asyncHandler(async (req, res) => {
 
 
 const updateVendorStatus = asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body; // Expected: 'Active', 'Blocked', 'UnBlocked', 'Inactive'
+    const { id } = req.params;
+    const { status } = req.body; // Expected: 'Active', 'Blocked', 'UnBlocked', 'Inactive'
 
-  const validStatuses = ["Active", "Blocked", "UnBlocked", "Inactive"];
-  if (!validStatuses.includes(status)) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Invalid status provided." });
-  }
-
-  // 1️⃣ Update vendor's status
-  const vendor = await User.findOneAndUpdate(
-    { _id: id, role: "Vendor" },
-    { status },
-    { new: true, runValidators: true }
-  ).select("_id name expoPushToken");
-
-  if (!vendor) {
-    return res
-      .status(404)
-      .json({ success: false, message: "Vendor not found." });
-  }
-
-  // 2️⃣ Update all their products based on vendor status
-  if (status === "Blocked" || status === "Inactive") {
-    await Product.updateMany({ vendor: id }, { status: "Inactive" });
-  } else if (status === "Active") {
-    await Product.updateMany(
-      { vendor: id, status: "Inactive" },
-      { status: "In Stock" }
-    );
-  }
-
-  // 3️⃣ Socket and DB Notification setup
-  const io = req.app.get("io");
-  const onlineUsers = req.app.get("onlineUsers");
-
-  // --- Vendor message ---
-  let vendorMessage = "";
-  let vendorType = "info";
-
-  if (status === "Blocked")
-    vendorMessage = "Your account has been blocked by the admin.";
-  else if (status === "UnBlocked")
-    vendorMessage = "Your account has been unblocked by the admin.";
-  else if (status === "Inactive")
-    vendorMessage = "Your account is now inactive.";
-  else if (status === "Active")
-    vendorMessage = "Your account has been activated by the admin.";
-
-  // --- Save vendor notification in DB ---
-  await Notification.create({
-    title: "Account Status Update ⚙️",
-    message: vendorMessage,
-    type: vendorType,
-    sender: req.user._id,
-    receiver: vendor._id,
-    role: "Vendor",
-  });
-
-  // --- Send Socket Notification (Web Real-time) ---
-  if (onlineUsers[vendor._id]) {
-    io.to(onlineUsers[vendor._id].socketId).emit("notification", {
-      title: "Account Status Update ⚙️",
-      message: vendorMessage,
-      type: vendorType,
-    });
-  }
-
-  // --- Send Push Notification (Expo App) ---
-  if (vendor.expoPushToken && Expo.isExpoPushToken(vendor.expoPushToken)) {
-    try {
-      await expo.sendPushNotificationsAsync([
-        {
-          to: vendor.expoPushToken,
-          sound: "default",
-          title: "Account Status Update ⚙️",
-          body: vendorMessage,
-          data: { status },
-        },
-      ]);
-    } catch (error) {
-      console.error("Expo Push Error:", error);
+    const validStatuses = ["Active", "Blocked", "UnBlocked", "Inactive"];
+    if (!validStatuses.includes(status)) {
+        return res
+            .status(400)
+            .json({ success: false, message: "Invalid status provided." });
     }
-  }
 
-  // --- Admin confirmation notification ---
-  const adminId = req.user._id.toString();
-  const adminMessage = `You updated ${vendor.name || "a vendor"}'s status to "${status}".`;
+    // 1️⃣ Update vendor's status
+    const vendor = await User.findOneAndUpdate(
+        { _id: id, role: "Vendor" },
+        { status },
+        { new: true, runValidators: true }
+    ).select("_id name expoPushToken");
 
-  await Notification.create({
-    title: "Vendor Status Updated ✅",
-    message: adminMessage,
-    type: "success",
-    sender: adminId,
-    receiver: adminId,
-    role: "Admin",
-  });
+    if (!vendor) {
+        return res
+            .status(404)
+            .json({ success: false, message: "Vendor not found." });
+    }
 
-  if (onlineUsers[adminId]) {
-    io.to(onlineUsers[adminId].socketId).emit("notification", {
-      title: "Vendor Status Updated ✅",
-      message: adminMessage,
-      type: "success",
+    // 2️⃣ Update all their products based on vendor status
+    if (status === "Blocked" || status === "Inactive") {
+        await Product.updateMany({ vendor: id }, { status: "Inactive" });
+    } else if (status === "Active") {
+        await Product.updateMany(
+            { vendor: id, status: "Inactive" },
+            { status: "In Stock" }
+        );
+    }
+
+    // 3️⃣ Socket and DB Notification setup
+    const io = req.app.get("io");
+    const onlineUsers = req.app.get("onlineUsers");
+
+    // --- Vendor message ---
+    let vendorMessage = "";
+    let vendorType = "info";
+
+    if (status === "Blocked")
+        vendorMessage = "Your account has been blocked by the admin.";
+    else if (status === "UnBlocked")
+        vendorMessage = "Your account has been unblocked by the admin.";
+    else if (status === "Inactive")
+        vendorMessage = "Your account is now inactive.";
+    else if (status === "Active")
+        vendorMessage = "Your account has been activated by the admin.";
+
+    // --- Save vendor notification in DB ---
+    await Notification.create({
+        title: "Account Status Update ⚙️",
+        message: vendorMessage,
+        type: vendorType,
+        sender: req.user._id,
+        receiver: vendor._id,
+        role: "Vendor",
     });
-  }
 
-  // 4️⃣ Final Response
-  res.status(200).json({
-    success: true,
-    message: `Vendor status updated to ${status}.`,
-    data: {
-      vendorId: vendor._id,
-      status: vendor.status,
-    },
-  });
+    // --- Send Socket Notification (Web Real-time) ---
+    if (onlineUsers[vendor._id]) {
+        io.to(onlineUsers[vendor._id].socketId).emit("notification", {
+            title: "Account Status Update ⚙️",
+            message: vendorMessage,
+            type: vendorType,
+        });
+    }
+
+    // --- Send Push Notification (Expo App) ---
+    if (vendor.expoPushToken && Expo.isExpoPushToken(vendor.expoPushToken)) {
+        try {
+            await expo.sendPushNotificationsAsync([
+                {
+                    to: vendor.expoPushToken,
+                    sound: "default",
+                    title: "Account Status Update ⚙️",
+                    body: vendorMessage,
+                    data: { status },
+                },
+            ]);
+        } catch (error) {
+            console.error("Expo Push Error:", error);
+        }
+    }
+
+    // --- Admin confirmation notification ---
+    const adminId = req.user._id.toString();
+    const adminMessage = `You updated ${vendor.name || "a vendor"}'s status to "${status}".`;
+
+    await Notification.create({
+        title: "Vendor Status Updated ✅",
+        message: adminMessage,
+        type: "success",
+        sender: adminId,
+        receiver: adminId,
+        role: "Admin",
+    });
+
+    if (onlineUsers[adminId]) {
+        io.to(onlineUsers[adminId].socketId).emit("notification", {
+            title: "Vendor Status Updated ✅",
+            message: adminMessage,
+            type: "success",
+        });
+    }
+
+    // 4️⃣ Final Response
+    res.status(200).json({
+        success: true,
+        message: `Vendor status updated to ${status}.`,
+        data: {
+            vendorId: vendor._id,
+            status: vendor.status,
+        },
+    });
 });
 
 
 
 
 const deleteVendor = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+    const { id } = req.params;
 
-  // 1️⃣ Soft delete vendor
-  const vendor = await User.findOneAndUpdate(
-    { _id: id, role: "Vendor" },
-    { status: "Deleted" },
-    { new: true }
-  ).select("name _id expoPushToken");
+    // 1️⃣ Soft delete vendor
+    const vendor = await User.findOneAndUpdate(
+        { _id: id, role: "Vendor" },
+        { status: "Deleted" },
+        { new: true }
+    ).select("name _id expoPushToken");
 
-  if (!vendor) {
-    return res
-      .status(404)
-      .json({ success: false, message: "Vendor not found." });
-  }
-
-  // 2️⃣ Mark all their products inactive
-  await Product.updateMany({ vendor: id }, { status: "Inactive" });
-
-  // 3️⃣ Get socket and online users
-  const io = req.app.get("io");
-  const onlineUsers = req.app.get("onlineUsers");
-
-  // 4️⃣ Prepare Notifications
-  const vendorNotification = {
-    title: "Account Deleted 🛑",
-    message:
-      "Your vendor account has been deleted by the admin. All your products are now inactive.",
-    type: "error",
-    sender: req.user._id,
-    receiver: vendor._id,
-    role: "Vendor",
-  };
-
-  const adminNotification = {
-    title: "Vendor Deleted ✅",
-    message: `You have successfully deleted vendor "${vendor.name}".`,
-    type: "success",
-    sender: req.user._id,
-    receiver: req.user._id,
-    role: "Admin",
-  };
-
-  // 5️⃣ Save notifications in DB
-  await Notification.insertMany([vendorNotification, adminNotification]);
-
-  // 6️⃣ Send Web (Socket) Notifications
-  // --- To Vendor ---
-  if (onlineUsers[vendor._id]) {
-    io.to(onlineUsers[vendor._id].socketId).emit("notification", {
-      title: vendorNotification.title,
-      message: vendorNotification.message,
-      type: vendorNotification.type,
-    });
-  }
-
-  // --- To Admin (the one who deleted) ---
-  const adminId = req.user._id.toString();
-  if (onlineUsers[adminId]) {
-    io.to(onlineUsers[adminId].socketId).emit("notification", {
-      title: adminNotification.title,
-      message: adminNotification.message,
-      type: adminNotification.type,
-    });
-  }
-
-  // 7️⃣ Send Mobile Push Notification (Expo)
-  if (vendor.expoPushToken && Expo.isExpoPushToken(vendor.expoPushToken)) {
-    try {
-      await expo.sendPushNotificationsAsync([
-        {
-          to: vendor.expoPushToken,
-          sound: "default",
-          title: vendorNotification.title,
-          body: vendorNotification.message,
-          data: { type: "account_deleted" },
-        },
-      ]);
-    } catch (error) {
-      console.error("Expo Push Error:", error);
+    if (!vendor) {
+        return res
+            .status(404)
+            .json({ success: false, message: "Vendor not found." });
     }
-  }
 
-  // 8️⃣ Final Response
-  res.status(200).json({
-    success: true,
-    message:
-      "Vendor account deleted and notifications sent to vendor and admin.",
-  });
+    // 2️⃣ Mark all their products inactive
+    await Product.updateMany({ vendor: id }, { status: "Inactive" });
+
+    // 3️⃣ Get socket and online users
+    const io = req.app.get("io");
+    const onlineUsers = req.app.get("onlineUsers");
+
+    // 4️⃣ Prepare Notifications
+    const vendorNotification = {
+        title: "Account Deleted 🛑",
+        message:
+            "Your vendor account has been deleted by the admin. All your products are now inactive.",
+        type: "error",
+        sender: req.user._id,
+        receiver: vendor._id,
+        role: "Vendor",
+    };
+
+    const adminNotification = {
+        title: "Vendor Deleted ✅",
+        message: `You have successfully deleted vendor "${vendor.name}".`,
+        type: "success",
+        sender: req.user._id,
+        receiver: req.user._id,
+        role: "Admin",
+    };
+
+    // 5️⃣ Save notifications in DB
+    await Notification.insertMany([vendorNotification, adminNotification]);
+
+    // 6️⃣ Send Web (Socket) Notifications
+    // --- To Vendor ---
+    if (onlineUsers[vendor._id]) {
+        io.to(onlineUsers[vendor._id].socketId).emit("notification", {
+            title: vendorNotification.title,
+            message: vendorNotification.message,
+            type: vendorNotification.type,
+        });
+    }
+
+    // --- To Admin (the one who deleted) ---
+    const adminId = req.user._id.toString();
+    if (onlineUsers[adminId]) {
+        io.to(onlineUsers[adminId].socketId).emit("notification", {
+            title: adminNotification.title,
+            message: adminNotification.message,
+            type: adminNotification.type,
+        });
+    }
+
+    // 7️⃣ Send Mobile Push Notification (Expo)
+    if (vendor.expoPushToken && Expo.isExpoPushToken(vendor.expoPushToken)) {
+        try {
+            await expo.sendPushNotificationsAsync([
+                {
+                    to: vendor.expoPushToken,
+                    sound: "default",
+                    title: vendorNotification.title,
+                    body: vendorNotification.message,
+                    data: { type: "account_deleted" },
+                },
+            ]);
+        } catch (error) {
+            console.error("Expo Push Error:", error);
+        }
+    }
+
+    // 8️⃣ Final Response
+    res.status(200).json({
+        success: true,
+        message:
+            "Vendor account deleted and notifications sent to vendor and admin.",
+    });
 });
-
-
-// @desc    Block a vendor
-// @route   PUT /api/admin/vendors/:id/block
-// @access  Private/Admin
-
 
 
 const getBuyerDetails = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+    const { id } = req.params;
 
-  // 1. Find buyer
-  const buyer = await User.findById(id).select(
-    "name address mobileNumber profilePicture role"
-  );
+    // 1. Find buyer
+    const buyer = await User.findById(id).select(
+        "name address mobileNumber profilePicture role"
+    );
 
-  if (!buyer || buyer.role !== "Buyer") {
-    return res
-      .status(404)
-      .json({ success: false, message: "Buyer not found." });
-  }
+    if (!buyer || buyer.role !== "Buyer") {
+        return res
+            .status(404)
+            .json({ success: false, message: "Buyer not found." });
+    }
 
-  // 2. Count orders
-  const totalOrders = await Order.countDocuments({ buyer: id });
+    // 2. Count orders
+    const totalOrders = await Order.countDocuments({ buyer: id });
 
-  // 3. Fetch buyer's orders with populated products and vendor
-  const orders = await Order.find({ buyer: id })
-    .populate({
-      path: "products.product", // product details
-      select:
-        "name variety unit rating quantity weightPerPiece category price images",
-    })
-    .populate({
-      path: "vendor", // ✅ populate vendor info
-      select: "name ",
-    })
-    .sort({ createdAt: -1 });
+    // 3. Fetch buyer's orders with populated products and vendor
+    const orders = await Order.find({ buyer: id })
+        .populate({
+            path: "products.product", // product details
+            select:
+                "name variety unit rating quantity weightPerPiece category price images",
+        })
+        .populate({
+            path: "vendor", // ✅ populate vendor info
+            select: "name ",
+        })
+        .sort({ createdAt: -1 });
 
-  // 4. Response
-  res.status(200).json({
-    success: true,
-    data: {
-      buyer: {
-        name: buyer.name,
-        location: buyer.address,
-        contactNo: buyer.mobileNumber,
-        profilePicture: buyer.profilePicture,
-        totalOrders,
-      },
-      orders: orders.map((order) => ({
-        ...order.toObject(),
-        vendorDetails: order.vendor
-          ? {
-              name: order.vendor.name,
-              shopName: order.vendor.shopName,
-              mobileNumber: order.vendor.mobileNumber,
-              profilePicture: order.vendor.profilePicture,
-            }
-          : null,
-      })),
-    },
-  });
+    // 4. Response
+    res.status(200).json({
+        success: true,
+        data: {
+            buyer: {
+                name: buyer.name,
+                location: buyer.address,
+                contactNo: buyer.mobileNumber,
+                profilePicture: buyer.profilePicture,
+                totalOrders,
+            },
+            orders: orders.map((order) => ({
+                ...order.toObject(),
+                vendorDetails: order.vendor
+                    ? {
+                        name: order.vendor.name,
+                        shopName: order.vendor.shopName,
+                        mobileNumber: order.vendor.mobileNumber,
+                        profilePicture: order.vendor.profilePicture,
+                    }
+                    : null,
+            })),
+        },
+    });
 });
-
-
-
-
-// @desc    Get all buyers for admin view
-// @route   GET /api/admin/buyers
-// @access  Private/Admin
-// controllers/adminController.js
-
-// controllers/adminController.js
-// controllers/adminController.js
 
 const getBuyers = asyncHandler(async (req, res) => {
-  const buyers = await User.aggregate([
-    { $match: { role: "Buyer" } },
+    const buyers = await User.aggregate([
+        { $match: { role: "Buyer" } },
 
-    // ✅ Lookup total orders as Buyer
-    {
-      $lookup: {
-        from: "orders",
-        let: { buyerId: "$_id" },
-        pipeline: [
-          {
-            $match: {
-              $expr: { $eq: ["$buyer", "$$buyerId"] } // match all orders placed by this buyer
+        // ✅ Lookup total orders as Buyer
+        {
+            $lookup: {
+                from: "orders",
+                let: { buyerId: "$_id" },
+                pipeline: [
+                    {
+                        $match: {
+                            $expr: { $eq: ["$buyer", "$$buyerId"] } // match all orders placed by this buyer
+                        }
+                    }
+                ],
+                as: "orders"
             }
-          }
-        ],
-        as: "orders"
-      }
-    },
-    {
-      $addFields: {
-        totalOrders: { $size: "$orders" },
-        totalOrdersAsBuyer: { $size: "$orders" }
-      }
-    },
+        },
+        {
+            $addFields: {
+                totalOrders: { $size: "$orders" },
+                totalOrdersAsBuyer: { $size: "$orders" }
+            }
+        },
 
-    // ✅ Lookup Addresses for Buyer
-    {
-      $lookup: {
-        from: "addresses",
-        localField: "_id",
-        foreignField: "user",
-        as: "addresses"
-      }
-    },
+        // ✅ Lookup Addresses for Buyer
+        {
+            $lookup: {
+                from: "addresses",
+                localField: "_id",
+                foreignField: "user",
+                as: "addresses"
+            }
+        },
 
-    // ✅ Fallback to user's embedded address if no separate address exists
-    {
-      $addFields: {
-        addresses: {
-          $cond: [
-            { $eq: [{ $size: "$addresses" }, 0] },
-            {
-              $cond: [
-                { $ifNull: ["$address", false] },
-                ["$address"], // wrap embedded address in array
-                []
-              ]
-            },
-            "$addresses"
-          ]
-        }
-      }
-    },
+        // ✅ Fallback to user's embedded address if no separate address exists
+        {
+            $addFields: {
+                addresses: {
+                    $cond: [
+                        { $eq: [{ $size: "$addresses" }, 0] },
+                        {
+                            $cond: [
+                                { $ifNull: ["$address", false] },
+                                ["$address"], // wrap embedded address in array
+                                []
+                            ]
+                        },
+                        "$addresses"
+                    ]
+                }
+            }
+        },
 
-    // ✅ Final clean projection
-    {
-      $project: {
-        _id: 1,
-        name: 1,
-        mobileNumber: 1,
-        addresses: 1,
-        totalOrders: 1,
-        totalOrdersAsBuyer: 1,
-        createdAt: 1
-      }
-    },
+        // ✅ Final clean projection
+        {
+            $project: {
+                _id: 1,
+                name: 1,
+                mobileNumber: 1,
+                addresses: 1,
+                totalOrders: 1,
+                totalOrdersAsBuyer: 1,
+                createdAt: 1
+            }
+        },
 
-    { $sort: { createdAt: -1 } } // recent buyers first
-  ]);
+        { $sort: { createdAt: -1 } } // recent buyers first
+    ]);
 
-  res.status(200).json({
-    success: true,
-    total: buyers.length,
-    data: buyers
-  });
+    res.status(200).json({
+        success: true,
+        total: buyers.length,
+        data: buyers
+    });
 });
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// @desc    Block a buyer
-// @route   PUT /api/admin/buyers/:id/block
-// @access  Private/Admin
 const blockBuyer = asyncHandler(async (req, res) => {
     const buyer = await User.findById(req.params.id);
     if (buyer) {
@@ -864,124 +794,111 @@ const blockBuyer = asyncHandler(async (req, res) => {
     }
 });
 
-// @desc    Delete a user (buyer or vendor)
-// @route   DELETE /api/admin/users/:id
-// @access  Private/Admin
 const deleteBuyer = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+    const { id } = req.params;
 
-  // 1. Find the user
-  const user = await User.findById(id);
+    // 1. Find the user
+    const user = await User.findById(id);
 
-  if (!user || user.role !== "Buyer") {
-    return res.status(404).json({ success: false, message: "Buyer not found." });
-  }
+    if (!user || user.role !== "Buyer") {
+        return res.status(404).json({ success: false, message: "Buyer not found." });
+    }
 
-  // 2. Remove related data
-  await Promise.all([
-    Address.deleteMany({ user: id }),
-    Order.deleteMany({ buyer: id }),
-    Cart.deleteMany({ user: id }),
-    Wishlist.deleteMany({ user: id }),
-  ]);
+    // 2. Remove related data
+    await Promise.all([
+        Address.deleteMany({ user: id }),
+        Order.deleteMany({ buyer: id }),
+        Cart.deleteMany({ user: id }),
+        Wishlist.deleteMany({ user: id }),
+    ]);
 
-  // 3. Remove the user
-  await user.deleteOne();
+    // 3. Remove the user
+    await user.deleteOne();
 
-  res.json({
-    success: true,
-    message: "Buyer and related data removed successfully.",
-  });
+    res.json({
+        success: true,
+        message: "Buyer and related data removed successfully.",
+    });
 });
 
-// @desc    Get all orders for admin view
-// @route   GET /api/admin/orders
-// @access  Private/Admin
-// @desc    Get a paginated list of all orders for admin view
-// @route   GET /api/admin/orders
-// @access  Private/Admin
 const getOrders = asyncHandler(async (req, res) => {
-  const { q } = req.query;
+    const { q } = req.query;
 
-  // 🔍 Search condition for buyer name, vendor name, or orderId
-  const searchStage = q
-    ? {
-        $or: [
-          { orderId: { $regex: q, $options: "i" } },
-          { "buyerInfo.name": { $regex: q, $options: "i" } },
-          { "vendorInfo.name": { $regex: q, $options: "i" } },
-        ],
-      }
-    : {};
-
-  // --- Aggregation pipeline (without pagination) ---
-  const pipeline = [
-    // 1️⃣ Lookup Buyer Info
-    {
-      $lookup: {
-        from: "users",
-        localField: "buyer",
-        foreignField: "_id",
-        as: "buyerInfo",
-      },
-    },
-    { $unwind: "$buyerInfo" },
-
-    // 2️⃣ Lookup Vendor Info
-    {
-      $lookup: {
-        from: "users",
-        localField: "vendor",
-        foreignField: "_id",
-        as: "vendorInfo",
-      },
-    },
-    { $unwind: "$vendorInfo" },
-
-    // 3️⃣ Apply search if provided
-    { $match: searchStage },
-
-    // 4️⃣ Sort newest first
-    { $sort: { createdAt: -1 } },
-
-    // 5️⃣ Project fields cleanly
-    {
-      $project: {
-        _id: 1,
-        orderId: 1,
-        totalPrice: 1,
-        createdAt: 1,
-        buyer: "$buyerInfo.name",
-        vendor: "$vendorInfo.name",
-        action: "View",
-        status: {
-          $switch: {
-            branches: [
-              { case: { $eq: ["$orderStatus", "In-process"] }, then: "In Process" },
-              { case: { $eq: ["$orderStatus", "Confirmed"] }, then: "In Process" },
-              { case: { $eq: ["$orderStatus", "Completed"] }, then: "Completed" },
-              { case: { $eq: ["$orderStatus", "Cancelled"] }, then: "Cancelled" },
+    // 🔍 Search condition for buyer name, vendor name, or orderId
+    const searchStage = q
+        ? {
+            $or: [
+                { orderId: { $regex: q, $options: "i" } },
+                { "buyerInfo.name": { $regex: q, $options: "i" } },
+                { "vendorInfo.name": { $regex: q, $options: "i" } },
             ],
-            default: "Unknown",
-          },
+        }
+        : {};
+
+    // --- Aggregation pipeline (without pagination) ---
+    const pipeline = [
+        // 1️⃣ Lookup Buyer Info
+        {
+            $lookup: {
+                from: "users",
+                localField: "buyer",
+                foreignField: "_id",
+                as: "buyerInfo",
+            },
         },
-      },
-    },
-  ];
+        { $unwind: "$buyerInfo" },
 
-  // Run aggregation
-  const orders = await Order.aggregate(pipeline);
+        // 2️⃣ Lookup Vendor Info
+        {
+            $lookup: {
+                from: "users",
+                localField: "vendor",
+                foreignField: "_id",
+                as: "vendorInfo",
+            },
+        },
+        { $unwind: "$vendorInfo" },
 
-  res.status(200).json({
-    success: true,
-    total: orders.length,
-    data: orders,
-  });
+        // 3️⃣ Apply search if provided
+        { $match: searchStage },
+
+        // 4️⃣ Sort newest first
+        { $sort: { createdAt: -1 } },
+
+        // 5️⃣ Project fields cleanly
+        {
+            $project: {
+                _id: 1,
+                orderId: 1,
+                totalPrice: 1,
+                createdAt: 1,
+                buyer: "$buyerInfo.name",
+                vendor: "$vendorInfo.name",
+                action: "View",
+                status: {
+                    $switch: {
+                        branches: [
+                            { case: { $eq: ["$orderStatus", "In-process"] }, then: "In Process" },
+                            { case: { $eq: ["$orderStatus", "Confirmed"] }, then: "In Process" },
+                            { case: { $eq: ["$orderStatus", "Completed"] }, then: "Completed" },
+                            { case: { $eq: ["$orderStatus", "Cancelled"] }, then: "Cancelled" },
+                        ],
+                        default: "Unknown",
+                    },
+                },
+            },
+        },
+    ];
+
+    // Run aggregation
+    const orders = await Order.aggregate(pipeline);
+
+    res.status(200).json({
+        success: true,
+        total: orders.length,
+        data: orders,
+    });
 });
-
-
-
-
 
 const getOrderDetail = asyncHandler(async (req, res) => {
     const { id } = req.params;
@@ -1019,17 +936,6 @@ const getOrderDetail = asyncHandler(async (req, res) => {
 });
 
 
-
-
-
-
-
-
-
-
-// @desc    Delete an order
-// @route   DELETE /api/admin/orders/:id
-// @access  Private/Admin
 const deleteOrder = asyncHandler(async (req, res) => {
     const order = await Order.findById(req.params.id);
     if (order) {
@@ -1040,9 +946,7 @@ const deleteOrder = asyncHandler(async (req, res) => {
     }
 });
 
-// @desc    Get all banners
-// @route   GET /api/admin/settings/banners
-// @access  Private/Admin
+
 const getBanners = asyncHandler(async (req, res) => {
     const { placement, status } = req.query;
 
@@ -1053,7 +957,7 @@ const getBanners = asyncHandler(async (req, res) => {
 
     // Fetch banners
     const banners = await Banner.find(query).sort({ createdAt: -1 }); // newest first
-    console.log("banner",banners)
+    console.log("banner", banners)
     res.status(200).json({
         success: true,
         count: banners.length,
@@ -1078,13 +982,9 @@ const getBannersByPlacement = asyncHandler(async (req, res) => {
 });
 
 
-// @desc    Create a new banner
-// @route   POST /api/admin/settings/banners
-// @access  Private/Admin
-
 const createBanner = asyncHandler(async (req, res) => {
     // 1️⃣ Check if files are uploaded
-    
+
     if (!req.files || req.files.length === 0) {
         res.status(400);
         throw new Error('At least one image file is required');
@@ -1126,13 +1026,6 @@ const createBanner = asyncHandler(async (req, res) => {
     });
 });
 
-
-
-
-
-// @desc    Delete a banner
-// @route   DELETE /api/admin/settings/banners/:id
-// @access  Private/Admin
 const deleteBanner = asyncHandler(async (req, res) => {
     const banner = await Banner.findById(req.params.id);
 
@@ -1161,109 +1054,93 @@ const deleteBanner = asyncHandler(async (req, res) => {
 });
 
 
-
-// @desc    Get all categories
-// @route   GET /api/admin/manage-app/categories
-// @access  Private/Admin
 const getCategories = asyncHandler(async (req, res) => {
     const categories = await Category.find({}).sort({ name: 1 }); // optional: sort alphabetically
     res.json(categories);
 });
 
 
-// @desc    Create a product category
-// @route   POST /api/admin/manage-app/categories
-// @access  Private/Admin
-
-
 const createCategory = asyncHandler(async (req, res) => {
-  const { name } = req.body;
+    const { name } = req.body;
 
-  // 1️⃣ Validate image
-  if (!req.file) {
-    res.status(400);
-    throw new Error("Please provide an image for the category");
-  }
+    // 1️⃣ Validate image
+    if (!req.file) {
+        res.status(400);
+        throw new Error("Please provide an image for the category");
+    }
 
-  // 2️⃣ Upload image to Cloudinary
-  const result = await cloudinaryUpload(req.file.path, "categories");
+    // 2️⃣ Upload image to Cloudinary
+    const result = await cloudinaryUpload(req.file.path, "categories");
 
-  // 3️⃣ Create category in DB
-  const category = await Category.create({
-    name,
-    image: {
-      url: result.secure_url,
-      public_id: result.public_id,
-    },
-  });
+    // 3️⃣ Create category in DB
+    const category = await Category.create({
+        name,
+        image: {
+            url: result.secure_url,
+            public_id: result.public_id,
+        },
+    });
 
-  // 4️⃣ Notification setup
-  const io = req.app.get("io");
-  const onlineUsers = req.app.get("onlineUsers");
+    // 4️⃣ Notification setup
+    const io = req.app.get("io");
+    const onlineUsers = req.app.get("onlineUsers");
 
-  const title = "🆕 New Category Added";
-  const message = `Category "${name}" has been created successfully.`;
+    const title = "🆕 New Category Added";
+    const message = `Category "${name}" has been created successfully.`;
 
-  // 5️⃣ Find all Admin users
-  const admins = await User.find({ role: "Admin" }, "_id expoPushToken");
+    // 5️⃣ Find all Admin users
+    const admins = await User.find({ role: "Admin" }, "_id expoPushToken");
 
-  // 6️⃣ Save notification in DB
-  const notifications = admins.map((admin) => ({
-    title,
-    message,
-    type: "success",
-    sender: req.user._id,
-    receiver: admin._id,
-    role: admin.role,
-  }));
-  await Notification.insertMany(notifications);
-
-  // 7️⃣ Real-time Socket.io notification
-  admins.forEach((admin) => {
-    const adminId = admin._id.toString();
-    if (onlineUsers[adminId]) {
-      io.to(onlineUsers[adminId].socketId).emit("notification", {
+    // 6️⃣ Save notification in DB
+    const notifications = admins.map((admin) => ({
         title,
         message,
         type: "success",
-      });
+        sender: req.user._id,
+        receiver: admin._id,
+        role: admin.role,
+    }));
+    await Notification.insertMany(notifications);
+
+    // 7️⃣ Real-time Socket.io notification
+    admins.forEach((admin) => {
+        const adminId = admin._id.toString();
+        if (onlineUsers[adminId]) {
+            io.to(onlineUsers[adminId].socketId).emit("notification", {
+                title,
+                message,
+                type: "success",
+            });
+        }
+    });
+
+    // 8️⃣ Optional — Expo push for Admin mobile app
+    const pushMessages = [];
+    for (const admin of admins) {
+        if (admin.expoPushToken && Expo.isExpoPushToken(admin.expoPushToken)) {
+            pushMessages.push({
+                to: admin.expoPushToken,
+                sound: "default",
+                title,
+                body: message,
+                data: { type: "category_create", categoryId: category._id },
+            });
+        }
     }
-  });
 
-  // 8️⃣ Optional — Expo push for Admin mobile app
-  const pushMessages = [];
-  for (const admin of admins) {
-    if (admin.expoPushToken && Expo.isExpoPushToken(admin.expoPushToken)) {
-      pushMessages.push({
-        to: admin.expoPushToken,
-        sound: "default",
-        title,
-        body: message,
-        data: { type: "category_create", categoryId: category._id },
-      });
+    if (pushMessages.length > 0) {
+        await expo.sendPushNotificationsAsync(pushMessages);
     }
-  }
 
-  if (pushMessages.length > 0) {
-    await expo.sendPushNotificationsAsync(pushMessages);
-  }
-
-  // ✅ 9️⃣ Final response
-  res.status(201).json({
-    success: true,
-    message: "Category created and notification sent to admin.",
-    data: category,
-  });
+    // ✅ 9️⃣ Final response
+    res.status(201).json({
+        success: true,
+        message: "Category created and notification sent to admin.",
+        data: category,
+    });
 });
 
 
-
-
-
-
-// @desc    Update a category
-// @route   PUT /api/admin/manage-app/categories/:id
-// @access  Private/Admin
 const updateCategory = asyncHandler(async (req, res) => {
     const category = await Category.findById(req.params.id);
 
@@ -1293,11 +1170,6 @@ const updateCategory = asyncHandler(async (req, res) => {
     res.json(updatedCategory);
 });
 
-
-
-// @desc    Delete a category
-// @route   DELETE /api/admin/manage-app/categories/:id
-// @access  Private/Admin
 const deleteCategory = asyncHandler(async (req, res) => {
     const category = await Category.findById(req.params.id);
 
@@ -1313,8 +1185,6 @@ const deleteCategory = asyncHandler(async (req, res) => {
     });
 });
 
-
-
 const getCategoryById = asyncHandler(async (req, res) => {
     const category = await Category.findById(req.params.id);
 
@@ -1325,403 +1195,372 @@ const getCategoryById = asyncHandler(async (req, res) => {
     res.status(200).json({ success: true, category });
 });
 
-// @desc    Get all coupons
-// @route   GET /api/admin/manage-app/coupons
-// @access  Private/Admin
+
 const createCoupon = asyncHandler(async (req, res) => {
-  try {
-    const adminId = req.user._id; // Admin creating the coupon
-    const {
-      code,
-      discount, // { value: Number, type: 'Percentage' | 'Fixed' }
-      minimumOrder = 0,
-      usageLimitPerUser = 1,
-      totalUsageLimit = 0,
-      startDate,
-      expiryDate,
-      appliesTo = [],
-      applicableProducts = [],
-    } = req.body;
+    try {
+        const adminId = req.user._id; // Admin creating the coupon
+        const {
+            code,
+            discount, // { value: Number, type: 'Percentage' | 'Fixed' }
+            minimumOrder = 0,
+            usageLimitPerUser = 1,
+            totalUsageLimit = 0,
+            startDate,
+            expiryDate,
+            appliesTo = [],
+            applicableProducts = [],
+        } = req.body;
 
-    // 1️⃣ Required fields check
-    if (!code || !discount?.value || !discount?.type || !startDate || !expiryDate) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing required fields (code, discount, startDate, expiryDate).",
-      });
+        // 1️⃣ Required fields check
+        if (!code || !discount?.value || !discount?.type || !startDate || !expiryDate) {
+            return res.status(400).json({
+                success: false,
+                message: "Missing required fields (code, discount, startDate, expiryDate).",
+            });
+        }
+
+        // 2️⃣ Check duplicate
+        const existingCoupon = await Coupon.findOne({ code: code.toUpperCase() });
+        if (existingCoupon) {
+            return res.status(400).json({ success: false, message: "Coupon code already exists." });
+        }
+
+        // 3️⃣ Validate dates
+        if (new Date(expiryDate) <= new Date(startDate)) {
+            return res.status(400).json({
+                success: false,
+                message: "Expiry date must be after start date.",
+            });
+        }
+
+        // 4️⃣ Create coupon
+        const newCoupon = await Coupon.create({
+            code: code.toUpperCase(),
+            discount,
+            minimumOrder,
+            usageLimitPerUser,
+            totalUsageLimit,
+            startDate,
+            expiryDate,
+            appliesTo: appliesTo.length > 0 ? appliesTo : ["All Products"],
+            applicableProducts,
+            vendor: null, // Global coupon
+            createdBy: adminId,
+        });
+
+        // 5️⃣ Get socket + online users
+        const io = req.app.get("io");
+        const onlineUsers = req.app.get("onlineUsers");
+
+        // 6️⃣ Notification details
+        const title = "🎉 New Coupon Available!";
+        const message = `A new coupon "${newCoupon.code}" has been released. Enjoy discounts on your orders!`;
+
+        // 7️⃣ Fetch all users (buyers + vendors + admins)
+        const allUsers = await User.find(
+            { role: { $in: ["Buyer", "Vendor", "Admin"] } },
+            "_id role expoPushToken"
+        );
+
+        // Prepare notifications for DB
+        const notifications = allUsers.map((user) => ({
+            title,
+            message,
+            type: "info",
+            sender: adminId,
+            receiver: user._id,
+            role: user.role,
+        }));
+
+        await Notification.insertMany(notifications);
+
+        // 8️⃣ Send real-time socket notifications
+        allUsers.forEach((user) => {
+            const userId = user._id.toString();
+            if (onlineUsers[userId]) {
+                io.to(onlineUsers[userId].socketId).emit("notification", {
+                    title,
+                    message,
+                    type: "info",
+                });
+            }
+        });
+
+        // 9️⃣ Send Expo push notifications (for app users)
+        const pushMessages = [];
+        for (const user of allUsers) {
+            if (user.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
+                pushMessages.push({
+                    to: user.expoPushToken,
+                    sound: "default",
+                    title,
+                    body: message,
+                    data: { type: "new_coupon", couponCode: newCoupon.code },
+                });
+            }
+        }
+
+        if (pushMessages.length > 0) {
+            await expo.sendPushNotificationsAsync(pushMessages);
+        }
+
+        // 🔟 Final Response
+        res.status(201).json({
+            success: true,
+            message: "Coupon created and notifications sent to all users.",
+            data: newCoupon,
+        });
+    } catch (error) {
+        console.error("❌ Error creating coupon:", error);
+        res.status(500).json({
+            success: false,
+            message: "Failed to create coupon.",
+            error: error.message,
+        });
+    }
+});
+
+const getAdminCoupons = asyncHandler(async (req, res) => {
+    const { q, status } = req.query;
+    const user = req.user || {};
+
+    const query = {};
+
+    // 🔍 Optional filters
+    if (q) query.code = { $regex: q, $options: 'i' };
+    if (status) query.status = status;
+
+    // 🔒 Restrict vendors to their own coupons
+    if (user.role === 'vendor') {
+        query.createdBy = user._id;
     }
 
-    // 2️⃣ Check duplicate
-    const existingCoupon = await Coupon.findOne({ code: code.toUpperCase() });
-    if (existingCoupon) {
-      return res.status(400).json({ success: false, message: "Coupon code already exists." });
+    // 🧾 Fetch all coupons without pagination
+    const coupons = await Coupon.find(query)
+        .populate('createdBy', 'name email role')
+        .sort({ createdAt: -1 });
+
+    res.status(200).json({
+        success: true,
+        count: coupons.length,
+        data: coupons,
+    });
+});
+
+const updateCoupon = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const updates = { ...req.body };
+
+    // 1️⃣ Validate Coupon ID
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+            success: false,
+            message: "Invalid coupon ID.",
+        });
     }
 
-    // 3️⃣ Validate dates
-    if (new Date(expiryDate) <= new Date(startDate)) {
-      return res.status(400).json({
-        success: false,
-        message: "Expiry date must be after start date.",
-      });
+    // 2️⃣ Protect sensitive fields
+    const protectedFields = ["usedCount", "usedBy", "createdBy", "vendor"];
+    protectedFields.forEach((field) => delete updates[field]);
+
+    // 3️⃣ Auto uppercase coupon code
+    if (updates.code) {
+        updates.code = updates.code.toUpperCase();
     }
 
-    // 4️⃣ Create coupon
-    const newCoupon = await Coupon.create({
-      code: code.toUpperCase(),
-      discount,
-      minimumOrder,
-      usageLimitPerUser,
-      totalUsageLimit,
-      startDate,
-      expiryDate,
-      appliesTo: appliesTo.length > 0 ? appliesTo : ["All Products"],
-      applicableProducts,
-      vendor: null, // Global coupon
-      createdBy: adminId,
+    // 4️⃣ Validate appliesTo categories
+    if (updates.appliesTo) {
+        const validCategories = [
+            "All Products",
+            "Fruits",
+            "Vegetables",
+            "Plants",
+            "Seeds",
+            "Handicrafts",
+        ];
+        const invalid = updates.appliesTo.filter(
+            (cat) => !validCategories.includes(cat)
+        );
+        if (invalid.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: `Invalid category in appliesTo: ${invalid.join(", ")}`,
+            });
+        }
+    }
+
+    // 5️⃣ Validate date range
+    if (updates.startDate && updates.expiryDate) {
+        if (new Date(updates.expiryDate) <= new Date(updates.startDate)) {
+            return res.status(400).json({
+                success: false,
+                message: "Expiry date must be after start date.",
+            });
+        }
+    }
+
+    // 6️⃣ Update the coupon in DB
+    const coupon = await Coupon.findByIdAndUpdate(id, updates, {
+        new: true,
+        runValidators: true,
     });
 
-    // 5️⃣ Get socket + online users
+    if (!coupon) {
+        return res
+            .status(404)
+            .json({ success: false, message: "Coupon not found." });
+    }
+
+    // 7️⃣ Notification setup
     const io = req.app.get("io");
     const onlineUsers = req.app.get("onlineUsers");
 
-    // 6️⃣ Notification details
-    const title = "🎉 New Coupon Available!";
-    const message = `A new coupon "${newCoupon.code}" has been released. Enjoy discounts on your orders!`;
+    const title = "🎟️ Coupon Updated";
+    const message = `Coupon "${coupon.code}" has been updated. Check the latest details!`;
 
-    // 7️⃣ Fetch all users (buyers + vendors + admins)
+    // 8️⃣ Fetch only Admins and Buyers
     const allUsers = await User.find(
-      { role: { $in: ["Buyer", "Vendor", "Admin"] } },
-      "_id role expoPushToken"
+        { role: { $in: ["Admin", "Buyer"] } },
+        "_id role expoPushToken"
     );
 
-    // Prepare notifications for DB
+    // 9️⃣ Save notifications to DB
     const notifications = allUsers.map((user) => ({
-      title,
-      message,
-      type: "info",
-      sender: adminId,
-      receiver: user._id,
-      role: user.role,
-    }));
-
-    await Notification.insertMany(notifications);
-
-    // 8️⃣ Send real-time socket notifications
-    allUsers.forEach((user) => {
-      const userId = user._id.toString();
-      if (onlineUsers[userId]) {
-        io.to(onlineUsers[userId].socketId).emit("notification", {
-          title,
-          message,
-          type: "info",
-        });
-      }
-    });
-
-    // 9️⃣ Send Expo push notifications (for app users)
-    const pushMessages = [];
-    for (const user of allUsers) {
-      if (user.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
-        pushMessages.push({
-          to: user.expoPushToken,
-          sound: "default",
-          title,
-          body: message,
-          data: { type: "new_coupon", couponCode: newCoupon.code },
-        });
-      }
-    }
-
-    if (pushMessages.length > 0) {
-      await expo.sendPushNotificationsAsync(pushMessages);
-    }
-
-    // 🔟 Final Response
-    res.status(201).json({
-      success: true,
-      message: "Coupon created and notifications sent to all users.",
-      data: newCoupon,
-    });
-  } catch (error) {
-    console.error("❌ Error creating coupon:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to create coupon.",
-      error: error.message,
-    });
-  }
-});
-
-
-
-
-
-
-// @desc    Get all coupons
-// @route   GET /api/admin/coupons
-// @access  Private/Admin
-const getAdminCoupons = asyncHandler(async (req, res) => {
-  const { q, status } = req.query;
-  const user = req.user || {};
-
-  const query = {};
-
-  // 🔍 Optional filters
-  if (q) query.code = { $regex: q, $options: 'i' };
-  if (status) query.status = status;
-
-  // 🔒 Restrict vendors to their own coupons
-  if (user.role === 'vendor') {
-    query.createdBy = user._id;
-  }
-
-  // 🧾 Fetch all coupons without pagination
-  const coupons = await Coupon.find(query)
-    .populate('createdBy', 'name email role')
-    .sort({ createdAt: -1 });
-
-  res.status(200).json({
-    success: true,
-    count: coupons.length,
-    data: coupons,
-  });
-});
-
-
-
-
-
-
-
-
-// @desc    Update a coupon by ID
-// @route   PUT /api/admin/coupons/:id
-// @access  Private/Admin
-const updateCoupon = asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  const updates = { ...req.body };
-
-  // 1️⃣ Validate Coupon ID
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    return res.status(400).json({
-      success: false,
-      message: "Invalid coupon ID.",
-    });
-  }
-
-  // 2️⃣ Protect sensitive fields
-  const protectedFields = ["usedCount", "usedBy", "createdBy", "vendor"];
-  protectedFields.forEach((field) => delete updates[field]);
-
-  // 3️⃣ Auto uppercase coupon code
-  if (updates.code) {
-    updates.code = updates.code.toUpperCase();
-  }
-
-  // 4️⃣ Validate appliesTo categories
-  if (updates.appliesTo) {
-    const validCategories = [
-      "All Products",
-      "Fruits",
-      "Vegetables",
-      "Plants",
-      "Seeds",
-      "Handicrafts",
-    ];
-    const invalid = updates.appliesTo.filter(
-      (cat) => !validCategories.includes(cat)
-    );
-    if (invalid.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid category in appliesTo: ${invalid.join(", ")}`,
-      });
-    }
-  }
-
-  // 5️⃣ Validate date range
-  if (updates.startDate && updates.expiryDate) {
-    if (new Date(updates.expiryDate) <= new Date(updates.startDate)) {
-      return res.status(400).json({
-        success: false,
-        message: "Expiry date must be after start date.",
-      });
-    }
-  }
-
-  // 6️⃣ Update the coupon in DB
-  const coupon = await Coupon.findByIdAndUpdate(id, updates, {
-    new: true,
-    runValidators: true,
-  });
-
-  if (!coupon) {
-    return res
-      .status(404)
-      .json({ success: false, message: "Coupon not found." });
-  }
-
-  // 7️⃣ Notification setup
-  const io = req.app.get("io");
-  const onlineUsers = req.app.get("onlineUsers");
-
-  const title = "🎟️ Coupon Updated";
-  const message = `Coupon "${coupon.code}" has been updated. Check the latest details!`;
-
-  // 8️⃣ Fetch only Admins and Buyers
-  const allUsers = await User.find(
-    { role: { $in: ["Admin", "Buyer"] } },
-    "_id role expoPushToken"
-  );
-
-  // 9️⃣ Save notifications to DB
-  const notifications = allUsers.map((user) => ({
-    title,
-    message,
-    type: "info",
-    sender: req.user._id,
-    receiver: user._id,
-    role: user.role,
-  }));
-  await Notification.insertMany(notifications);
-
-  // 🔟 Send real-time notifications via Socket.io
-  allUsers.forEach((user) => {
-    const userId = user._id.toString();
-    if (onlineUsers[userId]) {
-      io.to(onlineUsers[userId].socketId).emit("notification", {
         title,
         message,
         type: "info",
-      });
+        sender: req.user._id,
+        receiver: user._id,
+        role: user.role,
+    }));
+    await Notification.insertMany(notifications);
+
+    // 🔟 Send real-time notifications via Socket.io
+    allUsers.forEach((user) => {
+        const userId = user._id.toString();
+        if (onlineUsers[userId]) {
+            io.to(onlineUsers[userId].socketId).emit("notification", {
+                title,
+                message,
+                type: "info",
+            });
+        }
+    });
+
+    // 1️⃣1️⃣ Push notification for mobile (Buyers in Expo)
+    const pushMessages = [];
+    for (const user of allUsers) {
+        if (user.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
+            pushMessages.push({
+                to: user.expoPushToken,
+                sound: "default",
+                title,
+                body: message,
+                data: { type: "coupon_update", couponId: coupon._id },
+            });
+        }
     }
-  });
 
-  // 1️⃣1️⃣ Push notification for mobile (Buyers in Expo)
-  const pushMessages = [];
-  for (const user of allUsers) {
-    if (user.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
-      pushMessages.push({
-        to: user.expoPushToken,
-        sound: "default",
-        title,
-        body: message,
-        data: { type: "coupon_update", couponId: coupon._id },
-      });
+    // Send push notifications (if any)
+    if (pushMessages.length > 0) {
+        await expo.sendPushNotificationsAsync(pushMessages);
     }
-  }
 
-  // Send push notifications (if any)
-  if (pushMessages.length > 0) {
-    await expo.sendPushNotificationsAsync(pushMessages);
-  }
-
-  // ✅ Final response
-  res.status(200).json({
-    success: true,
-    message: "Coupon updated and notifications sent to Admin and Buyers.",
-    data: coupon,
-  });
+    // ✅ Final response
+    res.status(200).json({
+        success: true,
+        message: "Coupon updated and notifications sent to Admin and Buyers.",
+        data: coupon,
+    });
 });
 
 
-
-
-
-
-// @desc    Delete a coupon by ID
-// @route   DELETE /api/admin/coupons/:id
-// @access  Private/Admin
 const deleteCoupon = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+    const { id } = req.params;
 
-  // 1️⃣ Find the coupon
-  const coupon = await Coupon.findById(id).populate("vendor", "name _id expoPushToken");
-  if (!coupon) {
-    return res.status(404).json({ success: false, message: "Coupon not found" });
-  }
+    // 1️⃣ Find the coupon
+    const coupon = await Coupon.findById(id).populate("vendor", "name _id expoPushToken");
+    if (!coupon) {
+        return res.status(404).json({ success: false, message: "Coupon not found" });
+    }
 
-  // 2️⃣ Delete the coupon
-  await coupon.deleteOne();
+    // 2️⃣ Delete the coupon
+    await coupon.deleteOne();
 
-  // 3️⃣ Socket & online users setup
-  const io = req.app.get("io");
-  const onlineUsers = req.app.get("onlineUsers");
+    // 3️⃣ Socket & online users setup
+    const io = req.app.get("io");
+    const onlineUsers = req.app.get("onlineUsers");
 
-  // 4️⃣ Notify vendor (if coupon belongs to one)
-  if (coupon.vendor) {
-    const vendorId = coupon.vendor._id.toString();
-    const vendorTitle = "Coupon Deleted ⚠️";
-    const vendorMessage = `The coupon "${coupon.code}" associated with your store has been deleted by the admin.`;
+    // 4️⃣ Notify vendor (if coupon belongs to one)
+    if (coupon.vendor) {
+        const vendorId = coupon.vendor._id.toString();
+        const vendorTitle = "Coupon Deleted ⚠️";
+        const vendorMessage = `The coupon "${coupon.code}" associated with your store has been deleted by the admin.`;
 
-    // Save DB notification
+        // Save DB notification
+        await Notification.create({
+            title: vendorTitle,
+            message: vendorMessage,
+            type: "warning",
+            sender: req.user._id,
+            receiver: vendorId,
+            role: "Vendor",
+            relatedCoupon: coupon._id,
+        });
+
+        // Real-time socket
+        if (onlineUsers[vendorId]) {
+            io.to(onlineUsers[vendorId].socketId).emit("notification", {
+                title: vendorTitle,
+                message: vendorMessage,
+                type: "warning",
+            });
+        }
+
+        // Push notification via Expo
+        if (coupon.vendor.expoPushToken && Expo.isExpoPushToken(coupon.vendor.expoPushToken)) {
+            await expo.sendPushNotificationsAsync([
+                {
+                    to: coupon.vendor.expoPushToken,
+                    sound: "default",
+                    title: vendorTitle,
+                    body: vendorMessage,
+                    data: { type: "coupon_deleted", couponId: coupon._id },
+                },
+            ]);
+        }
+    }
+
+    // 5️⃣ Notify admin (confirmation)
+    const adminId = req.user._id.toString();
+    const adminTitle = "Coupon Deleted ✅";
+    const adminMessage = `You successfully deleted the coupon "${coupon.code}".`;
+
     await Notification.create({
-      title: vendorTitle,
-      message: vendorMessage,
-      type: "warning",
-      sender: req.user._id,
-      receiver: vendorId,
-      role: "Vendor",
-      relatedCoupon: coupon._id,
+        title: adminTitle,
+        message: adminMessage,
+        type: "success",
+        sender: adminId,
+        receiver: adminId,
+        role: "Admin",
+        relatedCoupon: coupon._id,
     });
 
-    // Real-time socket
-    if (onlineUsers[vendorId]) {
-      io.to(onlineUsers[vendorId].socketId).emit("notification", {
-        title: vendorTitle,
-        message: vendorMessage,
-        type: "warning",
-      });
+    if (onlineUsers[adminId]) {
+        io.to(onlineUsers[adminId].socketId).emit("notification", {
+            title: adminTitle,
+            message: adminMessage,
+            type: "success",
+        });
     }
 
-    // Push notification via Expo
-    if (coupon.vendor.expoPushToken && Expo.isExpoPushToken(coupon.vendor.expoPushToken)) {
-      await expo.sendPushNotificationsAsync([
-        {
-          to: coupon.vendor.expoPushToken,
-          sound: "default",
-          title: vendorTitle,
-          body: vendorMessage,
-          data: { type: "coupon_deleted", couponId: coupon._id },
-        },
-      ]);
-    }
-  }
-
-  // 5️⃣ Notify admin (confirmation)
-  const adminId = req.user._id.toString();
-  const adminTitle = "Coupon Deleted ✅";
-  const adminMessage = `You successfully deleted the coupon "${coupon.code}".`;
-
-  await Notification.create({
-    title: adminTitle,
-    message: adminMessage,
-    type: "success",
-    sender: adminId,
-    receiver: adminId,
-    role: "Admin",
-    relatedCoupon: coupon._id,
-  });
-
-  if (onlineUsers[adminId]) {
-    io.to(onlineUsers[adminId].socketId).emit("notification", {
-      title: adminTitle,
-      message: adminMessage,
-      type: "success",
+    // 6️⃣ Final response
+    res.status(200).json({
+        success: true,
+        message: "Coupon deleted successfully and notifications sent.",
     });
-  }
-
-  // 6️⃣ Final response
-  res.status(200).json({
-    success: true,
-    message: "Coupon deleted successfully and notifications sent.",
-  });
 });
 
-
-// @desc    Get admin profile
-// @route   GET /api/admin/settings/profile
-// @access  Private/Admin
 const getAdminProfile = asyncHandler(async (req, res) => {
     const user = await User.findById(req.user.id).select('name email upiId profilePicture');
 
@@ -1734,19 +1573,13 @@ const getAdminProfile = asyncHandler(async (req, res) => {
         data: {
             name: user.name,
             email: user.email,
-                        upiId: user.upiId || null,
+            upiId: user.upiId || null,
 
             profilePicture: user.profilePicture || null,
         },
     });
 });
 
-
-
-// @desc    Update admin profile
-// @route   PUT /api/admin/settings/profile
-// @access  Private/Admin
-// controllers/adminController.js
 const updateAdminProfile = asyncHandler(async (req, res) => {
     const user = await User.findById(req.user.id);
 
@@ -1809,13 +1642,6 @@ const updateAdminProfile = asyncHandler(async (req, res) => {
 });
 
 
-
-
-
-
-// @desc    Change admin password
-// @route   POST /api/admin/settings/change-password
-// @access  Private/Admin
 const changeAdminPassword = asyncHandler(async (req, res) => {
     const { currentPassword, newPassword, confirmPassword } = req.body;
 
@@ -1876,12 +1702,6 @@ const deleteAdminProfilePicture = asyncHandler(async (req, res) => {
     });
 });
 
-
-
-
-// @desc    Get notification settings
-// @route   GET /api/admin/settings/notifications
-// @access  Private/Admin
 const getNotificationSettings = asyncHandler(async (req, res) => {
     // Logic to fetch notification settings from a separate settings model or the admin user document
     res.json({
@@ -1915,9 +1735,6 @@ const updateNotificationSettings = asyncHandler(async (req, res) => {
     });
 });
 
-// @desc    Update notification settings
-// @route   PUT /api/admin/settings/notifications
-// @access  Private/Admin
 const getCustomerSupportDetails = asyncHandler(async (req, res) => {
     // Find the single settings document, creating it if it doesn't exist (upsert)
     const settings = await CustomerSupport.findOneAndUpdate(
@@ -1974,8 +1791,7 @@ const getStaticPageContent = asyncHandler(async (req, res) => {
     });
 });
 
-// @desc    Update or Create content for a static page (PUT /api/admin/static-pages/:pageName)
-// @access  Private/Admin
+
 const updateStaticPageContent = asyncHandler(async (req, res) => {
     const { pageName } = req.params;
     const { content } = req.body;
@@ -1999,11 +1815,6 @@ const updateStaticPageContent = asyncHandler(async (req, res) => {
 });
 
 
-
-
-// @desc    Update content of a specific static page
-// @route   PUT /api/admin/manage-app/:pageName
-// @access  Private/Admin
 const updatePageContent = asyncHandler(async (req, res) => {
     const { content } = req.body;
     try {
@@ -2023,9 +1834,7 @@ const updatePageContent = asyncHandler(async (req, res) => {
     }
 });
 
-// @desc    Create content for a specific static page
-// @route   POST /api/admin/manage-app/pages
-// @access  Private/Admin
+
 const postPageContent = asyncHandler(async (req, res) => {
     const { pageName, content } = req.body;
     try {
@@ -2033,15 +1842,15 @@ const postPageContent = asyncHandler(async (req, res) => {
         if (existingPage) {
             return res.status(400).json({ success: false, message: 'A page with this name already exists. Use PUT to update.' });
         }
-        
+
         const newPage = new StaticPage({
             pageName,
             content,
             lastUpdatedBy: req.user._id
         });
-        
+
         const createdPage = await newPage.save();
-        
+
         res.status(201).json({
             success: true,
             message: `${pageName} created successfully.`,
@@ -2079,7 +1888,7 @@ const reportIssue = asyncHandler(async (req, res) => {
         });
 
         const createdIssue = await newIssue.save();
-        
+
         res.status(201).json({
             success: true,
             message: 'Issue reported successfully.',
@@ -2105,9 +1914,7 @@ const getuserNotificationSettings = asyncHandler(async (req, res) => {
     });
 });
 
-// @desc    Update notification settings
-// @route   PUT /api/admin/notifications
-// @access  Private/Admin
+
 const updateuserNotificationSettings = asyncHandler(async (req, res) => {
     // The request body should contain the full set of current settings from the frontend
     const updates = req.body;
@@ -2130,249 +1937,220 @@ const updateuserNotificationSettings = asyncHandler(async (req, res) => {
 });
 
 
-
-
-
-/**
- * @desc    Approve a Vendor (set status to 'Active', mark approved = true)
- * @route   PUT /api/admin/vendors/:id/approve
- * @access  Private/Admin
- */
 const approveVendor = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+    const { id } = req.params;
 
-  // 1️⃣ Find vendor
-  const vendor = await User.findOne({ _id: id, role: "Vendor" });
-  if (!vendor) {
-    return res.status(404).json({
-      success: false,
-      message: "Vendor not found.",
-    });
-  }
+    // 1️⃣ Find vendor
+    const vendor = await User.findOne({ _id: id, role: "Vendor" });
+    if (!vendor) {
+        return res.status(404).json({
+            success: false,
+            message: "Vendor not found.",
+        });
+    }
 
-  // 2️⃣ Update vendor status
-  vendor.status = "Active";
-  vendor.isApproved = true;
-  await vendor.save();
+    // 2️⃣ Update vendor status
+    vendor.status = "Active";
+    vendor.isApproved = true;
+    await vendor.save();
 
-  // 3️⃣ Activate vendor's products if inactive
-  await Product.updateMany({ vendor: id, status: "Inactive" }, { status: "In Stock" });
+    // 3️⃣ Activate vendor's products if inactive
+    await Product.updateMany({ vendor: id, status: "Inactive" }, { status: "In Stock" });
 
-  // 4️⃣ Socket and online users
-  const io = req.app.get("io");
-  const onlineUsers = req.app.get("onlineUsers");
+    // 4️⃣ Socket and online users
+    const io = req.app.get("io");
+    const onlineUsers = req.app.get("onlineUsers");
 
-  // 🟡 Vendor Notification
-  const vendorTitle = "Account Approved 🎉";
-  const vendorMessage =
-    "Congratulations! Your vendor account has been approved by the admin. You can now start selling your products.";
+    // 🟡 Vendor Notification
+    const vendorTitle = "Account Approved 🎉";
+    const vendorMessage =
+        "Congratulations! Your vendor account has been approved by the admin. You can now start selling your products.";
 
-  await Notification.create({
-    title: vendorTitle,
-    message: vendorMessage,
-    type: "success",
-    sender: req.user._id,
-    receiver: vendor._id,
-    role: "Vendor",
-  });
-
-  // Real-time socket for vendor
-  if (onlineUsers[vendor._id]) {
-    io.to(onlineUsers[vendor._id].socketId).emit("notification", {
-      title: vendorTitle,
-      message: vendorMessage,
-      type: "success",
-    });
-  }
-
-  // Push notification via Expo
-  if (vendor.expoPushToken && Expo.isExpoPushToken(vendor.expoPushToken)) {
-    await expo.sendPushNotificationsAsync([
-      {
-        to: vendor.expoPushToken,
-        sound: "default",
+    await Notification.create({
         title: vendorTitle,
-        body: vendorMessage,
-        data: { type: "vendor_approval", vendorId: vendor._id },
-      },
-    ]);
-  }
-
-  // 🟢 Admin Notification (self confirmation)
-  const adminId = req.user._id.toString();
-  const adminTitle = "Vendor Approved ✅";
-  const adminMessage = `You successfully approved vendor "${vendor.name}".`;
-
-  await Notification.create({
-    title: adminTitle,
-    message: adminMessage,
-    type: "info",
-    sender: adminId,
-    receiver: adminId,
-    role: "Admin",
-  });
-
-  // Real-time socket for admin
-  if (onlineUsers[adminId]) {
-    io.to(onlineUsers[adminId].socketId).emit("notification", {
-      title: adminTitle,
-      message: adminMessage,
-      type: "info",
+        message: vendorMessage,
+        type: "success",
+        sender: req.user._id,
+        receiver: vendor._id,
+        role: "Vendor",
     });
-  }
 
-  // ✅ 5️⃣ Final response
-  res.status(200).json({
-    success: true,
-    message: "Vendor approved and notifications sent successfully.",
-    data: {
-      vendorId: vendor._id,
-      name: vendor.name,
-      email: vendor.email,
-      status: vendor.status,
-      isApproved: vendor.isApproved,
-    },
-  });
+    // Real-time socket for vendor
+    if (onlineUsers[vendor._id]) {
+        io.to(onlineUsers[vendor._id].socketId).emit("notification", {
+            title: vendorTitle,
+            message: vendorMessage,
+            type: "success",
+        });
+    }
+
+    // Push notification via Expo
+    if (vendor.expoPushToken && Expo.isExpoPushToken(vendor.expoPushToken)) {
+        await expo.sendPushNotificationsAsync([
+            {
+                to: vendor.expoPushToken,
+                sound: "default",
+                title: vendorTitle,
+                body: vendorMessage,
+                data: { type: "vendor_approval", vendorId: vendor._id },
+            },
+        ]);
+    }
+
+    // 🟢 Admin Notification (self confirmation)
+    const adminId = req.user._id.toString();
+    const adminTitle = "Vendor Approved ✅";
+    const adminMessage = `You successfully approved vendor "${vendor.name}".`;
+
+    await Notification.create({
+        title: adminTitle,
+        message: adminMessage,
+        type: "info",
+        sender: adminId,
+        receiver: adminId,
+        role: "Admin",
+    });
+
+    // Real-time socket for admin
+    if (onlineUsers[adminId]) {
+        io.to(onlineUsers[adminId].socketId).emit("notification", {
+            title: adminTitle,
+            message: adminMessage,
+            type: "info",
+        });
+    }
+
+    // ✅ 5️⃣ Final response
+    res.status(200).json({
+        success: true,
+        message: "Vendor approved and notifications sent successfully.",
+        data: {
+            vendorId: vendor._id,
+            name: vendor.name,
+            email: vendor.email,
+            status: vendor.status,
+            isApproved: vendor.isApproved,
+        },
+    });
 });
 
-
-
-
-/**
- * @desc    Reject a Vendor (set status to 'Blocked', mark approved = false)
- * @route   PUT /api/admin/vendors/:id/reject
- * @access  Private/Admin
- */
-
-/**
- * @desc    Reject a Vendor, set status to 'Rejected', mark approved = false, and save the reason.
- * @route   PUT /api/admin/vendors/:id/reject
- * @access  Private/Admin
- */
 
 const rejectVendor = asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  const { rejectionReason } = req.body;
+    const { id } = req.params;
+    const { rejectionReason } = req.body;
 
-  // 1️⃣ Validate reason
-  if (!rejectionReason || rejectionReason.trim().length < 5) {
-    return res.status(400).json({
-      success: false,
-      message: "Rejection reason must be at least 5 characters long.",
-    });
-  }
+    // 1️⃣ Validate reason
+    if (!rejectionReason || rejectionReason.trim().length < 5) {
+        return res.status(400).json({
+            success: false,
+            message: "Rejection reason must be at least 5 characters long.",
+        });
+    }
 
-  // 2️⃣ Find vendor
-  const vendor = await User.findOne({ _id: id, role: "Vendor" });
-  if (!vendor) {
-    return res.status(404).json({
-      success: false,
-      message: "Vendor not found.",
-    });
-  }
+    // 2️⃣ Find vendor
+    const vendor = await User.findOne({ _id: id, role: "Vendor" });
+    if (!vendor) {
+        return res.status(404).json({
+            success: false,
+            message: "Vendor not found.",
+        });
+    }
 
-  // 3️⃣ Update vendor details
-  vendor.status = "Rejected";
-  vendor.isApproved = false;
-  vendor.rejectionReason = rejectionReason;
-  await vendor.save();
+    // 3️⃣ Update vendor details
+    vendor.status = "Rejected";
+    vendor.isApproved = false;
+    vendor.rejectionReason = rejectionReason;
+    await vendor.save();
 
-  // 4️⃣ Deactivate all their products
-  await Product.updateMany({ vendor: id }, { status: "Out of Stock" });
+    // 4️⃣ Deactivate all their products
+    await Product.updateMany({ vendor: id }, { status: "Out of Stock" });
 
-  // 5️⃣ Setup notification context
-  const io = req.app.get("io");
-  const onlineUsers = req.app.get("onlineUsers");
+    // 5️⃣ Setup notification context
+    const io = req.app.get("io");
+    const onlineUsers = req.app.get("onlineUsers");
 
-  // --- Vendor Notification ---
-  const vendorTitle = "Account Rejected ❌";
-  const vendorMessage = `Your vendor registration was rejected. Reason: ${rejectionReason}`;
+    // --- Vendor Notification ---
+    const vendorTitle = "Account Rejected ❌";
+    const vendorMessage = `Your vendor registration was rejected. Reason: ${rejectionReason}`;
 
-  await Notification.create({
-    title: vendorTitle,
-    message: vendorMessage,
-    type: "error",
-    sender: req.user._id,
-    receiver: vendor._id,
-    role: "Vendor",
-  });
-
-  // Real-time socket (if vendor online)
-  if (onlineUsers[vendor._id]) {
-    io.to(onlineUsers[vendor._id].socketId).emit("notification", {
-      title: vendorTitle,
-      message: vendorMessage,
-      type: "error",
-    });
-  }
-
-  // Push notification via Expo (if vendor on mobile)
-  if (vendor.expoPushToken && Expo.isExpoPushToken(vendor.expoPushToken)) {
-    await expo.sendPushNotificationsAsync([
-      {
-        to: vendor.expoPushToken,
-        sound: "default",
+    await Notification.create({
         title: vendorTitle,
-        body: vendorMessage,
-        data: { type: "vendor_rejection", vendorId: vendor._id },
-      },
-    ]);
-  }
-
-  // --- Admin Confirmation Notification ---
-  const adminId = req.user._id.toString();
-  const adminTitle = "Vendor Rejected ✅";
-  const adminMessage = `You rejected vendor "${vendor.name}" for reason: "${rejectionReason}".`;
-
-  await Notification.create({
-    title: adminTitle,
-    message: adminMessage,
-    type: "success",
-    sender: adminId,
-    receiver: adminId,
-    role: "Admin",
-  });
-
-  // Real-time socket (if admin online)
-  if (onlineUsers[adminId]) {
-    io.to(onlineUsers[adminId].socketId).emit("notification", {
-      title: adminTitle,
-      message: adminMessage,
-      type: "success",
+        message: vendorMessage,
+        type: "error",
+        sender: req.user._id,
+        receiver: vendor._id,
+        role: "Vendor",
     });
-  }
 
-  // ✅ 6️⃣ Send final response
-  res.status(200).json({
-    success: true,
-    message: "Vendor rejected and notifications sent successfully.",
-    data: {
-      vendorId: vendor._id,
-      name: vendor.name,
-      email: vendor.email,
-      status: vendor.status,
-      isApproved: vendor.isApproved,
-      rejectionReason: vendor.rejectionReason,
-    },
-  });
+    // Real-time socket (if vendor online)
+    if (onlineUsers[vendor._id]) {
+        io.to(onlineUsers[vendor._id].socketId).emit("notification", {
+            title: vendorTitle,
+            message: vendorMessage,
+            type: "error",
+        });
+    }
+
+    // Push notification via Expo (if vendor on mobile)
+    if (vendor.expoPushToken && Expo.isExpoPushToken(vendor.expoPushToken)) {
+        await expo.sendPushNotificationsAsync([
+            {
+                to: vendor.expoPushToken,
+                sound: "default",
+                title: vendorTitle,
+                body: vendorMessage,
+                data: { type: "vendor_rejection", vendorId: vendor._id },
+            },
+        ]);
+    }
+
+    // --- Admin Confirmation Notification ---
+    const adminId = req.user._id.toString();
+    const adminTitle = "Vendor Rejected ✅";
+    const adminMessage = `You rejected vendor "${vendor.name}" for reason: "${rejectionReason}".`;
+
+    await Notification.create({
+        title: adminTitle,
+        message: adminMessage,
+        type: "success",
+        sender: adminId,
+        receiver: adminId,
+        role: "Admin",
+    });
+
+    // Real-time socket (if admin online)
+    if (onlineUsers[adminId]) {
+        io.to(onlineUsers[adminId].socketId).emit("notification", {
+            title: adminTitle,
+            message: adminMessage,
+            type: "success",
+        });
+    }
+
+    // ✅ 6️⃣ Send final response
+    res.status(200).json({
+        success: true,
+        message: "Vendor rejected and notifications sent successfully.",
+        data: {
+            vendorId: vendor._id,
+            name: vendor.name,
+            email: vendor.email,
+            status: vendor.status,
+            isApproved: vendor.isApproved,
+            rejectionReason: vendor.rejectionReason,
+        },
+    });
 });
-
-
-
-
-
-
-
 
 module.exports = {
     getDashboardStats,
-    getProducts,approveVendor,
+    getProducts, approveVendor,
     getAdminProductDetails,
     addOrUpdateNutritionalValue,
     deleteProduct,
     getVendors,
     getVendorDetails,
-    updateVendorStatus,rejectVendor,
+    updateVendorStatus, rejectVendor,
     deleteVendor,
     getBuyers,
     getBuyerDetails,
@@ -2404,6 +2182,6 @@ module.exports = {
     postPageContent,
     reportIssue,
     getRecentActivity,
-    getuserNotificationSettings,getBannersByPlacement,
-    updateuserNotificationSettings,getCustomerSupportDetails,updateCustomerSupportDetails,updateStaticPageContent
+    getuserNotificationSettings, getBannersByPlacement,
+    updateuserNotificationSettings, getCustomerSupportDetails, updateCustomerSupportDetails, updateStaticPageContent
 };

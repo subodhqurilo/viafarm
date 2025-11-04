@@ -1,4 +1,4 @@
-// controllers/notificationController.js
+
 const Notification = require("../models/Notification");
 const { Expo } = require("expo-server-sdk");
 const User = require("../models/User");
