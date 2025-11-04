@@ -8,7 +8,9 @@ const Category = require('../models/Category');
 const { upload, cloudinary } = require('../services/cloudinaryService');
 const Coupon = require('../models/Coupon');
 const Address = require('../models/Address');
-const { createAndSendNotification } = require('../utils/notificationUtils');
+
+const { createAndSendNotification } = require('../utils/notificationUtils'); // ✅ Import your helper
+
 
 // -------------------------------
 // Vendor Dashboard
@@ -386,6 +388,8 @@ const getVendorProducts = asyncHandler(async (req, res) => {
 // @desc    Add a new product
 // @route   POST /api/vendor/products/add
 // @access  Private/Vendor
+
+
 const addProduct = asyncHandler(async (req, res) => {
   const {
     name,
@@ -396,70 +400,76 @@ const addProduct = asyncHandler(async (req, res) => {
     unit,
     description,
     weightPerPiece,
-    allIndiaDelivery
+    allIndiaDelivery,
   } = req.body;
 
   const vendorId = req.user._id;
 
-  // --- 1. Vendor Approval Check ---
+  // --- 1️⃣ Vendor Approval Check ---
   const vendor = await User.findById(vendorId);
   if (!vendor || !vendor.isApproved) {
     return res.status(403).json({
       success: false,
-      message: 'Your account is not approved. Cannot add products.'
+      message: "Your account is not approved. Cannot add products.",
     });
   }
 
-  // --- 2. Mandatory Field Validation ---
+  // --- 2️⃣ Mandatory Field Validation ---
   if (!name || !category || !variety || !price || !quantity || !unit) {
     return res.status(400).json({
       success: false,
-      message: 'Missing required fields.'
+      message: "Missing required fields.",
     });
   }
 
-  if (isNaN(price) || isNaN(quantity) || Number(price) <= 0 || Number(quantity) <= 0) {
+  if (
+    isNaN(price) ||
+    isNaN(quantity) ||
+    Number(price) <= 0 ||
+    Number(quantity) <= 0
+  ) {
     return res.status(400).json({
       success: false,
-      message: 'Price and Quantity must be valid positive numbers.'
+      message: "Price and Quantity must be valid positive numbers.",
     });
   }
 
-  // --- 3. Validation for "pc" unit ---
-  if (unit === 'pc' && (!weightPerPiece || typeof weightPerPiece !== 'string')) {
+  // --- 3️⃣ Validation for "pc" unit ---
+  if (unit === "pc" && (!weightPerPiece || typeof weightPerPiece !== "string")) {
     return res.status(400).json({
       success: false,
-      message: 'When selling by piece (pc), you must specify the weight per piece (e.g., "400g").'
+      message:
+        'When selling by piece (pc), you must specify the weight per piece (e.g., "400g").',
     });
   }
 
-  // --- 4. Upload Product Images to Cloudinary ---
+  // --- 4️⃣ Upload Product Images to Cloudinary ---
   let images = [];
   if (req.files && req.files.length > 0) {
     try {
       for (const file of req.files) {
         const result = await cloudinary.uploader.upload(file.path, {
-          folder: 'product-images'
+          folder: "product-images",
         });
         images.push(result.secure_url);
       }
     } catch (err) {
       return res.status(500).json({
         success: false,
-        message: 'Image upload failed. Please try again.',
-        error: err.message
+        message: "Image upload failed. Please try again.",
+        error: err.message,
       });
     }
   } else {
     return res.status(400).json({
       success: false,
-      message: 'At least one product image is required.'
+      message: "At least one product image is required.",
     });
   }
 
-  // --- 5. Create Product in Database ---
+  // --- 5️⃣ Create Product in Database ---
   const isAllIndiaDelivery =
-    allIndiaDelivery === 'true' || allIndiaDelivery === true;
+    allIndiaDelivery === "true" || allIndiaDelivery === true;
 
   const newProduct = await Product.create({
     name: name.trim(),
@@ -469,34 +479,65 @@ const addProduct = asyncHandler(async (req, res) => {
     price: Number(price),
     quantity: Number(quantity),
     unit: unit.trim(),
-    description: description?.trim() || 'No description provided.',
+    description: description?.trim() || "No description provided.",
     images,
     allIndiaDelivery: isAllIndiaDelivery,
-    status: 'In Stock',
-    weightPerPiece: unit === 'pc' ? weightPerPiece : null
+    status: "In Stock",
+    weightPerPiece: unit === "pc" ? weightPerPiece : null,
   });
 
-  // ✅ 6. Create & Send Admin Notification
+  // --- 6️⃣ Notifications ---
+  // ✅ a. Send to Admin
   await createAndSendNotification(
     req,
-    'New Product Added',
+    "New Product Added",
     `${vendor.name} added a new product: ${newProduct.name}.`,
     {
       productId: newProduct._id,
-      vendorId: vendorId,
-      category: category,
-      price: price,
-      quantity: quantity
-    }
+      vendorId,
+      category,
+      price,
+      quantity,
+    },
+    "Admin" // 👈 only admins will get this
   );
 
-  // --- 7. Respond ---
+  // ✅ b. Send to Vendor (self)
+  await createAndSendNotification(
+    req,
+    "Product Added Successfully",
+    `Your product "${newProduct.name}" has been added successfully.`,
+    {
+      productId: newProduct._id,
+      category,
+      price,
+    },
+    "Vendor",
+    vendorId // 👈 specific vendor
+  );
+
+  // ✅ c. (Optional) Send to All Buyers or All Users
+  // Uncomment this if you want to notify everyone
+  /*
+  await createAndSendNotification(
+    req,
+    "New Product Available!",
+    `${vendor.name} just added "${newProduct.name}" — check it out now!`,
+    { productId: newProduct._id },
+    "All" // 👈 broadcast to all
+  );
+  */
+
+  // --- 7️⃣ Response ---
   res.status(201).json({
     success: true,
-    message: 'Product added successfully.',
-    data: newProduct
+    message: "Product added successfully.",
+    data: newProduct,
   });
 });
+
+
+
 
 
 
@@ -506,109 +547,136 @@ const addProduct = asyncHandler(async (req, res) => {
 // @route   PUT /api/vendor/products/:id
 // @access  Private/Vendor
 const updateProduct = asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const updates = req.body;
+  const { id } = req.params;
+  const updates = req.body;
 
-    // 1️⃣ Find Product
-    const product = await Product.findById(id);
-    if (!product) {
-        return res.status(404).json({ success: false, message: 'Product not found.' });
+  // 1️⃣ Find Product
+  const product = await Product.findById(id);
+  if (!product) {
+    return res.status(404).json({ success: false, message: "Product not found." });
+  }
+
+  // 2️⃣ Authorization Check
+  if (product.vendor.toString() !== req.user._id.toString()) {
+    return res.status(401).json({ success: false, message: "Not authorized to update this product." });
+  }
+
+  // 3️⃣ Allowed Fields
+  const allowedFields = [
+    "name",
+    "category",
+    "variety",
+    "price",
+    "quantity",
+    "unit",
+    "description",
+    "status",
+    "weightPerPiece",
+    "allIndiaDelivery",
+  ];
+
+  const updateFields = {};
+
+  // 4️⃣ Process Field Updates
+  for (const field of allowedFields) {
+    if (updates[field] !== undefined) {
+      if (field === "price" || field === "quantity") {
+        updateFields[field] = Number(updates[field]);
+      } else if (field === "allIndiaDelivery") {
+        updateFields[field] = updates[field] === true || updates[field] === "true";
+      } else if (typeof updates[field] === "string") {
+        updateFields[field] = updates[field].trim();
+      } else {
+        updateFields[field] = updates[field];
+      }
     }
+  }
 
-    // 2️⃣ Authorization Check
-    if (product.vendor.toString() !== req.user._id.toString()) {
-        return res.status(401).json({ success: false, message: 'Not authorized to update this product.' });
+  // 5️⃣ Validation for "pc" unit
+  const finalUnit = updateFields.unit || product.unit;
+  if (finalUnit === "pc") {
+    const weight = updateFields.weightPerPiece || product.weightPerPiece;
+    if (!weight || typeof weight !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: 'When selling by piece (pc), you must specify "weightPerPiece" (e.g., "400g").',
+      });
     }
+    updateFields.weightPerPiece = weight;
+  } else {
+    updateFields.weightPerPiece = null;
+  }
 
-    // 3️⃣ Allowed Fields (basic)
-    const allowedFields = [
-        'name',
-        'category',
-        'variety',
-        'price',
-        'quantity',
-        'unit',
-        'description',
-        'status',
-        'weightPerPiece',
-        'allIndiaDelivery'
-    ];
-
-    const updateFields = {};
-
-    // 4️⃣ Process Field Updates
-    for (const field of allowedFields) {
-        if (updates[field] !== undefined) {
-            // Convert price/quantity to number
-            if (field === 'price' || field === 'quantity') {
-                updateFields[field] = Number(updates[field]);
-            }
-            // Boolean conversion for allIndiaDelivery
-            else if (field === 'allIndiaDelivery') {
-                updateFields[field] =
-                    updates[field] === true || updates[field] === 'true';
-            }
-            // Trim strings for clean input
-            else if (typeof updates[field] === 'string') {
-                updateFields[field] = updates[field].trim();
-            } else {
-                updateFields[field] = updates[field];
-            }
-        }
+  // 6️⃣ Handle Image Uploads
+  if (req.files && req.files.length > 0) {
+    try {
+      const uploadedImages = [];
+      for (const file of req.files) {
+        const result = await cloudinary.uploader.upload(file.path, {
+          folder: "product-images",
+        });
+        uploadedImages.push(result.secure_url);
+      }
+      updateFields.images = uploadedImages;
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: "Image upload failed.",
+        error: error.message,
+      });
     }
+  }
 
-    // 5️⃣ Validation for "pc" unit (if changed or exists)
-    const finalUnit = updateFields.unit || product.unit;
-    if (finalUnit === 'pc') {
-        const weight = updateFields.weightPerPiece || product.weightPerPiece;
-        if (!weight || typeof weight !== 'string') {
-            return res.status(400).json({
-                success: false,
-                message:
-                    'When selling by piece (pc), you must specify the weight per piece (e.g., "400g").'
-            });
-        }
-        updateFields.weightPerPiece = weight;
-    } else {
-        // If unit is not 'pc', remove any existing weightPerPiece
-        updateFields.weightPerPiece = null;
-    }
+  // --- Capture old price before update ---
+  const oldPrice = product.price;
 
-    // 6️⃣ Handle Image Uploads (if provided)
-    if (req.files && req.files.length > 0) {
-        try {
-            const uploadedImages = [];
-            for (const file of req.files) {
-                const result = await cloudinary.uploader.upload(file.path, {
-                    folder: 'product-images'
-                });
-                uploadedImages.push(result.secure_url);
-            }
-            // Replace all images (frontend should handle preserving old URLs)
-            updateFields.images = uploadedImages;
-        } catch (error) {
-            return res.status(500).json({
-                success: false,
-                message: 'Image upload failed.',
-                error: error.message
-            });
-        }
-    }
+  // 7️⃣ Update the Product
+  const updatedProduct = await Product.findByIdAndUpdate(
+    id,
+    { $set: updateFields },
+    { new: true, runValidators: true }
+  );
 
-    // 7️⃣ Update the Product
-    const updatedProduct = await Product.findByIdAndUpdate(
-        id,
-        { $set: updateFields },
-        { new: true, runValidators: true }
+  const vendor = await User.findById(req.user._id);
+
+  // 8️⃣ Notification Logic
+
+  // ✅ a. Always notify Vendor (personal)
+  await createAndSendNotification(
+    req,
+    "Product Updated Successfully",
+    `Your product "${updatedProduct.name}" was updated successfully.`,
+    { productId: updatedProduct._id },
+    "Vendor",
+    vendor._id
+  );
+
+  // ✅ b. Notify all Buyers only if price drops
+  if (
+    updateFields.price !== undefined &&
+    Number(updateFields.price) < Number(oldPrice)
+  ) {
+    await createAndSendNotification(
+      req,
+      "Price Drop Alert 💰",
+      `${updatedProduct.name} is now available for ₹${updateFields.price} (was ₹${oldPrice})!`,
+      {
+        productId: updatedProduct._id,
+        oldPrice,
+        newPrice: updateFields.price,
+      },
+      "Buyer" // send to all buyers
     );
+  }
 
-    // 8️⃣ Response
-    res.status(200).json({
-        success: true,
-        message: 'Product updated successfully.',
-        data: updatedProduct
-    });
+  // 9️⃣ Response
+  res.status(200).json({
+    success: true,
+    message: "Product updated successfully.",
+    data: updatedProduct,
+  });
 });
+
 
 
 
@@ -782,31 +850,72 @@ const getVendorOrders = asyncHandler(async (req, res) => {
 // @route   PUT /api/vendor/orders/:id/update-status
 // @access  Private/Vendor
 const updateOrderStatus = asyncHandler(async (req, res) => {
-    const { status } = req.body;
+  const { status } = req.body;
 
-    // Find the order and ensure orderStatus is included
-    const order = await Order.findById(req.params.id)
-        .populate('products.product')
-        .select('+orderStatus'); // include orderStatus if it's normally excluded
+  // 1️⃣ Find the order
+  const order = await Order.findById(req.params.id)
+    .populate("products.product buyer vendor")
+    .select("+orderStatus");
 
-    if (!order) {
-        return res.status(404).json({ success: false, message: 'Order not found' });
-    }
+  if (!order) {
+    return res
+      .status(404)
+      .json({ success: false, message: "Order not found" });
+  }
 
-    if (order.vendor.toString() !== req.user._id.toString()) {
-        return res.status(401).json({ success: false, message: 'Not authorized' });
-    }
+  // 2️⃣ Only vendor who owns the order can update
+  if (order.vendor._id.toString() !== req.user._id.toString()) {
+    return res
+      .status(401)
+      .json({ success: false, message: "Not authorized" });
+  }
 
-    order.orderStatus = status;
-    const updatedOrder = await order.save();
+  // 3️⃣ Update order status
+  order.orderStatus = status;
+  const updatedOrder = await order.save();
 
-    // Send full document including orderStatus
-    res.json({
-        success: true,
-        message: 'Order status updated',
-        data: updatedOrder,
-    });
+  // 4️⃣ Send Notifications
+  try {
+    // ✅ a. Notify Buyer
+    await createAndSendNotification(
+      req,
+      "Order Status Updated",
+      `Your order #${order._id} status has been updated to "${status}".`,
+      {
+        orderId: order._id,
+        vendorId: order.vendor._id,
+        products: order.products,
+      },
+      "Buyer",
+      order.buyer._id // send to this specific buyer
+    );
+
+    // ✅ b. Notify Admin
+    await createAndSendNotification(
+      req,
+      "Order Status Changed",
+      `${order.vendor.name} updated order #${order._id} status to "${status}".`,
+      {
+        orderId: order._id,
+        buyerId: order.buyer._id,
+        vendorId: order.vendor._id,
+        status,
+      },
+      "Admin" // send to all admins
+    );
+  } catch (err) {
+    console.error("Notification sending failed:", err);
+  }
+
+  // 5️⃣ Response
+  res.json({
+    success: true,
+    message: "Order status updated",
+    data: updatedOrder,
+  });
 });
+
+
 
 const updateUserStatus = asyncHandler(async (req, res) => {
     const { status } = req.body; // Expected: "Active" or "Inactive"
@@ -929,106 +1038,165 @@ const getVendorCouponById = asyncHandler(async (req, res) => {
 
 
 const createCoupon = asyncHandler(async (req, res) => {
-    const {
-        code,
-        discountValue, 
-        discountType = 'Percentage',
-        minimumOrder = 0,
-        usageLimitPerUser = 1,
-        totalUsageLimit,
-        startDate, 
-        expiryDate, 
-        appliesTo,
-        productIds = [], 
-        status = 'Active'
-    } = req.body;
-    
-    const creatorId = req.user._id;
+  const {
+    code,
+    discountValue,
+    discountType = "Percentage",
+    minimumOrder = 0,
+    usageLimitPerUser = 1,
+    totalUsageLimit,
+    startDate,
+    expiryDate,
+    appliesTo,
+    productIds = [],
+    status = "Active",
+  } = req.body;
 
-    // --- 1. Basic Validation ---
-    if (!code || !discountValue || !startDate || !expiryDate) {
-        return res.status(400).json({ success: false, message: 'Missing required fields.' });
-    }
+  const creatorId = req.user._id;
 
-    if (await Coupon.findOne({ code: code.toUpperCase() })) {
-        return res.status(400).json({ success: false, message: 'Coupon code already exists.' });
-    }
+  // --- 1️⃣ Basic Validation ---
+  if (!code || !discountValue || !startDate || !expiryDate) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Missing required fields." });
+  }
 
-    const start = new Date(startDate);
-    const expiry = new Date(expiryDate);
-    if (expiry <= start) {
-        return res.status(400).json({ success: false, message: 'Expiry date must be after the Start date.' });
-    }
+  if (await Coupon.findOne({ code: code.toUpperCase() })) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Coupon code already exists." });
+  }
 
-    // --- 2. Determine applicable products ---
-    let finalApplicableProductIds = [];
-    let isUniversal = false;
-
-    if (appliesTo === 'All Products') {
-        isUniversal = true;
-    } 
-    else if (Array.isArray(appliesTo) && appliesTo.length > 0) {
-        if (!productIds || productIds.length === 0) {
-            return res.status(400).json({ success: false, message: 'You must select at least one product.' });
-        }
-
-        const productsInVendor = await Product.find({
-            _id: { $in: productIds },
-            vendor: creatorId,
-            category: { $in: appliesTo }
-        }).select('_id');
-
-        if (productsInVendor.length !== productIds.length) {
-            return res.status(403).json({ success: false, message: 'Selected products must belong to your account and chosen categories.' });
-        }
-
-        finalApplicableProductIds = productsInVendor.map(p => p._id);
-    } 
-    else if (appliesTo === 'Specific Product' && productIds.length === 1) {
-        const product = await Product.findOne({ _id: productIds[0], vendor: creatorId });
-        if (!product) return res.status(403).json({ success: false, message: 'You can only apply coupons to your own products.' });
-        finalApplicableProductIds = [product._id];
-    } 
-    else {
-        return res.status(400).json({ success: false, message: 'Invalid selection for coupon applicability.' });
-    }
-
-    // --- 3. Create and Save Coupon ---
-    const newCoupon = await Coupon.create({
-        code: code.toUpperCase(),
-        discount: { value: parseFloat(discountValue), type: discountType },
-        appliesTo,
-        applicableProducts: isUniversal ? [] : finalApplicableProductIds,
-        startDate: start,
-        expiryDate: expiry,
-        minimumOrder: parseFloat(minimumOrder) || 0,
-        usageLimitPerUser,
-        totalUsageLimit,
-        vendor: creatorId,
-        createdBy: creatorId,
-        status
+  const start = new Date(startDate);
+  const expiry = new Date(expiryDate);
+  if (expiry <= start) {
+    return res.status(400).json({
+      success: false,
+      message: "Expiry date must be after the Start date.",
     });
+  }
 
-    // ✅ 4. Send admin notification
+  // --- 2️⃣ Determine applicable products ---
+  let finalApplicableProductIds = [];
+  let isUniversal = false;
+
+  if (appliesTo === "All Products") {
+    isUniversal = true;
+  } else if (Array.isArray(appliesTo) && appliesTo.length > 0) {
+    if (!productIds || productIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "You must select at least one product.",
+      });
+    }
+
+    const productsInVendor = await Product.find({
+      _id: { $in: productIds },
+      vendor: creatorId,
+      category: { $in: appliesTo },
+    }).select("_id");
+
+    if (productsInVendor.length !== productIds.length) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Selected products must belong to your account and chosen categories.",
+      });
+    }
+
+    finalApplicableProductIds = productsInVendor.map((p) => p._id);
+  } else if (appliesTo === "Specific Product" && productIds.length === 1) {
+    const product = await Product.findOne({
+      _id: productIds[0],
+      vendor: creatorId,
+    });
+    if (!product) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only apply coupons to your own products.",
+      });
+    }
+    finalApplicableProductIds = [product._id];
+  } else {
+    return res
+      .status(400)
+      .json({ success: false, message: "Invalid selection for coupon applicability." });
+  }
+
+  // --- 3️⃣ Create and Save Coupon ---
+  const newCoupon = await Coupon.create({
+    code: code.toUpperCase(),
+    discount: { value: parseFloat(discountValue), type: discountType },
+    appliesTo,
+    applicableProducts: isUniversal ? [] : finalApplicableProductIds,
+    startDate: start,
+    expiryDate: expiry,
+    minimumOrder: parseFloat(minimumOrder) || 0,
+    usageLimitPerUser,
+    totalUsageLimit,
+    vendor: creatorId,
+    createdBy: creatorId,
+    status,
+  });
+
+  // --- 4️⃣ Notifications ---
+  try {
+    // ✅ a. Notify Admin
     await createAndSendNotification(
-        req,
-        'New Coupon Created',
-        `A new coupon "${newCoupon.code}" has been created by a vendor.`,
-        {
-            couponId: newCoupon._id,
-            vendorId: creatorId,
-            discountValue,
-            discountType,
-            appliesTo
-        }
+      req,
+      "New Coupon Created",
+      `Vendor ${req.user.name || "A vendor"} created a new coupon "${newCoupon.code}".`,
+      {
+        couponId: newCoupon._id,
+        vendorId: creatorId,
+        discountValue,
+        discountType,
+      },
+      "Admin" // Send to all admins
     );
 
-    res.status(201).json({
-        success: true,
-        message: 'Coupon created successfully.',
-        data: newCoupon
-    });
+    // ✅ b. Notify Vendor personally
+    await createAndSendNotification(
+      req,
+      "Coupon Created Successfully",
+      `Your coupon "${newCoupon.code}" has been created successfully.`,
+      {
+        couponId: newCoupon._id,
+        discountValue,
+        discountType,
+        expiryDate,
+      },
+      "Vendor",
+      creatorId // specific vendor
+    );
+
+    // ✅ c. Notify All Buyers
+    await createAndSendNotification(
+      req,
+      "New Coupon Available!",
+      `A new coupon "${newCoupon.code}" is now live! Use it to get ${discountValue}${discountType === "Percentage" ? "%" : "₹"} off your next purchase.`,
+      {
+        couponId: newCoupon._id,
+        discountValue,
+        discountType,
+        expiryDate,
+      },
+      "Buyer", // send to all buyers
+      null,
+      true // optional flag for "send to all buyers"
+    );
+  } catch (err) {
+    console.error("Notification sending failed:", err);
+  }
+
+  // --- 5️⃣ Response ---
+  res.status(201).json({
+    success: true,
+    message: "Coupon created successfully.",
+    data: newCoupon,
+  });
 });
+
 
 
 
@@ -1088,105 +1256,168 @@ module.exports = { getVendorCoupons };
 
 // Update a coupon
 const updateVendorCoupon = asyncHandler(async (req, res) => {
-    const { id } = req.params;
+  const { id } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-        return res.status(400).json({ success: false, message: 'Invalid coupon ID.' });
-    }
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ success: false, message: "Invalid coupon ID." });
+  }
 
-    const coupon = await Coupon.findById(id);
-    if (!coupon) {
-        return res.status(404).json({ success: false, message: 'Coupon not found.' });
-    }
+  const coupon = await Coupon.findById(id);
+  if (!coupon) {
+    return res.status(404).json({ success: false, message: "Coupon not found." });
+  }
 
-    if (coupon.vendor.toString() !== req.user._id.toString()) {
-        return res.status(403).json({ success: false, message: 'Not authorized to update this coupon.' });
-    }
+  if (coupon.vendor.toString() !== req.user._id.toString()) {
+    return res
+      .status(403)
+      .json({ success: false, message: "Not authorized to update this coupon." });
+  }
 
-    const {
-        code,
-        discount,
-        appliesTo,
-        productIds,
-        minimumOrder,
-        usageLimitPerUser,
-        status,
-        totalUsageLimit,
-        startDate,
-        expiryDate,
-        category
-    } = req.body;
+  const {
+    code,
+    discount,
+    appliesTo,
+    productIds,
+    minimumOrder,
+    usageLimitPerUser,
+    status,
+    totalUsageLimit,
+    startDate,
+    expiryDate,
+    category,
+  } = req.body;
 
-    // --- 1. Update basic fields ---
-    if (code) coupon.code = code.toUpperCase();
-    if (discount && typeof discount === 'object') {
-        coupon.discount.value = discount.value ?? coupon.discount.value;
-        coupon.discount.type = discount.type ?? coupon.discount.type;
-    }
-    if (minimumOrder !== undefined) coupon.minimumOrder = parseFloat(minimumOrder);
-    if (usageLimitPerUser !== undefined) coupon.usageLimitPerUser = usageLimitPerUser;
-    if (totalUsageLimit !== undefined) coupon.totalUsageLimit = totalUsageLimit;
-    if (status) coupon.status = status;
-    if (category) coupon.category = category;
-    if (startDate) coupon.startDate = new Date(startDate);
-    if (expiryDate) coupon.expiryDate = new Date(expiryDate);
+  // --- 1️⃣ Update basic fields ---
+  if (code) coupon.code = code.toUpperCase();
+  if (discount && typeof discount === "object") {
+    coupon.discount.value = discount.value ?? coupon.discount.value;
+    coupon.discount.type = discount.type ?? coupon.discount.type;
+  }
+  if (minimumOrder !== undefined) coupon.minimumOrder = parseFloat(minimumOrder);
+  if (usageLimitPerUser !== undefined) coupon.usageLimitPerUser = usageLimitPerUser;
+  if (totalUsageLimit !== undefined) coupon.totalUsageLimit = totalUsageLimit;
+  if (status) coupon.status = status;
+  if (category) coupon.category = category;
+  if (startDate) coupon.startDate = new Date(startDate);
+  if (expiryDate) coupon.expiryDate = new Date(expiryDate);
 
-    // --- 2. Handle appliesTo field ---
-    if (appliesTo !== undefined) {
-        // Case: Array of categories
-        if (Array.isArray(appliesTo) && appliesTo.length > 0) {
-            if (!productIds || productIds.length === 0) {
-                return res.status(400).json({ success: false, message: 'You must select at least one product.' });
-            }
+  // --- 2️⃣ Handle appliesTo field ---
+  if (appliesTo !== undefined) {
+    if (Array.isArray(appliesTo) && appliesTo.length > 0) {
+      if (!productIds || productIds.length === 0) {
+        return res
+          .status(400)
+          .json({ success: false, message: "You must select at least one product." });
+      }
 
-            const productsInVendor = await Product.find({
-                _id: { $in: productIds },
-                vendor: req.user._id,
-                category: { $in: appliesTo }
-            }).select('_id');
+      const productsInVendor = await Product.find({
+        _id: { $in: productIds },
+        vendor: req.user._id,
+        category: { $in: appliesTo },
+      }).select("_id");
 
-            if (productsInVendor.length !== productIds.length) {
-                return res.status(403).json({ success: false, message: 'Selected products must belong to your account and chosen categories.' });
-            }
-
-            coupon.appliesTo = appliesTo;
-            coupon.applicableProducts = productsInVendor.map(p => p._id);
-        }
-        // Case: Single string (like "All Products" or "Specific Product")
-        else if (typeof appliesTo === 'string') {
-            coupon.appliesTo = appliesTo;
-            if (appliesTo === 'All Products') {
-                coupon.applicableProducts = [];
-            }
-            // If Specific Product, expect exactly one productId
-            else if (appliesTo === 'Specific Product' && productIds?.length === 1) {
-                const product = await Product.findOne({ _id: productIds[0], vendor: req.user._id });
-                if (!product) {
-                    return res.status(403).json({ success: false, message: 'You can only apply coupons to your own product.' });
-                }
-                coupon.applicableProducts = [product._id];
-            }
-        } else {
-            return res.status(400).json({ success: false, message: 'Invalid appliesTo value.' });
-        }
-    }
-
-    // --- 3. Save and return updated coupon ---
-    try {
-        const updatedCoupon = await coupon.save();
-        res.status(200).json({
-            success: true,
-            message: 'Coupon updated successfully.',
-            data: updatedCoupon
+      if (productsInVendor.length !== productIds.length) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Selected products must belong to your account and chosen categories.",
         });
-    } catch (err) {
-        res.status(400).json({
+      }
+
+      coupon.appliesTo = appliesTo;
+      coupon.applicableProducts = productsInVendor.map((p) => p._id);
+    } else if (typeof appliesTo === "string") {
+      coupon.appliesTo = appliesTo;
+      if (appliesTo === "All Products") {
+        coupon.applicableProducts = [];
+      } else if (appliesTo === "Specific Product" && productIds?.length === 1) {
+        const product = await Product.findOne({
+          _id: productIds[0],
+          vendor: req.user._id,
+        });
+        if (!product) {
+          return res.status(403).json({
             success: false,
-            message: 'Failed to update coupon.',
-            error: err.message
-        });
+            message: "You can only apply coupons to your own product.",
+          });
+        }
+        coupon.applicableProducts = [product._id];
+      }
+    } else {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid appliesTo value." });
     }
+  }
+
+  // --- 3️⃣ Save updated coupon ---
+  const updatedCoupon = await coupon.save();
+
+  // --- 4️⃣ Notifications ---
+  try {
+    // ✅ a. Notify Admin
+    await createAndSendNotification(
+      req,
+      "Coupon Updated",
+      `Vendor ${req.user.name || "A vendor"} updated coupon "${updatedCoupon.code}".`,
+      {
+        couponId: updatedCoupon._id,
+        vendorId: req.user._id,
+        discount: updatedCoupon.discount,
+        status: updatedCoupon.status,
+      },
+      "Admin"
+    );
+
+    // ✅ b. Notify Vendor (self)
+    await createAndSendNotification(
+      req,
+      "Your Coupon Has Been Updated",
+      `Your coupon "${updatedCoupon.code}" has been successfully updated.`,
+      {
+        couponId: updatedCoupon._id,
+        discount: updatedCoupon.discount,
+        expiryDate: updatedCoupon.expiryDate,
+      },
+      "Vendor",
+      req.user._id
+    );
+
+    // ✅ c. Notify All Buyers if discount value or status changed
+    if (
+      discount ||
+      (status && status.toLowerCase() === "active")
+    ) {
+      await createAndSendNotification(
+        req,
+        "Coupon Updated!",
+        `Coupon "${updatedCoupon.code}" has been updated — enjoy ${
+          updatedCoupon.discount.value
+        }${
+          updatedCoupon.discount.type === "Percentage" ? "%" : "₹"
+        } off before ${updatedCoupon.expiryDate.toLocaleDateString()}.`,
+        {
+          couponId: updatedCoupon._id,
+          discount: updatedCoupon.discount,
+          expiryDate: updatedCoupon.expiryDate,
+        },
+        "Buyer",
+        null,
+        true // broadcast
+      );
+    }
+  } catch (err) {
+    console.error("Notification sending failed:", err);
+  }
+
+  // --- 5️⃣ Respond ---
+  res.status(200).json({
+    success: true,
+    message: "Coupon updated successfully.",
+    data: updatedCoupon,
+  });
 });
+
 
 
 
@@ -1194,34 +1425,79 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
 
 
 const deleteVendorCoupon = asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const vendorId = req.user._id;
+  const { id } = req.params;
+  const vendorId = req.user._id;
 
-    // --- 1. Validate coupon ID ---
-    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
-        return res.status(400).json({ success: false, message: 'Invalid or missing coupon ID.' });
+  // --- 1️⃣ Validate coupon ID ---
+  if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Invalid or missing coupon ID." });
+  }
+
+  // --- 2️⃣ Fetch the coupon ---
+  const coupon = await Coupon.findById(id);
+  if (!coupon) {
+    return res
+      .status(404)
+      .json({ success: false, message: "Coupon not found." });
+  }
+
+  // --- 3️⃣ Authorization check ---
+  if (coupon.vendor.toString() !== vendorId.toString()) {
+    return res
+      .status(403)
+      .json({ success: false, message: "You are not authorized to delete this coupon." });
+  }
+
+  // --- 4️⃣ Delete coupon ---
+  await Coupon.findByIdAndDelete(id);
+
+  // --- 5️⃣ Notifications ---
+  try {
+    // ✅ a. Notify Admin
+    await createAndSendNotification(
+      req,
+      "Coupon Deleted",
+      `Vendor ${req.user.name || "A vendor"} deleted coupon "${coupon.code}".`,
+      { couponId: id, vendorId },
+      "Admin"
+    );
+
+    // ✅ b. Notify Vendor (self)
+    await createAndSendNotification(
+      req,
+      "Coupon Deleted Successfully",
+      `Your coupon "${coupon.code}" has been deleted.`,
+      { couponId: id },
+      "Vendor",
+      vendorId
+    );
+
+    // ✅ c. Notify All Buyers (if coupon was active)
+    if (coupon.status === "Active") {
+      await createAndSendNotification(
+        req,
+        "Coupon No Longer Available",
+        `The coupon "${coupon.code}" is no longer active.`,
+        { couponId: id, code: coupon.code },
+        "Buyer",
+        null,
+        true // broadcast to all buyers
+      );
     }
+  } catch (err) {
+    console.error("Notification sending failed:", err);
+  }
 
-    // --- 2. Fetch the coupon ---
-    const coupon = await Coupon.findById(id);
-    if (!coupon) {
-        return res.status(404).json({ success: false, message: 'Coupon not found.' });
-    }
-
-    // --- 3. Authorization check ---
-    if (coupon.vendor.toString() !== vendorId.toString()) {
-        return res.status(403).json({ success: false, message: 'You are not authorized to delete this coupon.' });
-    }
-
-    // --- 4. Delete coupon ---
-    await Coupon.findByIdAndDelete(id);
-
-    res.status(200).json({
-        success: true,
-        message: 'Coupon deleted successfully.',
-        data: { couponId: id, code: coupon.code }
-    });
+  // --- 6️⃣ Respond ---
+  res.status(200).json({
+    success: true,
+    message: "Coupon deleted successfully.",
+    data: { couponId: id, code: coupon.code },
+  });
 });
+
 
 
 
@@ -1242,34 +1518,40 @@ const deleteVendorCoupon = asyncHandler(async (req, res) => {
 
 
 const getUserProfile = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id).select('-password'); 
-    if (!user) {
-        return res.status(404).json({ success: false, message: 'User not found.' });
-    }
+  const user = await User.findById(req.user.id).select('-password'); 
+  if (!user) {
+    return res.status(404).json({ success: false, message: 'User not found.' });
+  }
 
-    // Ensure vendorDetails exists to safely access 'about'
-    const vendorDetails = user.vendorDetails || {};
+  // ✅ Ensure vendorDetails exists to safely access nested fields
+  const vendorDetails = user.vendorDetails || {};
 
-    const responseData = {
-        id: user._id,
-        name: user.name,
-        mobileNumber: user.mobileNumber,
-        profilePicture: user.profilePicture,
-        role: user.role,
-        upiId: user.upiId,
-        address: user.address,
-        language: user.language,
-        about: vendorDetails.about || '', // now safe and always returns string
-        status :user.status,
-    };
+  const responseData = {
+    id: user._id,
+    name: user.name,
+    mobileNumber: user.mobileNumber,
+    profilePicture: user.profilePicture,
+    role: user.role,
+    upiId: user.upiId,
+    address: user.address,
+    language: user.language,
+    about: vendorDetails.about || '',
+    status: user.status,
+  };
 
-    // Include extra vendor info if role is Vendor
-    if (user.role === 'Vendor') {
-        responseData.totalOrdersAsBuyer = user.totalOrdersAsBuyer || 0;
-    }
+  if (user.role === 'Vendor') {
+    responseData.totalOrders = vendorDetails.totalOrders || 0;
+    responseData.deliveryRegion = vendorDetails.deliveryRegion || 5;
+    responseData.farmImages = vendorDetails.farmImages || []; // ✅ Correct access
+  }
 
-    res.status(200).json({ success: true, user: responseData });
+  if (user.role === 'Buyer') {
+    responseData.totalOrdersAsBuyer = user.totalOrdersAsBuyer || 0;
+  }
+
+  res.status(200).json({ success: true, user: responseData });
 });
+
 
 
 
@@ -1279,108 +1561,150 @@ const getUserProfile = asyncHandler(async (req, res) => {
 // @access  Private
 
 
+
+
 const updateUserProfile = asyncHandler(async (req, res) => {
+  console.log("🟢 Received body:", req.body);
+
   const { name, mobileNumber, upiId, about, status } = req.body;
 
   // 1️⃣ Find User
   const user = await User.findById(req.user._id);
   if (!user) {
-    return res.status(404).json({ success: false, message: 'User not found.' });
+    return res.status(404).json({ success: false, message: "User not found." });
   }
 
   // 2️⃣ Validation Checks
   if (!name || !mobileNumber || !upiId) {
     return res.status(400).json({
       success: false,
-      message: 'Name, Mobile Number, and UPI Id are mandatory fields.',
+      message: "Name, Mobile Number, and UPI Id are mandatory fields.",
     });
   }
 
   if (!/^\d{10}$/.test(mobileNumber)) {
     return res.status(400).json({
       success: false,
-      message: 'Mobile number must be a valid 10-digit number.',
+      message: "Mobile number must be a valid 10-digit number.",
     });
   }
 
-  // ✅ Prevent duplicate mobile numbers (only if changed)
+  // ✅ Prevent duplicate mobile numbers
   if (mobileNumber !== user.mobileNumber) {
     const existingUser = await User.findOne({ mobileNumber });
     if (existingUser) {
-      return res
-        .status(400)
-        .json({ success: false, message: 'This mobile number is already registered.' });
+      return res.status(400).json({
+        success: false,
+        message: "This mobile number is already registered.",
+      });
     }
   }
 
-  // 3️⃣ Handle Profile Picture Upload
-  if (req.file) {
+  // 3️⃣ Handle Profile Picture Upload (Single)
+  if (req.files?.profileImage && req.files.profileImage[0]) {
     try {
-      const result = await cloudinary.uploader.upload(req.file.path, {
-        folder: 'profile-images',
+      const result = await cloudinary.uploader.upload(req.files.profileImage[0].path, {
+        folder: "profile-images",
       });
       user.profileImage = result.secure_url;
     } catch (err) {
-      console.error('Cloudinary error:', err);
-      return res.status(500).json({ success: false, message: 'Image upload failed.' });
+      console.error("Cloudinary error:", err);
+      return res.status(500).json({ success: false, message: "Profile image upload failed." });
     }
   }
 
-  // 4️⃣ Update Basic Info
+  // 4️⃣ Handle Farm Images Upload (Multiple)
+  if (req.files?.farmImages && req.files.farmImages.length > 0) {
+    try {
+      const uploads = await Promise.all(
+        req.files.farmImages.map((file) =>
+          cloudinary.uploader.upload(file.path, { folder: "farm-images" })
+        )
+      );
+      const farmImageUrls = uploads.map((u) => u.secure_url);
+
+      user.vendorDetails = user.vendorDetails || {};
+      user.vendorDetails.farmImages = farmImageUrls;
+    } catch (err) {
+      console.error("Cloudinary farm upload error:", err);
+      return res.status(500).json({ success: false, message: "Farm images upload failed." });
+    }
+  }
+
+  // 5️⃣ Update Basic Info
   user.name = name;
   user.mobileNumber = mobileNumber;
   user.upiId = upiId;
 
-  // 5️⃣ Update Vendor About Info
+  // 6️⃣ Vendor About Info
   user.vendorDetails = user.vendorDetails || {};
   user.vendorDetails.about = about || user.vendorDetails.about;
 
-  // 6️⃣ Handle Address Update
+  // 7️⃣ Handle Address Update
   if (req.body.address) {
     try {
       user.address =
-        typeof req.body.address === 'string'
+        typeof req.body.address === "string"
           ? JSON.parse(req.body.address)
           : req.body.address;
     } catch (e) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid address format. Must be valid JSON.',
+        message: "Invalid address format. Must be valid JSON.",
       });
     }
   }
 
-  // 7️⃣ Update User Status (Active / Inactive)
+  // 8️⃣ Update User Status
   if (status) {
-    const allowedStatuses = ['Active', 'Inactive'];
+    const allowedStatuses = ["Active", "Inactive"];
     if (!allowedStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid status. Allowed values: Active or Inactive.',
+        message: "Invalid status. Allowed values: Active or Inactive.",
       });
     }
     user.status = status;
   }
 
-  // 8️⃣ Save Updated User
+  // 9️⃣ Save Updated User
   const updatedUser = await user.save();
 
-  // 9️⃣ Response
+  // 🔟 ✅ Send Personal Notification to Vendor
+  try {
+    await createAndSendNotification(
+      req,
+      "Profile Updated Successfully",
+      "Your vendor profile has been updated successfully.",
+      { userId: updatedUser._id },
+      "Vendor",
+      updatedUser._id // personal vendor notification
+    );
+  } catch (err) {
+    console.error("Notification sending failed:", err);
+  }
+
+  // 1️⃣1️⃣ Response
   res.status(200).json({
     success: true,
-    message: 'Profile updated successfully',
+    message: "Profile updated successfully",
     data: {
       id: updatedUser._id,
       name: updatedUser.name,
       mobileNumber: updatedUser.mobileNumber,
       upiId: updatedUser.upiId,
       profilePicture: updatedUser.profileImage,
+      farmImages: updatedUser.vendorDetails?.farmImages || [],
       address: updatedUser.address,
-      about: updatedUser.vendorDetails?.about || '',
-      status: updatedUser.status, // 🟢 Added
+      about: updatedUser.vendorDetails?.about || "",
+      status: updatedUser.status,
     },
   });
 });
+
+
+module.exports = { updateUserProfile };
+
 
 
 
@@ -1390,44 +1714,103 @@ const updateUserProfile = asyncHandler(async (req, res) => {
 
 
 const uploadProfileImage = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id);
-    if (!user) {
-        return res.status(404).json({ success: false, message: 'User not found.' });
-    }
+  const user = await User.findById(req.user.id);
+  if (!user) {
+    return res.status(404).json({ success: false, message: "User not found." });
+  }
 
-    if (!req.file) {
-        return res.status(400).json({ success: false, message: 'No image file uploaded.' });
-    }
+  if (!req.file) {
+    return res
+      .status(400)
+      .json({ success: false, message: "No image file uploaded." });
+  }
 
-    // Upload image to Cloudinary and update user's profile
-    const result = await cloudinary.uploader.upload(req.file.path, { folder: 'profile-images' });
-    user.profilePicture = result.secure_url;
+  // 1️⃣ Upload image to Cloudinary
+  let result;
+  try {
+    result = await cloudinary.uploader.upload(req.file.path, {
+      folder: "profile-images",
+    });
+  } catch (err) {
+    console.error("Cloudinary upload failed:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Image upload failed." });
+  }
 
-    await user.save();
-    res.status(200).json({ success: true, message: 'Profile image updated.', imageUrl: result.secure_url });
+  // 2️⃣ Update user record
+  user.profilePicture = result.secure_url;
+  await user.save();
+
+  // 3️⃣ ✅ Send Personal Notification to the same Vendor/User
+  try {
+    await createAndSendNotification(
+      req,
+      "Profile Picture Updated",
+      "Your profile picture has been updated successfully.",
+      { userId: user._id, imageUrl: result.secure_url },
+      "Vendor",
+      user._id // 👈 Personal notification
+    );
+  } catch (err) {
+    console.error("Notification sending failed:", err);
+  }
+
+  // 4️⃣ Send Response
+  res.status(200).json({
+    success: true,
+    message: "Profile image updated.",
+    imageUrl: result.secure_url,
+  });
 });
+
 
 // @desc    Change password
 // @route   POST /api/vendor/change-password
 // @access  Private/Vendor
 const changePassword = asyncHandler(async (req, res) => {
-    const { password, confirmPassword } = req.body;
+  const { password, confirmPassword } = req.body;
 
-    if (password !== confirmPassword) {
-        return res.status(400).json({ success: false, message: 'Passwords do not match' });
-    }
+  // 1️⃣ Validate Input
+  if (!password || !confirmPassword) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Both password fields are required." });
+  }
 
-    const user = await User.findById(req.user._id);
+  if (password !== confirmPassword) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Passwords do not match." });
+  }
 
-    if (!user) {
-        return res.status(404).json({ success: false, message: 'User not found' });
-    }
+  // 2️⃣ Find User
+  const user = await User.findById(req.user._id);
+  if (!user) {
+    return res.status(404).json({ success: false, message: "User not found." });
+  }
 
-    user.password = password; // must hash in User model pre-save hook
-    await user.save();
+  // 3️⃣ Update Password (auto-hashed via pre-save hook)
+  user.password = password;
+  await user.save();
 
-    res.json({ success: true, message: 'Password updated successfully' });
+  // 4️⃣ 🔔 Send Personal Notification
+  await createAndSendNotification(
+    req,
+    "Password Changed",
+    "Your password has been changed successfully.",
+    { userId: user._id },
+    "Vendor", // or "User" based on your role system
+    user._id  // 👈 Send only to this specific user
+  );
+
+  // 5️⃣ Send Response
+  res.json({
+    success: true,
+    message: "Password updated successfully.",
+  });
 });
+
 
 
 

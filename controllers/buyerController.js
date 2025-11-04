@@ -297,30 +297,50 @@ const getFreshAndPopularProducts = asyncHandler(async (req, res) => {
 
 
 
+
+
 const getLocalBestProducts = asyncHandler(async (req, res) => {
-  const { lat, lng, maxDistance = 50000 } = req.query; // default: 50 km
+  const { lat, lng, maxDistance = 50000 } = req.query; // default 50 km
   const latitude = parseFloat(lat);
   const longitude = parseFloat(lng);
 
-  // 🚨 If location invalid or missing → show fallback products
+  // 📏 Helper: Haversine distance
+  const getDistanceKm = (lat1, lon1, lat2, lon2) => {
+    const toRad = (v) => (v * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  // 🚨 Fallback if location invalid or missing
   if (!lat || !lng || isNaN(latitude) || isNaN(longitude)) {
-    const fallbackProducts = await Product.find({ status: 'In Stock' })
+    const fallbackProducts = await Product.find({ status: "In Stock" })
       .sort({ rating: -1 })
       .limit(10)
-      .select('name images')
-      .populate('vendor', 'name status');
+      .select("name images price unit rating")
+      .populate("vendor", "name status");
 
     return res.status(200).json({
       success: true,
       message:
-        'Location not provided or invalid. Showing top-rated products from all vendors.',
+        "Location not provided or invalid. Showing top-rated products from all vendors.",
       data: fallbackProducts
-        .filter(p => p.vendor?.status === 'Active')
-        .map(p => ({
+        .filter((p) => p.vendor?.status === "Active")
+        .map((p) => ({
+          _id: p._id,
           name: p.name,
           image: p.images?.[0] || null,
-          vendorName: p.vendor?.name || 'Unknown Vendor',
+          vendorName: p.vendor?.name || "Unknown Vendor",
           distance: null,
+          price: p.price,
+          rating: p.rating,
+          unit: p.unit,
         })),
     });
   }
@@ -328,61 +348,57 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
   try {
     // 🧭 Find nearby active vendors
     const localVendors = await User.find({
-      status: 'Active', // ✅ Only active vendors
+      status: "Active",
       location: {
         $near: {
-          $geometry: { type: 'Point', coordinates: [longitude, latitude] },
+          $geometry: { type: "Point", coordinates: [longitude, latitude] },
           $maxDistance: parseInt(maxDistance),
         },
       },
-    }).select('_id name location status');
+    }).select("_id name location status");
 
-    const vendorIds = localVendors.map(v => v._id);
+    const vendorIds = localVendors.map((v) => v._id);
 
     if (vendorIds.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'No active local vendors found in your area.',
+        message: "No active local vendors found in your area.",
       });
     }
 
-    // 📦 Get nearby top-rated products (only in stock)
+    // 📦 Fetch top-rated local products
     const localBestProducts = await Product.find({
       vendor: { $in: vendorIds },
-      status: 'In Stock',
+      status: "In Stock",
     })
       .sort({ rating: -1, createdAt: -1 })
       .limit(20)
-      .select('name images vendor')
-      .populate('vendor', 'name location status');
+      .select("name images vendor price unit weightPerPiece rating quantity")
+      .populate("vendor", "name location status");
 
-    // 📏 Helper: Calculate distance (Haversine formula)
-    const getDistanceKm = (lat1, lon1, lat2, lon2) => {
-      const toRad = v => (v * Math.PI) / 180;
-      const R = 6371;
-      const dLat = toRad(lat2 - lat1);
-      const dLon = toRad(lon2 - lon1);
-      const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return R * c;
-    };
-
-    // 🧮 Attach vendor distance to each product
+    // 🧮 Attach vendor distance
     const productsWithDistance = localBestProducts
-      .filter(p => p.vendor?.status === 'Active')
-      .map(p => {
+      .filter((p) => p.vendor?.status === "Active")
+      .map((p) => {
         const vendorLoc = p.vendor?.location?.coordinates;
         let distance = null;
+
         if (vendorLoc && vendorLoc.length === 2) {
-          distance = getDistanceKm(latitude, longitude, vendorLoc[1], vendorLoc[0]);
+          const km = getDistanceKm(latitude, longitude, vendorLoc[1], vendorLoc[0]);
+          distance = `${km.toFixed(2)} km away`; // ✅ formatted string
         }
+
         return {
+          _id: p._id,
           name: p.name,
           image: p.images?.[0] || null,
-          vendorName: p.vendor?.name || 'Unknown Vendor',
-          distance: distance ? parseFloat(distance.toFixed(2)) : null, // km
+          vendorName: p.vendor?.name || "Unknown Vendor",
+          distance, // e.g. "5.4 km away"
+          price: p.price,
+          rating: p.rating,
+          unit: p.unit,
+          quantity: p.quantity,
+          weightPerPiece: p.weightPerPiece,
         };
       });
 
@@ -392,13 +408,17 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       data: productsWithDistance,
     });
   } catch (err) {
-    console.error('Error fetching local best products:', err);
+    console.error("Error fetching local best products:", err);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch local products. Please check the GeoJSON index.',
+      message: "Failed to fetch local products. Please check the GeoJSON index.",
     });
   }
 });
+
+
+
+
 
 
 
@@ -787,127 +807,87 @@ const formatCategories = async (vendorId) => {
 // @route   GET /api/vendors?q=...&category=...&page=...
 // @access  Public
 const getAllVendors = asyncHandler(async (req, res) => {
-    const {
-        lat,
-        lng,
-        maxDistance = 50000,
-        page = 1,
-        limit = 10,
-        q,
-        category
-    } = req.query;
+  const { lat, lng, q, category } = req.query;
 
-    const pageSize = parseInt(limit);
-    const pageNumber = parseInt(page);
-    const skip = (pageNumber - 1) * pageSize;
+  const latitude = lat ? parseFloat(lat) : null;
+  const longitude = lng ? parseFloat(lng) : null;
 
-    // --- 1. PROXIMITY SEARCH LOGIC (If lat/lng are present) ---
-    if (lat && lng) {
-        const latitude = parseFloat(lat);
-        const longitude = parseFloat(lng);
-        const distanceInMeters = parseInt(maxDistance);
+  try {
+    // 🟢 Base query for active vendors
+    let query = { role: "Vendor", status: "Active" };
 
-        if (isNaN(latitude) || isNaN(longitude)) {
-            return res.status(400).json({ success: false, message: "Invalid latitude or longitude." });
-        }
+    // 🔍 Optional search by vendor name
+    if (q) query.name = { $regex: q, $options: "i" };
 
-        try {
-            // Start with base query for nearby active vendors
-            let proximityQuery = {
-                role: "Vendor",
-                status: "Active",
-                location: {
-                    $near: {
-                        $geometry: { type: "Point", coordinates: [longitude, latitude] },
-                        $maxDistance: distanceInMeters
-                    }
-                }
-            };
-
-            // Apply text search (q) to the proximity query
-            if (q) {
-                proximityQuery.name = { $regex: q, $options: 'i' };
-            }
-
-            // Fetch vendors (Pagination is usually not applied to $near, but we can limit)
-            const vendors = await User.find(proximityQuery)
-                .select('name profilePicture location');
-
-            // Format output to include distance and categories
-            const enrichedVendors = await Promise.all(
-                vendors.map(async vendor => {
-                    let distanceText = 'N/A';
-
-                    if (vendor.location?.coordinates?.length === 2) {
-                        const [vendorLng, vendorLat] = vendor.location.coordinates;
-                        const distance = calculateDistance(latitude, longitude, vendorLat, vendorLng);
-                        distanceText = `${distance.toFixed(1)} km away`;
-                    }
-
-                    return {
-                        id: vendor._id,
-                        name: vendor.name,
-                        profilePicture: vendor.profilePicture || 'https://default-image-url.com/default.png',
-                        distance: distanceText,
-                        categories: await formatCategories(vendor._id)
-                    };
-                })
-            );
-
-            // RETURN THE DESIRED FORMAT: { success: true, count: 2, vendors: [...] }
-            return res.status(200).json({
-                success: true,
-                count: enrichedVendors.length,
-                vendors: enrichedVendors
-            });
-
-        } catch (err) {
-            console.error("Proximity search failed:", err);
-            return res.status(500).json({ success: false, message: "Proximity search failed. Check MongoDB index." });
-        }
+    // 🔍 Optional category filter (find vendors with products in category)
+    if (category) {
+      const vendorsWithCategory = await Product.distinct("vendor", {
+        category: { $regex: category, $options: "i" },
+      });
+      query._id = { $in: vendorsWithCategory };
     }
 
-    // --- 2. PAGINATED DIRECTORY LOGIC (If lat/lng are missing) ---
-    else {
-        // Base query for all active vendors
-        const query = { role: 'Vendor', status: 'Active' };
+    // 🧩 Fetch vendors
+    const vendors = await User.find(query)
+      .select("name profilePicture location farmImages address");
 
-        if (q) query.name = { $regex: q, $options: 'i' };
+    // 🧮 Add distance directly in loop
+    const enrichedVendors = await Promise.all(
+      vendors.map(async (vendor) => {
+        let distanceText = "N/A";
 
-        if (category) {
-            const vendorsWithCategory = await Product.distinct('vendor', { category: { $regex: category, $options: 'i' } });
-            query._id = { $in: vendorsWithCategory };
+        // ✅ Inline distance calculation
+        if (latitude && longitude && vendor.location?.coordinates?.length === 2) {
+          const [vendorLng, vendorLat] = vendor.location.coordinates;
+
+          // Haversine Formula (inline)
+          const toRad = (v) => (v * Math.PI) / 180;
+          const R = 6371; // Earth's radius in km
+          const dLat = toRad(vendorLat - latitude);
+          const dLon = toRad(vendorLng - longitude);
+          const a =
+            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(toRad(latitude)) *
+              Math.cos(toRad(vendorLat)) *
+              Math.sin(dLon / 2) *
+              Math.sin(dLon / 2);
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+          const distance = R * c;
+
+          distanceText = `${distance.toFixed(1)} km away`;
         }
 
-        const totalVendors = await User.countDocuments(query);
-        let vendors = await User.find(query)
-            .select('name profilePicture') // Only need basic fields for this fallback list
-            .limit(pageSize)
-            .skip(skip)
-            .sort({ name: 1 });
+        return {
+          id: vendor._id,
+          name: vendor.name,
+          profilePicture:
+            vendor.profilePicture || "https://default-image-url.com/default.png",
+          farmImages: vendor.farmImages || [],
+          locationText:
+            vendor.address?.locality ||
+            vendor.address?.city ||
+            "Unknown Location",
+          distance: distanceText,
+          categories: await formatCategories(vendor._id),
+        };
+      })
+    );
 
-        const enrichedVendors = await Promise.all(
-            vendors.map(async vendor => ({
-                id: vendor._id,
-                name: vendor.name,
-                profilePicture: vendor.profilePicture || 'https://default-image-url.com/default.png',
-                distance: 'N/A', // Cannot calculate distance without location
-                categories: await formatCategories(vendor._id)
-            }))
-        );
-
-        // RETURN THE DESIRED FORMAT, but with pagination fields added
-        return res.status(200).json({
-            success: true,
-            count: enrichedVendors.length, // Only count on the current page
-            vendors: enrichedVendors,
-            page: pageNumber,
-            pages: Math.ceil(totalVendors / pageSize),
-            total: totalVendors,
-            message: "Showing paginated directory as location was not provided."
-        });
-    }
+    // ✅ Final response
+    return res.status(200).json({
+      success: true,
+      count: enrichedVendors.length,
+      vendors: enrichedVendors,
+    });
+  } catch (err) {
+    console.error("Error fetching vendors:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch vendors.",
+    });
+  }
 });
+
 
 
 
@@ -1342,86 +1322,90 @@ const updateCartItemQuantity = asyncHandler(async (req, res) => {
 // -----------------------------
 
 const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
-    const { vendorId } = req.params;
-    const { buyerLat, buyerLng, category } = req.query;
+  const { vendorId } = req.params;
+  const { buyerLat, buyerLng, category } = req.query;
 
-    // Fetch Vendor
-    const vendor = await User.findById(vendorId)
-        .where('role').equals('Vendor')
-        .where('status').equals('Active')
-        .select('name profilePicture address vendorDetails location rating mobileNumber');
+  // 🔹 Fetch Vendor
+  const vendor = await User.findById(vendorId)
+    .where('role').equals('Vendor')
+    .where('status').equals('Active')
+    .select('name profilePicture address vendorDetails location rating comments mobileNumber');
 
-    if (!vendor) {
-        return res.status(404).json({ success: false, message: 'Vendor not found or inactive.' });
+  if (!vendor) {
+    return res.status(404).json({ success: false, message: 'Vendor not found or inactive.' });
+  }
+
+  // 🔹 Distance Calculation
+  let distanceKm = null;
+  if (buyerLat && buyerLng && vendor.location?.coordinates) {
+    try {
+      distanceKm = calculateDistance(
+        parseFloat(buyerLat),
+        parseFloat(buyerLng),
+        vendor.location.coordinates[1],
+        vendor.location.coordinates[0]
+      ).toFixed(1);
+    } catch (e) {
+      console.error("Distance calculation failed:", e);
     }
+  }
 
-    // Distance Calculation
-    let distanceKm = null;
-    if (buyerLat && buyerLng && vendor.location?.coordinates) {
-        try {
-            distanceKm = calculateDistance(
-                parseFloat(buyerLat),
-                parseFloat(buyerLng),
-                vendor.location.coordinates[1],
-                vendor.location.coordinates[0]
-            ).toFixed(1);
-        } catch (e) {
-            console.error("Distance calculation failed:", e);
-        }
+  // 🔹 Fetch Reviews (with Comments)
+  const vendorProducts = await Product.find({ vendor: vendorId }).select('_id');
+  const productIds = vendorProducts.map(p => p._id);
+
+  const reviewsRaw = await Review.find({ product: { $in: productIds } })
+    .populate('user', 'name profilePicture')
+    .sort({ createdAt: -1 })
+    .limit(5);
+
+  const reviews = reviewsRaw.map(r => ({
+    _id: r._id,
+    user: r.user,
+    rating: r.rating,
+    comment: r.comment || "",  // ✅ Include comment
+    images: r.images,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt
+  }));
+
+  const reviewCount = await Review.countDocuments({ product: { $in: productIds } });
+
+  // 🔹 Fetch Listed Products
+  const productFilter = { vendor: vendorId, status: 'In Stock' };
+  if (category) productFilter.category = category;
+
+  const listedProducts = await Product.find(productFilter)
+    .select('name category variety price quantity unit images rating comments')
+    .sort({ rating: -1 })
+    .limit(20);
+
+  // ✅ Prepare Response
+  res.status(200).json({
+    success: true,
+    data: {
+      vendor: {
+        id: vendor._id,
+        name: vendor.name,
+        mobileNumber: vendor.mobileNumber,
+        profilePicture: vendor.profilePicture,
+        locationText: vendor.address?.locality || vendor.address?.city || 'Unknown Location',
+        distance: distanceKm ? `${distanceKm} kms away` : null,
+        about: vendor.vendorDetails?.about || '',
+        rating: vendor.rating || 0,
+        farmImages: vendor.vendorDetails?.farmImages || []
+      },
+      reviews: {
+        count: reviewCount,
+        list: reviews
+      },
+      listedProducts,
+      availableCategories: await Product.distinct('category', { vendor: vendorId })
     }
-
-    // Fetch Reviews (from products listed by vendor)
-    const vendorProducts = await Product.find({ vendor: vendorId }).select('_id');
-    const productIds = vendorProducts.map(p => p._id);
-    const reviewsRaw = await Review.find({ product: { $in: productIds } })
-        .populate('user', 'name profilePicture')
-        .sort({ createdAt: -1 })
-        .limit(5);
-
-    // Map comment field
-    const reviews = reviewsRaw.map(r => ({
-        _id: r._id,
-        user: r.user,
-        rating: r.rating,
-        comment: r.comment, // ✅ ensures comment is in response
-        images: r.images,
-        createdAt: r.createdAt,
-        updatedAt: r.updatedAt
-    }));
-
-    const reviewCount = await Review.countDocuments({ product: { $in: productIds } });
-
-    // Fetch Listed Products
-    const productFilter = { vendor: vendorId, status: 'In Stock' };
-    if (category) productFilter.category = category;
-
-    const listedProducts = await Product.find(productFilter)
-        .select('name category variety price quantity unit images rating')
-        .sort({ rating: -1 })
-        .limit(20);
-
-    res.status(200).json({
-        success: true,
-        data: {
-            vendor: {
-                id: vendor._id,
-                name: vendor.name,
-                mobileNumber: vendor.mobileNumber,
-                profilePicture: vendor.profilePicture,
-                locationText: vendor.address?.locality || vendor.address?.city || 'Unknown Location',
-                distance: distanceKm ? `${distanceKm} kms away` : null,
-                about: vendor.vendorDetails?.about || '', // ✅ sends saved about field
-                rating: vendor.rating || 0
-            },
-            reviews: {
-                count: reviewCount,
-                list: reviews
-            },
-            listedProducts,
-            availableCategories: await Product.distinct('category', { vendor: vendorId })
-        }
-    });
+  });
 });
+
+
 
 
 
@@ -1513,26 +1497,55 @@ const getProductReviews = asyncHandler(async (req, res) => {
 const reorder = asyncHandler(async (req, res) => {
     const { orderId } = req.params;
 
-    // Find the old order
-    const oldOrder = await Order.findOne({ _id: orderId, buyer: req.user._id });
+    // 1️⃣ Find the old order
+    const oldOrder = await Order.findOne({ _id: orderId, buyer: req.user._id }).populate('vendor');
     if (!oldOrder) {
         return res.status(404).json({ success: false, message: 'Order not found.' });
     }
 
-    // Create a new order with the same items
+    // 2️⃣ Create a new order
     const newOrder = await Order.create({
-        orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`, // new unique orderId
+        orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
         buyer: req.user._id,
-        vendor: oldOrder.vendor,
+        vendor: oldOrder.vendor._id,
         items: oldOrder.items,
         totalPrice: oldOrder.totalPrice,
         deliveryMethod: oldOrder.deliveryMethod,
         status: 'In Process',
     });
 
+    // 3️⃣ Send notifications
+    await createAndSendNotification(
+        req,
+        'Reorder Placed',
+        `Your reorder for order ${newOrder.orderId} has been successfully placed.`,
+        { orderId: newOrder._id },
+        'Buyer'
+    );
+
+    if (oldOrder.vendor) {
+        await createAndSendNotification(
+            req,
+            'New Reorder Received',
+            `A buyer has placed a reorder (Order ID: ${newOrder.orderId}).`,
+            { orderId: newOrder._id },
+            'Vendor',
+            oldOrder.vendor._id // 🎯 personal vendor
+        );
+    }
+
+    await createAndSendNotification(
+        req,
+        'Reorder Created',
+        `A reorder (${newOrder.orderId}) has been placed by a buyer.`,
+        { orderId: newOrder._id },
+        'Admin'
+    );
+
+    // 4️⃣ Respond
     res.status(201).json({
         success: true,
-        message: 'Re-order placed successfully.',
+        message: 'Reorder placed successfully.',
         data: newOrder,
     });
 });
@@ -1679,7 +1692,7 @@ const placeOrder = asyncHandler(async (req, res) => {
 
         const vendor = await User.findById(vendorId).select('name upiId').lean();
 
-        // ✅ Create Order with proper pickup slot format
+        // ✅ Create Order
         const newOrder = new Order({
             orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
             buyer: userId,
@@ -1709,15 +1722,27 @@ const placeOrder = asyncHandler(async (req, res) => {
         const createdOrder = await newOrder.save();
         createdOrderIds.push(createdOrder._id);
 
+        // ✅ Notify Vendor (personal)
+        await createAndSendNotification(
+            req,
+            'New Order Received',
+            `You have received a new order (${createdOrder.orderId}) from ${req.user.name || 'a buyer'}.`,
+            {
+                userId: vendorId,
+                orderId: createdOrder._id,
+                totalAmount: createdOrder.totalPrice,
+                paymentMethod,
+                orderType: deliveryType
+            }
+        );
+
         // --- 💰 Generate UPI Payment (if applicable) ---
         if (isOnlinePayment && vendor?.upiId) {
             const transactionRef = `TXN-${createdOrder.orderId.replace('#', '-')}-${Date.now()}`;
             const upiUrl = `upi://pay?pa=${encodeURIComponent(vendor.upiId)}&pn=${encodeURIComponent(vendor.name)}&am=${summary.totalAmount.toFixed(2)}&tn=${encodeURIComponent(`Payment for Order ${createdOrder.orderId}`)}&tr=${encodeURIComponent(transactionRef)}&cu=INR`;
             const qrCodeDataUrl = await QRCode.toDataURL(upiUrl);
 
-            // 🕒 Expiry after 2 minutes
             const qrExpiry = new Date(Date.now() + 2 * 60 * 1000);
-
             createdOrder.qrExpiry = qrExpiry;
             await createdOrder.save();
 
@@ -1737,7 +1762,7 @@ const placeOrder = asyncHandler(async (req, res) => {
             setTimeout(async () => {
                 const order = await Order.findById(createdOrder._id);
                 if (order && !order.isPaid) {
-                    order.qrClosed = true; // Frontend can use this to hide QR
+                    order.qrClosed = true;
                     await order.save();
                 }
             }, 2 * 60 * 1000);
@@ -1762,26 +1787,36 @@ const placeOrder = asyncHandler(async (req, res) => {
         await coupon.save();
     }
 
-    // --- 8️⃣ Clear cart ---
-    // --- 8️⃣ Clear cart immediately after order placement ---
-await Cart.findOneAndUpdate(
-  { user: userId },
-  { $set: { items: [] } } // empty the items array
-);
+    // --- 8️⃣ Clear Cart ---
+    await Cart.findOneAndUpdate({ user: userId }, { $set: { items: [] } });
 
-
-    // ✅ 9️⃣ Notify Admin
+    // ✅ Notify Buyer (personal)
     await createAndSendNotification(
         req,
-        'New Order Placed',
-        `A new order has been placed by user ${req.user.name || req.user._id}.`,
+        'Order Placed Successfully',
+        `Your order has been placed successfully!`,
         {
             userId,
             orderIds: createdOrderIds,
             totalAmount: grandTotalAmount.toFixed(2),
             paymentMethod,
-            deliveryType,
+            deliveryType
         }
+    );
+
+    // ✅ Notify Admin
+    await createAndSendNotification(
+        req,
+        'New Order Placed (All Vendors)',
+        `A new order has been placed by ${req.user.name || req.user._id}.`,
+        {
+            userId,
+            orderIds: createdOrderIds,
+            totalAmount: grandTotalAmount.toFixed(2),
+            paymentMethod,
+            deliveryType
+        },
+        'Admin'
     );
 
     // --- 🔟 Response ---
@@ -1798,6 +1833,7 @@ await Cart.findOneAndUpdate(
         pickupSlot: deliveryType === 'Pickup' ? pickupSlot : null
     });
 });
+
 
 
 
@@ -1927,108 +1963,128 @@ const getBuyerOrders = asyncHandler(async (req, res) => {
  * @access  Private/Buyer
  */
 const getOrderDetails = asyncHandler(async (req, res) => {
-    const { orderId } = req.params;
+  const { orderId } = req.params;
 
-    // 1️⃣ Find order for the logged-in buyer
-    const order = await Order.findOne({ _id: orderId, buyer: req.user._id }).lean();
-    if (!order) {
-        return res.status(404).json({ success: false, message: 'Order not found.' });
-    }
+  // ✅ 1. Find the order for the logged-in buyer
+  const order = await Order.findOne({ _id: orderId, buyer: req.user._id })
+    .populate("buyer", "name mobileNumber")
+    .lean();
 
-    // 2️⃣ Populate product & vendor for each item
-    const populatedItems = await Promise.all(
-        (order.products || []).map(async (item) => {
-            if (!item.product) return null;
-
-            const product = await Product.findById(item.product)
-                .select('name images variety price unit vendor quantity weightPerPiece description category')
-                .lean();
-            if (!product) return null;
-
-            const vendor = await User.findById(product.vendor)
-                .select('name profilePicture mobileNumber address vendorDetails.about')
-                .lean();
-
-            // ✅ Fetch all reviews for this product
-            const reviews = await Review.find({ product: product._id })
-                .populate('user', 'name profilePicture')
-                .sort({ createdAt: -1 })
-                .select('rating comment images createdAt')
-                .lean();
-
-            return {
-                ...item,
-                product,
-                vendor,
-                reviews
-            };
-        })
-    );
-
-    // 3️⃣ Format items and vendor details
-    const finalItems = [];
-    let primaryVendorDetails = {};
-    let buyerShippingAddress = {};
-
-    for (const item of populatedItems.filter(Boolean)) {
-        finalItems.push({
-            id: item.product._id,
-            name: item.product.name,
-            description: item.product.description || '',
-            category: item.product.category || '',
-            subtext: item.product.variety || item.product.category,
-            quantity: item.quantity,
-            image: item.product.images?.[0] || null,
-            price: item.product.price,
-            unit: item.product.unit,
-            weightPerPiece: item.product.weightPerPiece,
-            reviews: item.reviews.map(r => ({
-                id: r._id,
-                rating: r.rating,
-                comment: r.comment,
-                images: r.images || [],
-                createdAt: r.createdAt,
-                user: r.user || null
-            }))
-        });
-
-        // 🧍 Primary Vendor Info
-        if (item.vendor) {
-            const address =
-                item.vendor.address ||
-                item.vendor.vendorDetails?.address ||
-                item.vendor.vendorDetails?.businessAddress ||
-                null;
-
-            primaryVendorDetails = {
-                name: item.vendor.name,
-                mobileNumber: item.vendor.mobileNumber,
-                address: address,
-                profilePicture: item.vendor.profilePicture,
-                about: item.vendor.vendorDetails?.about || ''
-            };
-        }
-    }
-
-    // 4️⃣ Buyer shipping address
-    if (order.shippingAddress) {
-        buyerShippingAddress = order.shippingAddress;
-    }
-
-    // 5️⃣ Final formatted response
-    const finalOrder = {
-        ...order,
-        vendorDetails: primaryVendorDetails,
-        items: finalItems,
-        shippingAddress: buyerShippingAddress,
-        deliveryDate: formatDeliveryDate(order.createdAt)
-    };
-
-    res.status(200).json({
-        success: true,
-        order: finalOrder
+  if (!order) {
+    return res.status(404).json({
+      success: false,
+      message: "Order not found.",
     });
+  }
+
+  // ✅ 2. Extract product IDs
+  const productIds = (order.products || []).map((item) => item.product);
+
+  // ✅ 3. Fetch product and vendor details
+  const products = await Product.find({ _id: { $in: productIds } })
+    .select("name images variety price unit vendor quantity weightPerPiece description category")
+    .populate("vendor", "name profilePicture mobileNumber address vendorDetails.about")
+    .lean();
+
+  // ✅ 4. Fetch all product reviews in one query
+  const reviews = await Review.find({ product: { $in: productIds } })
+    .populate("user", "name profilePicture")
+    .sort({ createdAt: -1 })
+    .select("product rating comment images createdAt")
+    .lean();
+
+  // ✅ 5. Organize reviews by productId
+  const reviewsMap = reviews.reduce((acc, review) => {
+    const pid = review.product.toString();
+    acc[pid] = acc[pid] || [];
+    acc[pid].push({
+      id: review._id,
+      rating: review.rating,
+      comment: review.comment,
+      images: review.images || [],
+      createdAt: review.createdAt,
+      user: review.user || null,
+    });
+    return acc;
+  }, {});
+
+  // ✅ 6. Combine order items with product, vendor, and review details
+  const items = order.products
+    .map((item) => {
+      const product = products.find((p) => p._id.toString() === item.product.toString());
+      if (!product) return null;
+
+      const vendor = product.vendor || {};
+      return {
+        id: product._id,
+        name: product.name,
+        description: product.description || "",
+        category: product.category || "",
+        subtext: product.variety || "",
+        quantity: item.quantity,
+        price: product.price,
+        unit: product.unit,
+        weightPerPiece: product.weightPerPiece,
+        image: product.images?.[0] || null,
+        vendor: {
+          id: vendor._id,
+          name: vendor.name,
+          mobileNumber: vendor.mobileNumber,
+          address:
+            vendor.address ||
+            vendor.vendorDetails?.address ||
+            vendor.vendorDetails?.businessAddress ||
+            null,
+          profilePicture: vendor.profilePicture,
+          about: vendor.vendorDetails?.about || "",
+        },
+        reviews: reviewsMap[product._id.toString()] || [],
+      };
+    })
+    .filter(Boolean);
+
+  // ✅ 7. Extract unique vendors
+  const vendors = Object.values(
+    items.reduce((acc, item) => {
+      if (!acc[item.vendor.id]) acc[item.vendor.id] = item.vendor;
+      return acc;
+    }, {})
+  );
+
+  // ✅ 8. Format date utility
+  const formatDate = (date) =>
+    date
+      ? new Date(date).toLocaleDateString("en-IN", {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        })
+      : null;
+
+  // ✅ 9. Final response
+  res.status(200).json({
+    success: true,
+    order: {
+      id: order._id,
+      orderId: order.orderId,
+      buyer: order.buyer,
+      paymentMethod: order.paymentMethod,
+      totalPrice: order.totalPrice,
+      discount: order.discount || 0,
+      orderStatus: order.orderStatus,
+      orderType: order.orderType,
+      createdAt: order.createdAt,
+      deliveryDate: formatDate(order.createdAt),
+      pickupSlot: order.pickupSlot || null,
+      comments: order.comments || "",
+      shippingAddress: order.shippingAddress || {},
+      vendors,
+      items,
+    },
+  });
 });
+
+
 
 
 
@@ -2399,55 +2455,73 @@ const removeFromWishlist = asyncHandler(async (req, res) => {
 
 
 const writeReview = asyncHandler(async (req, res) => {
-    const { productId } = req.params;
-    const { rating, comment, orderId } = req.body;
+  const { productId } = req.params;
+  const { rating, comment, orderId } = req.body;
 
-    if (!rating || rating < 1 || rating > 5) {
-        return res.status(400).json({ success: false, message: 'Rating is required (1-5).' });
+  if (!rating || rating < 1 || rating > 5) {
+    return res.status(400).json({ success: false, message: 'Rating is required (1-5).' });
+  }
+
+  const order = await Order.findById(orderId).populate('products.product');
+  if (!order || order.buyer.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ success: false, message: 'Not authorized to review this order.' });
+  }
+
+  const productInOrder = order.products.find(
+    (item) => item.product._id.toString() === productId.toString()
+  );
+  if (!productInOrder) {
+    return res.status(400).json({ success: false, message: 'Product not found in this order.' });
+  }
+
+  // 📸 Upload review images (if any)
+  const images = [];
+  if (req.files && req.files.length > 0) {
+    for (const file of req.files) {
+      const result = await cloudinary.uploader.upload(file.path, { folder: 'product-reviews' });
+      images.push(result.secure_url);
     }
+  }
 
-    const order = await Order.findById(orderId).populate('products.product');
-    if (!order || order.buyer.toString() !== req.user._id.toString()) {
-        return res.status(403).json({ success: false, message: 'Not authorized to review this order.' });
-    }
+  // 📝 Save review
+  const review = await Review.create({
+    product: productId,
+    user: req.user._id,
+    rating,
+    comment,
+    images,
+    order: orderId,
+    orderItem: `${orderId}-${productId}`,
+  });
 
-    const productInOrder = order.products.find(
-        (item) => item.product._id.toString() === productId.toString()
-    );
-    if (!productInOrder) {
-        return res.status(400).json({ success: false, message: 'Product not found in this order.' });
-    }
+  // 📦 Populate for response
+  const populatedReview = await Review.findById(review._id)
+    .populate('user', 'name')
+    .populate('product', 'name variety');
 
-    const images = [];
-    if (req.files && req.files.length > 0) {
-        for (const file of req.files) {
-            const result = await cloudinary.uploader.upload(file.path, { folder: 'product-reviews' });
-            images.push(result.secure_url);
-        }
-    }
+  // 🔔 Send personal notification to the buyer
+  await createAndSendNotification(
+    req,
+    'Review Submitted',
+    `Your review for "${populatedReview.product.name}" has been submitted successfully.`,
+    {
+      reviewId: review._id,
+      productId,
+      rating,
+      comment,
+    },
+    'Buyer',          // user type
+    req.user._id      // personal buyer ID
+  );
 
-    // Save review
-    const review = await Review.create({
-        product: productId,
-        user: req.user._id,
-        rating,
-        comment,  // ✅ make sure it's saved
-        images,
-        order: orderId,
-        orderItem: `${orderId}-${productId}`,
-    });
-
-    // Repopulate with product + user + comment
-    const populatedReview = await Review.findById(review._id)
-        .populate('user', 'name')
-        .populate('product', 'name variety');
-
-    res.status(201).json({
-        success: true,
-        message: 'Review submitted successfully.',
-        review: populatedReview
-    });
+  // ✅ Response
+  res.status(201).json({
+    success: true,
+    message: 'Review submitted successfully.',
+    review: populatedReview
+  });
 });
+
 
 
 
@@ -2624,42 +2698,55 @@ const updateReview = asyncHandler(async (req, res) => {
 
 
 const deleteReview = asyncHandler(async (req, res) => {
-    const { reviewId } = req.params;
+  const { reviewId } = req.params;
 
-    // 1️⃣ Find the review
-    const review = await Review.findById(reviewId);
-    if (!review) {
-        return res.status(404).json({ success: false, message: 'Review not found' });
+  // 1️⃣ Find the review
+  const review = await Review.findById(reviewId);
+  if (!review) {
+    return res.status(404).json({ success: false, message: 'Review not found' });
+  }
+
+  // 2️⃣ Authorization check
+  if (review.user.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ success: false, message: 'Not authorized' });
+  }
+
+  // 3️⃣ (Optional) Delete images from Cloudinary
+  if (review.images && review.images.length > 0) {
+    for (const imgUrl of review.images) {
+      try {
+        const publicId = imgUrl.split('/').slice(-1)[0].split('.')[0];
+        await cloudinary.uploader.destroy(`product-reviews/${publicId}`);
+      } catch (err) {
+        console.error("Failed to delete image from Cloudinary:", err.message);
+      }
     }
+  }
 
-    // 2️⃣ Authorization
-    if (review.user.toString() !== req.user._id.toString()) {
-        return res.status(403).json({ success: false, message: 'Not authorized' });
-    }
+  // 4️⃣ Delete review
+  await review.deleteOne();
 
-    // 3️⃣ (Optional) Delete images from Cloudinary
-    if (review.images && review.images.length > 0) {
-        for (const imgUrl of review.images) {
-            try {
-                // Extract public_id from Cloudinary URL
-                const publicId = imgUrl.split('/').slice(-1)[0].split('.')[0];
-                await cloudinary.uploader.destroy(`product-reviews/${publicId}`);
-            } catch (err) {
-                console.error("Failed to delete image from Cloudinary:", err.message);
-            }
-        }
-    }
+  // 5️⃣ Send personal notification to the Buyer
+  await createAndSendNotification(
+    req,
+    'Review Deleted',
+    'Your review has been deleted successfully.',
+    {
+      reviewId: reviewId,
+      productId: review.product,
+    },
+    'Buyer',          // user type
+    req.user._id      // personal buyer ID
+  );
 
-    // 4️⃣ Delete review
-    await review.deleteOne();
-
-    // 5️⃣ Send response
-    res.status(200).json({
-        success: true,
-        message: 'Review deleted successfully',
-        reviewId: reviewId
-    });
+  // 6️⃣ Send response
+  res.status(200).json({
+    success: true,
+    message: 'Review deleted successfully',
+    reviewId: reviewId,
+  });
 });
+
 
 
 
@@ -2695,60 +2782,77 @@ const getBuyerProfile = asyncHandler(async (req, res) => {
 });
 
 const updateBuyerProfile = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id);
-    if (!user || user.role !== 'Buyer') {
-        return res.status(404).json({ success: false, message: 'Buyer not found.' });
+  const user = await User.findById(req.user.id);
+  if (!user || user.role !== 'Buyer') {
+    return res.status(404).json({ success: false, message: 'Buyer not found.' });
+  }
+
+  // 🔹 Check duplicate mobile number
+  if (req.body.mobileNumber && req.body.mobileNumber !== user.mobileNumber) {
+    const existingUser = await User.findOne({ mobileNumber: req.body.mobileNumber });
+    if (existingUser) {
+      return res.status(400).json({ success: false, message: 'Mobile number already in use.' });
     }
+    user.mobileNumber = req.body.mobileNumber;
+  }
 
-    // Check duplicate mobile number
-    if (req.body.mobileNumber && req.body.mobileNumber !== user.mobileNumber) {
-        const existingUser = await User.findOne({ mobileNumber: req.body.mobileNumber });
-        if (existingUser) {
-            return res.status(400).json({ success: false, message: 'Mobile number already in use.' });
-        }
-        user.mobileNumber = req.body.mobileNumber;
+  // 🔹 Handle profile image upload
+  if (req.file) {
+    try {
+      const result = await cloudinary.uploader.upload(req.file.path, {
+        folder: 'profile-images',
+        resource_type: 'image',
+      });
+      user.profilePicture = result.secure_url;
+    } catch (error) {
+      console.error('Cloudinary upload error:', error);
+      return res.status(500).json({ success: false, message: 'Profile image upload failed.' });
     }
+  }
 
-    // Handle profile image upload
-    if (req.file) {
-        try {
-            const result = await cloudinary.uploader.upload(req.file.path, {
-                folder: 'profile-images',
-                resource_type: 'image'
-            });
-            user.profilePicture = result.secure_url;
-        } catch (error) {
-            console.error('Cloudinary upload error:', error);
-            return res.status(500).json({ success: false, message: 'Profile image upload failed.' });
-        }
-    }
+  user.name = req.body.name || user.name;
 
-    user.name = req.body.name || user.name;
+  // 🔹 Update address if provided
+  if (req.body.pinCode || req.body.city) {
+    user.address = {
+      pinCode: req.body.pinCode || user.address?.pinCode,
+      houseNumber: req.body.houseNumber || user.address?.houseNumber,
+      locality: req.body.locality || user.address?.locality,
+      city: req.body.city || user.address?.city,
+      district: req.body.district || user.address?.district,
+    };
+  }
 
-    // Update address if provided
-    if (req.body.pinCode || req.body.city) {
-        user.address = {
-            pinCode: req.body.pinCode || (user.address ? user.address.pinCode : undefined),
-            houseNumber: req.body.houseNumber || (user.address ? user.address.houseNumber : undefined),
-            locality: req.body.locality || (user.address ? user.address.locality : undefined),
-            city: req.body.city || (user.address ? user.address.city : undefined),
-            district: req.body.district || (user.address ? user.address.district : undefined),
-        };
-    }
+  // 🔹 Save updated buyer
+  const updatedUser = await user.save();
 
-    const updatedUser = await user.save();
-    res.json({
-        success: true,
-        message: 'Profile updated successfully',
-        data: {
-            id: updatedUser.id,
-            name: updatedUser.name,
-            mobileNumber: updatedUser.mobileNumber,
-            profilePicture: updatedUser.profilePicture,
-            address: updatedUser.address
-        }
-    });
+  // 🔔 Send personal notification to this Buyer
+  await createAndSendNotification(
+    req,
+    'Profile Updated',
+    'Your profile has been updated successfully.',
+    {
+      userId: updatedUser._id,
+      name: updatedUser.name,
+    },
+    'Buyer',           // user type
+    updatedUser._id    // personal user ID
+  );
+
+  // ✅ Response
+  res.json({
+    success: true,
+    message: 'Profile updated successfully',
+    data: {
+      id: updatedUser.id,
+      name: updatedUser.name,
+      mobileNumber: updatedUser.mobileNumber,
+      profilePicture: updatedUser.profilePicture,
+      address: updatedUser.address,
+    },
+  });
 });
+
 
 
 
@@ -3639,27 +3743,29 @@ const donateToAdmin = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const { amount, message = '', paymentMethod = 'UPI' } = req.body;
 
+  // 🔹 Validate amount
   if (!amount || amount <= 0) {
     return res.status(400).json({
       success: false,
-      message: 'Please enter a valid donation amount.'
+      message: 'Please enter a valid donation amount.',
     });
   }
 
-  // --- 1. Find admin ---
+  // 🔹 1️⃣ Find Admin
   const admin = await User.findOne({ role: 'Admin' }).select('name upiId');
   if (!admin) {
     return res.status(404).json({ success: false, message: 'Admin not found.' });
   }
 
+  // 🔹 2️⃣ Ensure Admin UPI configured
   if (!admin.upiId && paymentMethod === 'UPI') {
     return res.status(400).json({
       success: false,
-      message: 'Admin has not configured UPI ID for donations.'
+      message: 'Admin has not configured UPI ID for donations.',
     });
   }
 
-  // --- 2. Prepare transaction details ---
+  // 🔹 3️⃣ Prepare Transaction
   const transactionRef = `DONATE-${Date.now()}`;
   const isOnline = paymentMethod === 'UPI';
 
@@ -3667,14 +3773,16 @@ const donateToAdmin = asyncHandler(async (req, res) => {
   let qrCode = null;
 
   if (isOnline) {
-    upiUrl = `upi://pay?pa=${encodeURIComponent(admin.upiId)}&pn=${encodeURIComponent(admin.name)}&am=${amount.toFixed(
-      2
-    )}&tn=${encodeURIComponent('Donation to Admin')}&tr=${encodeURIComponent(transactionRef)}&cu=INR`;
+    upiUrl = `upi://pay?pa=${encodeURIComponent(admin.upiId)}&pn=${encodeURIComponent(
+      admin.name
+    )}&am=${amount.toFixed(2)}&tn=${encodeURIComponent(
+      'Donation to Admin'
+    )}&tr=${encodeURIComponent(transactionRef)}&cu=INR`;
 
     qrCode = await QRCode.toDataURL(upiUrl);
   }
 
-  // --- 3. Save donation record ---
+  // 🔹 4️⃣ Save Donation
   const donation = await Donation.create({
     donor: userId,
     admin: admin._id,
@@ -3687,7 +3795,24 @@ const donateToAdmin = asyncHandler(async (req, res) => {
     status: isOnline ? 'Pending' : 'Completed',
   });
 
-  // --- 4. Send admin notification ---
+  // 🔔 5️⃣ Send Notifications
+
+  // 🧍‍♂️ Notify Donor (personal)
+  await createAndSendNotification(
+    req,
+    'Donation Created',
+    `Your donation of ₹${amount.toFixed(2)} has been initiated successfully.`,
+    {
+      donationId: donation._id,
+      amount,
+      paymentMethod,
+      transactionRef,
+    },
+    'Buyer', // role
+    userId    // personal user
+  );
+
+  // 👨‍💼 Notify Admin
   await createAndSendNotification(
     req,
     'New Donation Received',
@@ -3697,11 +3822,12 @@ const donateToAdmin = asyncHandler(async (req, res) => {
       donorId: userId,
       amount,
       paymentMethod,
-      transactionRef
-    }
+      transactionRef,
+    },
+    'Admin'
   );
 
-  // --- 5. Respond ---
+  // 🔹 6️⃣ Response
   res.status(201).json({
     success: true,
     message: isOnline
@@ -3717,6 +3843,7 @@ const donateToAdmin = asyncHandler(async (req, res) => {
     transactionRef,
   });
 });
+
 
 const getDonationsReceived = asyncHandler(async (req, res) => {
     const { page = 1, limit = 12, sortBy = 'createdAt', sortOrder = -1 } = req.query;
@@ -3796,24 +3923,64 @@ const markOrderPaid = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const { orderId } = req.params;
 
-  const order = await Order.findOne({ _id: orderId, buyer: userId });
+  // 🔍 1️⃣ Find the order (ensure buyer matches)
+  const order = await Order.findOne({ _id: orderId, buyer: userId })
+    .populate("vendor buyer", "name email"); // helpful for notifications
+
   if (!order) {
     return res.status(404).json({ success: false, message: "Order not found." });
   }
 
+  // 🚫 Already paid
   if (order.isPaid) {
-    return res.status(400).json({ success: false, message: "Order already marked as paid." });
+    return res
+      .status(400)
+      .json({ success: false, message: "Order already marked as paid." });
   }
 
+  // ✅ 2️⃣ Update order status
   order.isPaid = true;
   order.orderStatus = "Confirmed";
   await order.save();
 
+  // 🔔 3️⃣ Send Notifications
+
+  // Notify Buyer (personal)
+  await createAndSendNotification(
+    req,
+    "Payment Successful",
+    `Your payment for order #${order._id} has been confirmed.`,
+    { orderId: order._id },
+    "Buyer",
+    order.buyer._id
+  );
+
+  // Notify Vendor (personal)
+  await createAndSendNotification(
+    req,
+    "New Paid Order",
+    `You have received a new paid order from ${order.buyer.name}.`,
+    { orderId: order._id },
+    "Vendor",
+    order.vendor._id
+  );
+
+  // Notify Admin (global)
+  await createAndSendNotification(
+    req,
+    "Order Payment Confirmed",
+    `Order #${order._id} has been paid by ${order.buyer.name}.`,
+    { orderId: order._id },
+    "Admin"
+  );
+
+  // ✅ 4️⃣ Send Response
   res.json({
     success: true,
-    message: "Payment confirmed and QR closed.",
+    message: "Payment confirmed and notifications sent.",
   });
 });
+
 
 
 

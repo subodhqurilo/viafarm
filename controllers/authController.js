@@ -77,18 +77,13 @@ exports.signup = asyncHandler(async (req, res) => {
     });
   }
 
-  // Optional: notify admin via socket
-  sendAdminNotification(req, 'New user signed up', {
-    mobileNumber: user.mobileNumber,
-    role: user.role
-  });
-
   res.status(201).json({
     status: 'success',
     message: 'OTP has been sent to your mobile number.',
-     otp// uncomment for testing only
+    otp // uncomment for testing only
   });
 });
+
 
 
 
@@ -160,43 +155,91 @@ exports.setNewPassword = async (req, res) => {
 
 // ===== Complete Profile (name, password, role) =====
 exports.completeProfile = async (req, res) => {
-    const { mobileNumber, name, password, role } = req.body;
+  const { mobileNumber, name, password, role } = req.body;
 
-    try {
-        const user = await User.findOne({ mobileNumber, isVerified: true });
-        if (!user) {
-            return res.status(400).json({ status: 'error', message: 'User not verified or not found.' });
-        }
-
-        user.name = name;
-        user.role = role;
-
-        // ✅ Directly assign password if provided
-        if (password) {
-            user.password = password;
-        }
-
-        await user.save();
-
-        const token = generateToken(user);
-
-        res.status(200).json({
-            status: 'success',
-            message: 'Profile completed successfully.',
-            data: {
-                token,
-                user: {
-                    id: user._id,
-                    name: user.name,
-                    role: user.role,
-                    mobileNumber: user.mobileNumber
-                }
-            }
-        });
-    } catch (err) {
-        res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
+  try {
+    // 1️⃣ Find verified user
+    const user = await User.findOne({ mobileNumber, isVerified: true });
+    if (!user) {
+      return res.status(400).json({
+        status: "error",
+        message: "User not verified or not found.",
+      });
     }
+
+    // 2️⃣ Update profile info
+    user.name = name;
+    user.role = role;
+
+    if (password) {
+      user.password = password; // password hashing handled in User model pre-save
+    }
+
+    await user.save();
+
+    const token = generateToken(user);
+
+    // ✅ Get io and online users
+    const io = req.app.get("io");
+    const onlineUsers = req.app.get("onlineUsers");
+
+    // 🟢 Personal notification to the user
+    if (onlineUsers[user._id]) {
+      io.to(onlineUsers[user._id].socketId).emit("notification", {
+        title: "Profile Completed 🎉",
+        message: `Hi ${user.name}, your ${user.role} profile has been completed successfully.`,
+        type: "success",
+      });
+    }
+
+    // 🟣 Notify all admins with role-specific message
+    Object.entries(onlineUsers).forEach(([id, info]) => {
+      if (info.role === "Admin") {
+        let title, message;
+
+        if (user.role === "Buyer") {
+          title = "New Buyer Registered 🛍️";
+          message = `Buyer "${user.name}" has completed registration.`;
+        } else if (user.role === "Vendor") {
+          title = "New Vendor Registered 🏪";
+          message = `Vendor "${user.name}" has completed registration.`;
+        } else {
+          title = "User Profile Completed";
+          message = `${user.name || "A user"} has completed their profile.`;
+        }
+
+        io.to(info.socketId).emit("notification", {
+          title,
+          message,
+          type: "info",
+        });
+      }
+    });
+
+    // ✅ Response to client
+    res.status(200).json({
+      status: "success",
+      message: "Profile completed successfully.",
+      data: {
+        token,
+        user: {
+          id: user._id,
+          name: user.name,
+          role: user.role,
+          mobileNumber: user.mobileNumber,
+        },
+      },
+    });
+  } catch (err) {
+    res.status(500).json({
+      status: "error",
+      message: "Server error",
+      error: err.message,
+    });
+  }
 };
+
+
 
 
 // ===== Login with Password =====
@@ -477,6 +520,7 @@ exports.adminLogin = asyncHandler(async (req, res) => {
   // Compare password using bcrypt
   const isMatch = await bcrypt.compare(password, user.password);
 
+
   if (!isMatch)
     return res.status(401).json({ success: false, message: 'Invalid password' });
 
@@ -520,12 +564,12 @@ exports.adminrequestPasswordReset = asyncHandler(async (req, res) => {
     const resetToken = crypto.randomBytes(32).toString('hex');
 
     // Hash it for DB
-    user.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+user.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
     user.passwordResetExpires = Date.now() + 60 * 60 * 1000; // 1 hour
 
     await user.save();
     // Construct reset URL (raw token in URL)
-    const resetUrl = `${req.protocol}://${req.get('host')}/api/auth/reset-password/${resetToken}`;
+const resetUrl = `${req.protocol}://${req.get('host')}/reset-password/${resetToken}`;
 
     const message = `
 Hi ${user.name || 'User'},
@@ -563,41 +607,39 @@ If you did not request this, please ignore this email. This link will expire in 
 
 // POST /api/auth/reset-password/:token
 exports.adminresetPassword = asyncHandler(async (req, res) => {
-    const rawToken = req.params.token;
-    const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const rawToken = req.params.token;
+  const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const { password, confirmPassword } = req.body;
 
+  if (!password || !confirmPassword)
+    return res.status(400).json({ success: false, message: 'Password and confirmation are required.' });
 
-    const { password, confirmPassword } = req.body;
+  if (password !== confirmPassword)
+    return res.status(400).json({ success: false, message: 'Passwords do not match.' });
 
-    if (!password || !confirmPassword) {
-        return res.status(400).json({ success: false, message: 'Password and confirmation are required.' });
-    }
+  const user = await User.findOne({
+    passwordResetToken: hashedToken,
+    passwordResetExpires: { $gt: Date.now() }
+  });
 
-    if (password !== confirmPassword) {
-        return res.status(400).json({ success: false, message: 'Passwords do not match.' });
-    }
+  if (!user)
+    return res.status(400).json({ success: false, message: 'Invalid or expired token.' });
 
-    const user = await User.findOne({
-        passwordResetToken: hashedToken,
-        passwordResetExpires: { $gt: Date.now() }
-    });
+  // ✅ Assign plain password (auto-hashed by pre-save)
+  user.password = password;
+  user.passwordResetToken = undefined;
+  user.passwordResetExpires = undefined;
 
-    if (!user) {
-        return res.status(400).json({ success: false, message: 'Invalid or expired token.' });
-    }
+  await user.save();
 
-    // Hash new password
-    user.password = await bcrypt.hash(password, 10);
-    user.passwordResetToken = undefined;
-    user.passwordResetExpires = undefined;
-
-    await user.save();
-
-    res.status(200).json({
-        success: true,
-        message: 'Password reset successful.'
-    });
+  res.status(200).json({
+    success: true,
+    message: 'Password reset successful.'
+  });
 });
+
+
+
 
 
 

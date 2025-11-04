@@ -1,4 +1,6 @@
 const express = require('express');
+const { authMiddleware,  } = require('../middleware/authMiddleware');
+
 const router = express.Router();
 
 const {
@@ -32,6 +34,10 @@ router.post('/admin-signup', adminSignup);
 router.post('/request-password-reset', adminrequestPasswordReset);
 router.post('/reset-password/:token', adminresetPassword);
 router.post('/logout', logout);
-
+router.get('/reset-password/:token', (req, res) => {
+  res.render('resetPassword', { token: req.params.token });
+});
+router.post('/reset-password/:token', adminresetPassword);
+router.post('/request-password-reset', adminrequestPasswordReset);
 
 module.exports = router;

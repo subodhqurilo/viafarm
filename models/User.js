@@ -10,6 +10,7 @@ const userSchema = new mongoose.Schema({
     unique: true, 
     sparse: true // allows multiple nulls
   },
+expoPushToken: { type: String },
 
   email: { 
     type: String, 
@@ -58,8 +59,8 @@ const userSchema = new mongoose.Schema({
     location: String,
     contactNo: String,
     totalOrders: { type: Number, default: 0 },
-  
-   deliveryRegion: { type: String, default: 5 }, // in km (max distance)
+  farmImages: [{ type: String }],
+   deliveryRegion: { type: String, default: 50 }, // in km (max distance)
   },
     rejectionReason: {
         type: String,
@@ -81,28 +82,34 @@ const userSchema = new mongoose.Schema({
 userSchema.index({ location: '2dsphere' });
 
 // ✅ Pre-save logic
-userSchema.pre('save', async function(next) {
-  // Vendors must have location
-  if (this.role === 'Vendor' && (!this.location || !Array.isArray(this.location.coordinates))) {
-    this.location = { type: "Point", coordinates: [0, 0] };
+userSchema.pre('save', async function (next) {
+  try {
+    // Vendors must have location
+    if (this.role === 'Vendor' && (!this.location || !Array.isArray(this.location.coordinates))) {
+      this.location = { type: "Point", coordinates: [0, 0] };
+    }
+
+    // Admins & Buyers do not need location
+    if (this.role !== 'Vendor') this.location = undefined;
+
+    // ✅ Hash password only if it's modified AND not already hashed
+    if (this.isModified('password') && this.password && !this.password.startsWith('$2b$')) {
+      const salt = await bcrypt.genSalt(10);
+      this.password = await bcrypt.hash(this.password, salt);
+    }
+
+    next();
+  } catch (err) {
+    next(err);
   }
-
-  // Admins & Buyers do not need location
-  if (this.role !== 'Vendor') this.location = undefined;
-
-  // Hash password if modified
-  if (this.isModified('password') && this.password) {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-  }
-
-  next();
 });
 
+
 // ✅ Compare password
-userSchema.methods.matchPassword = async function(enteredPassword) {
+userSchema.methods.matchPassword = async function (enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };
+
 
 // ✅ Drop mobileNumber unique index for Admins if it exists
 userSchema.on('index', async function(error) {
