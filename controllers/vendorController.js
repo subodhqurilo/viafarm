@@ -858,16 +858,18 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
     .select("+orderStatus");
 
   if (!order) {
-    return res
-      .status(404)
-      .json({ success: false, message: "Order not found" });
+    return res.status(404).json({
+      success: false,
+      message: "Order not found",
+    });
   }
 
   // 2️⃣ Only vendor who owns the order can update
   if (order.vendor._id.toString() !== req.user._id.toString()) {
-    return res
-      .status(401)
-      .json({ success: false, message: "Not authorized" });
+    return res.status(401).json({
+      success: false,
+      message: "Not authorized",
+    });
   }
 
   // 3️⃣ Update order status
@@ -876,7 +878,7 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
 
   // 4️⃣ Send Notifications
   try {
-    // ✅ a. Notify Buyer
+    // 🧍‍♂️ Notify Buyer
     await createAndSendNotification(
       req,
       "Order Status Updated",
@@ -887,10 +889,10 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
         products: order.products,
       },
       "Buyer",
-      order.buyer._id // send to this specific buyer
+      order.buyer._id
     );
 
-    // ✅ b. Notify Admin
+    // 👨‍💼 Notify Admin
     await createAndSendNotification(
       req,
       "Order Status Changed",
@@ -901,19 +903,24 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
         vendorId: order.vendor._id,
         status,
       },
-      "Admin" // send to all admins
+      "Admin"
     );
   } catch (err) {
     console.error("Notification sending failed:", err);
   }
 
-  // 5️⃣ Response
+  // 5️⃣ Response with renamed field (orderStatus → status)
+  const responseOrder = updatedOrder.toObject();
+  responseOrder.status = responseOrder.orderStatus;
+  delete responseOrder.orderStatus;
+
   res.json({
     success: true,
     message: "Order status updated",
-    data: updatedOrder,
+    data: responseOrder,
   });
 });
+
 
 
 

@@ -1174,27 +1174,89 @@ const getCategories = asyncHandler(async (req, res) => {
 // @desc    Create a product category
 // @route   POST /api/admin/manage-app/categories
 // @access  Private/Admin
+
+
 const createCategory = asyncHandler(async (req, res) => {
-    const { name } = req.body;
+  const { name } = req.body;
 
-    if (!req.file) {
-        res.status(400);
-        throw new Error("Please provide an image for the category");
+  // 1️⃣ Validate image
+  if (!req.file) {
+    res.status(400);
+    throw new Error("Please provide an image for the category");
+  }
+
+  // 2️⃣ Upload image to Cloudinary
+  const result = await cloudinaryUpload(req.file.path, "categories");
+
+  // 3️⃣ Create category in DB
+  const category = await Category.create({
+    name,
+    image: {
+      url: result.secure_url,
+      public_id: result.public_id,
+    },
+  });
+
+  // 4️⃣ Notification setup
+  const io = req.app.get("io");
+  const onlineUsers = req.app.get("onlineUsers");
+
+  const title = "🆕 New Category Added";
+  const message = `Category "${name}" has been created successfully.`;
+
+  // 5️⃣ Find all Admin users
+  const admins = await User.find({ role: "Admin" }, "_id expoPushToken");
+
+  // 6️⃣ Save notification in DB
+  const notifications = admins.map((admin) => ({
+    title,
+    message,
+    type: "success",
+    sender: req.user._id,
+    receiver: admin._id,
+    role: admin.role,
+  }));
+  await Notification.insertMany(notifications);
+
+  // 7️⃣ Real-time Socket.io notification
+  admins.forEach((admin) => {
+    const adminId = admin._id.toString();
+    if (onlineUsers[adminId]) {
+      io.to(onlineUsers[adminId].socketId).emit("notification", {
+        title,
+        message,
+        type: "success",
+      });
     }
+  });
 
-    // Use cloudinaryUpload helper function
-    const result = await cloudinaryUpload(req.file.path, 'categories');
+  // 8️⃣ Optional — Expo push for Admin mobile app
+  const pushMessages = [];
+  for (const admin of admins) {
+    if (admin.expoPushToken && Expo.isExpoPushToken(admin.expoPushToken)) {
+      pushMessages.push({
+        to: admin.expoPushToken,
+        sound: "default",
+        title,
+        body: message,
+        data: { type: "category_create", categoryId: category._id },
+      });
+    }
+  }
 
-    const category = await Category.create({
-        name,
-        image: {
-            url: result.secure_url,
-            public_id: result.public_id
-        }
-    });
+  if (pushMessages.length > 0) {
+    await expo.sendPushNotificationsAsync(pushMessages);
+  }
 
-    res.status(201).json(category);
+  // ✅ 9️⃣ Final response
+  res.status(201).json({
+    success: true,
+    message: "Category created and notification sent to admin.",
+    data: category,
+  });
 });
+
+
 
 
 
@@ -1439,12 +1501,15 @@ const updateCoupon = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const updates = { ...req.body };
 
-  // 1️⃣ Validate ID
+  // 1️⃣ Validate Coupon ID
   if (!mongoose.Types.ObjectId.isValid(id)) {
-    return res.status(400).json({ success: false, message: "Invalid coupon ID." });
+    return res.status(400).json({
+      success: false,
+      message: "Invalid coupon ID.",
+    });
   }
 
-  // 2️⃣ Protect system fields
+  // 2️⃣ Protect sensitive fields
   const protectedFields = ["usedCount", "usedBy", "createdBy", "vendor"];
   protectedFields.forEach((field) => delete updates[field]);
 
@@ -1453,10 +1518,19 @@ const updateCoupon = asyncHandler(async (req, res) => {
     updates.code = updates.code.toUpperCase();
   }
 
-  // 4️⃣ Validate category
+  // 4️⃣ Validate appliesTo categories
   if (updates.appliesTo) {
-    const validCategories = ["All Products", "Fruits", "Vegetables", "Plants", "Seeds", "Handicrafts"];
-    const invalid = updates.appliesTo.filter((cat) => !validCategories.includes(cat));
+    const validCategories = [
+      "All Products",
+      "Fruits",
+      "Vegetables",
+      "Plants",
+      "Seeds",
+      "Handicrafts",
+    ];
+    const invalid = updates.appliesTo.filter(
+      (cat) => !validCategories.includes(cat)
+    );
     if (invalid.length > 0) {
       return res.status(400).json({
         success: false,
@@ -1465,7 +1539,7 @@ const updateCoupon = asyncHandler(async (req, res) => {
     }
   }
 
-  // 5️⃣ Validate dates
+  // 5️⃣ Validate date range
   if (updates.startDate && updates.expiryDate) {
     if (new Date(updates.expiryDate) <= new Date(updates.startDate)) {
       return res.status(400).json({
@@ -1475,27 +1549,32 @@ const updateCoupon = asyncHandler(async (req, res) => {
     }
   }
 
-  // 6️⃣ Update coupon
+  // 6️⃣ Update the coupon in DB
   const coupon = await Coupon.findByIdAndUpdate(id, updates, {
     new: true,
     runValidators: true,
   });
 
   if (!coupon) {
-    return res.status(404).json({ success: false, message: "Coupon not found." });
+    return res
+      .status(404)
+      .json({ success: false, message: "Coupon not found." });
   }
 
-  // 7️⃣ Notify all users
+  // 7️⃣ Notification setup
   const io = req.app.get("io");
   const onlineUsers = req.app.get("onlineUsers");
 
   const title = "🎟️ Coupon Updated";
   const message = `Coupon "${coupon.code}" has been updated. Check the latest details!`;
 
-  // 8️⃣ Fetch all users
-  const allUsers = await User.find({ role: { $in: ["Admin", "Vendor", "Buyer"] } }, "_id role expoPushToken");
+  // 8️⃣ Fetch only Admins and Buyers
+  const allUsers = await User.find(
+    { role: { $in: ["Admin", "Buyer"] } },
+    "_id role expoPushToken"
+  );
 
-  // Save notifications in DB
+  // 9️⃣ Save notifications to DB
   const notifications = allUsers.map((user) => ({
     title,
     message,
@@ -1506,7 +1585,7 @@ const updateCoupon = asyncHandler(async (req, res) => {
   }));
   await Notification.insertMany(notifications);
 
-  // 9️⃣ Real-time socket notification
+  // 🔟 Send real-time notifications via Socket.io
   allUsers.forEach((user) => {
     const userId = user._id.toString();
     if (onlineUsers[userId]) {
@@ -1518,7 +1597,7 @@ const updateCoupon = asyncHandler(async (req, res) => {
     }
   });
 
-  // 🔟 Push notifications for mobile app
+  // 1️⃣1️⃣ Push notification for mobile (Buyers in Expo)
   const pushMessages = [];
   for (const user of allUsers) {
     if (user.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
@@ -1531,6 +1610,8 @@ const updateCoupon = asyncHandler(async (req, res) => {
       });
     }
   }
+
+  // Send push notifications (if any)
   if (pushMessages.length > 0) {
     await expo.sendPushNotificationsAsync(pushMessages);
   }
@@ -1538,10 +1619,12 @@ const updateCoupon = asyncHandler(async (req, res) => {
   // ✅ Final response
   res.status(200).json({
     success: true,
-    message: "Coupon updated and notifications sent to all users.",
+    message: "Coupon updated and notifications sent to Admin and Buyers.",
     data: coupon,
   });
 });
+
+
 
 
 
@@ -1550,19 +1633,91 @@ const updateCoupon = asyncHandler(async (req, res) => {
 // @route   DELETE /api/admin/coupons/:id
 // @access  Private/Admin
 const deleteCoupon = asyncHandler(async (req, res) => {
-    const coupon = await Coupon.findById(req.params.id);
+  const { id } = req.params;
 
-    if (!coupon) {
-        return res.status(404).json({ success: false, message: 'Coupon not found' });
+  // 1️⃣ Find the coupon
+  const coupon = await Coupon.findById(id).populate("vendor", "name _id expoPushToken");
+  if (!coupon) {
+    return res.status(404).json({ success: false, message: "Coupon not found" });
+  }
+
+  // 2️⃣ Delete the coupon
+  await coupon.deleteOne();
+
+  // 3️⃣ Socket & online users setup
+  const io = req.app.get("io");
+  const onlineUsers = req.app.get("onlineUsers");
+
+  // 4️⃣ Notify vendor (if coupon belongs to one)
+  if (coupon.vendor) {
+    const vendorId = coupon.vendor._id.toString();
+    const vendorTitle = "Coupon Deleted ⚠️";
+    const vendorMessage = `The coupon "${coupon.code}" associated with your store has been deleted by the admin.`;
+
+    // Save DB notification
+    await Notification.create({
+      title: vendorTitle,
+      message: vendorMessage,
+      type: "warning",
+      sender: req.user._id,
+      receiver: vendorId,
+      role: "Vendor",
+      relatedCoupon: coupon._id,
+    });
+
+    // Real-time socket
+    if (onlineUsers[vendorId]) {
+      io.to(onlineUsers[vendorId].socketId).emit("notification", {
+        title: vendorTitle,
+        message: vendorMessage,
+        type: "warning",
+      });
     }
 
-    await coupon.deleteOne();
+    // Push notification via Expo
+    if (coupon.vendor.expoPushToken && Expo.isExpoPushToken(coupon.vendor.expoPushToken)) {
+      await expo.sendPushNotificationsAsync([
+        {
+          to: coupon.vendor.expoPushToken,
+          sound: "default",
+          title: vendorTitle,
+          body: vendorMessage,
+          data: { type: "coupon_deleted", couponId: coupon._id },
+        },
+      ]);
+    }
+  }
 
-    res.status(200).json({
-        success: true,
-        message: 'Coupon deleted successfully'
+  // 5️⃣ Notify admin (confirmation)
+  const adminId = req.user._id.toString();
+  const adminTitle = "Coupon Deleted ✅";
+  const adminMessage = `You successfully deleted the coupon "${coupon.code}".`;
+
+  await Notification.create({
+    title: adminTitle,
+    message: adminMessage,
+    type: "success",
+    sender: adminId,
+    receiver: adminId,
+    role: "Admin",
+    relatedCoupon: coupon._id,
+  });
+
+  if (onlineUsers[adminId]) {
+    io.to(onlineUsers[adminId].socketId).emit("notification", {
+      title: adminTitle,
+      message: adminMessage,
+      type: "success",
     });
+  }
+
+  // 6️⃣ Final response
+  res.status(200).json({
+    success: true,
+    message: "Coupon deleted successfully and notifications sent.",
+  });
 });
+
 
 // @desc    Get admin profile
 // @route   GET /api/admin/settings/profile

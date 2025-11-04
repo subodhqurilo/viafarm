@@ -19,12 +19,13 @@ router.get("/", authMiddleware, getNotifications);
 
 // ✅ Mark single notification as read
 router.put("/:id/read", authMiddleware, markAsRead);
+router.delete("/delete-all", authMiddleware, deleteAllNotifications);
 
 // ✅ Delete single notification
 router.delete("/:id", authMiddleware, deleteNotification);
 
 // ✅ Delete all notifications (Clear All)
-router.delete("/delete-all", authMiddleware, deleteAllNotifications);
+
 
 // ✅ Save Expo push token (for mobile users)
 router.put("/save-push-token", authMiddleware, async (req, res) => {

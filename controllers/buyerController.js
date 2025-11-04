@@ -15,7 +15,13 @@ const { calculateOrderSummary ,getDeliveryCharge } = require('../utils/orderUtil
 const Donation = require('../models/Donation');
 const QRCode = require('qrcode');
 const PickupLocation = require('../models/PickupLocation');
+const Notification = require("../models/Notification");
+
 const { createAndSendNotification } = require('../utils/notificationUtils');
+const { Expo } = require("expo-server-sdk");
+
+const expo = new Expo();
+
 
 // -----------------------------
 // Home & Product Discovery
@@ -892,15 +898,6 @@ const getAllVendors = asyncHandler(async (req, res) => {
 
 
 
-
-
-// -----------------------------
-// Cart Management
-// -----------------------------
-
-// @desc    Get buyer's cart items
-// @route   GET /api/buyer/cart
-// @access  Private/Buyer
 
 
 

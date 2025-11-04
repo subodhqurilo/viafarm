@@ -146,6 +146,10 @@ exports.deleteNotification = async (req, res) => {
 // ✅ Delete All Notifications
 exports.deleteAllNotifications = async (req, res) => {
   try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
     await Notification.deleteMany({
       $or: [
         { userId: req.user._id },
@@ -154,10 +158,13 @@ exports.deleteAllNotifications = async (req, res) => {
       ],
     });
 
-    res.json({ success: true, message: "All notifications deleted successfully" });
+    res.json({
+      success: true,
+      message: "All notifications deleted successfully",
+    });
   } catch (err) {
-    console.log("erro",err  )
     console.error("Delete all notifications error:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
+
