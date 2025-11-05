@@ -15,43 +15,29 @@ const {
 
 const { upload } = require('../services/cloudinaryService');
 
-
-// ---------------------------------------------------------------------
-// 1. PUBLIC ROUTES (No Auth/Role required, e.g., if used by non-logged-in users)
-// Note: In your current setup, these are still hit by users with ANY role because of the router.use(authMiddleware) below.
-// To make them truly public, move them ABOVE router.use(authMiddleware).
-
-// For consistency, let's assume 'authMiddleware' is needed for context (e.g., personalized pricing)
-// and move role authorization below.
-
-// General product discovery (Local Best often doesn't need GeoJSON restriction)
-router.get('/local-best', getLocalBestProducts); // Auth only
-router.get('/products/search', searchProducts); // Auth only
+router.get('/local-best', getLocalBestProducts); 
+router.get('/products/search', searchProducts); 
 router.get('/donation', getDonationsReceived);
 
-router.use(authMiddleware); // Apply authentication to all following routes
+router.use(authMiddleware); 
 
 // ---------------------------------------------------------------------
 // 2. BUYER AUTHORIZED ROUTES 
-// Only users with role 'Buyer' can access routes below this line
+
 router.use(authorizeRoles('Buyer'));
 
-// --- Home & Product Discovery (Auth & Buyer Role required) ---
+
 router.get('/home', getHomePageData);
 router.get('/products/filters', getFilteredProducts);
 router.get('/products/by-category', getProductsByCategory);
 router.get('/products/search', searchProductsByName);
-
 router.get('/vendors-near-you', getVendorsNearYou);
 router.get('/allvendors', getAllVendors);
 router.get('/vendors/by-product', getVendorsByProductName);
-
 router.get('/products/all', searchAllProducts); // <-- ADD THIS LINE
 router.get('/products/by-name', getProductsByName);
 router.get('/vendor/:vendorId/products', getProductsByVendorId);
 router.get('/public/product/:id', getProductById);
-
- // <-- ADD THIS LINE
 router.get('/products/:id', getProductDetails); // Path clearer
 
 router.get('/fresh-and-popular', getFreshAndPopularProducts);

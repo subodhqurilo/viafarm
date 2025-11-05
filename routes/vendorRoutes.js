@@ -56,12 +56,12 @@ router.get('/recent-products', vendorController.getRecentListings); // Vendor-on
 // -------------------------
 router.get('/profile', vendorController.getUserProfile);
 router.put(
-  '/profile',
-  upload.fields([
-    { name: 'profilePicture', maxCount: 1 },
-    { name: 'farmImages', maxCount: 5 }, // you can change 5 → any number
-  ]),
-  vendorController.updateUserProfile
+    '/profile',
+    upload.fields([
+        { name: 'profilePicture', maxCount: 1 },
+        { name: 'farmImages', maxCount: 5 }, // you can change 5 → any number
+    ]),
+    vendorController.updateUserProfile
 );
 router.put('/update-language', vendorController.updateUserLanguage);
 router.put('/update-location', vendorController.updateLocationDetails);
