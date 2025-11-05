@@ -19,11 +19,11 @@ const couponSchema = new mongoose.Schema({
       required: [true, 'Discount type is required.'],
     },
   },
-  appliesTo: {
-    type: [String],
-    enum: ['All Products', 'Fruits', 'Vegetables', 'Plants', 'Seeds', 'Handicrafts'],
-    required: [true, 'Applies to field is required.'],
-  },
+appliesTo: {
+  type: [String],   // Array of strings
+  required: [true, 'Applies to field is required.'],
+  default: [],      // Optional default
+},
   applicableProducts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
   startDate: {
     type: Date,

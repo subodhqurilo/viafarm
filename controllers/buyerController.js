@@ -15,6 +15,7 @@ const Donation = require('../models/Donation');
 const QRCode = require('qrcode');
 const PickupLocation = require('../models/PickupLocation');
 const Notification = require("../models/Notification");
+const { addressToCoords, coordsToAddress } = require('../utils/geocode');
 
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
@@ -35,18 +36,44 @@ function getDistanceKm(lat1, lon1, lat2, lon2) {
 }
 
 
-const calculateDistanceKm = (lat1, lon1, lat2, lon2) => {
-    // Haversine formula
-    const R = 6371; // km
-    const dLat = (lat2 - lat1) * (Math.PI / 180);
-    const dLon = (lon2 - lon1) * (Math.PI / 180);
-    const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(lat1 * (Math.PI / 180)) *
-        Math.cos(lat2 * (Math.PI / 180)) *
-        Math.sin(dLon / 2) ** 2;
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
+
+function calculateDistanceKm(lat1, lon1, lat2, lon2) {
+  const toRad = (v) => (v * Math.PI) / 180;
+  const R = 6371; // Earth radius in km
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+const formatCategories = async (vendorId) => {
+  try {
+    if (!vendorId) return 'No vendor ID';
+
+    // Get all unique product categories for this vendor
+    const categories = await Product.distinct('category', { vendor: vendorId });
+
+    if (!categories || categories.length === 0) return 'No categories listed';
+
+    // Capitalize first letter for nice display
+    const formatted = categories.map(
+      (c) => c.charAt(0).toUpperCase() + c.slice(1).toLowerCase()
+    );
+
+    // Show only first 2, rest summarized
+    const displayCategories = formatted.slice(0, 2);
+    const extraCount = formatted.length - 2;
+
+    return extraCount > 0
+      ? `${displayCategories.join(', ')}, (+${extraCount})`
+      : displayCategories.join(', ');
+  } catch (err) {
+    console.error('formatCategories error:', err.message);
+    return 'No categories listed';
+  }
 };
 
 const calculateEstimatedDelivery = (vendor, buyer, orderTime = new Date()) => {
@@ -641,108 +668,111 @@ const getStaticPageContent = asyncHandler(async (req, res) => {
 });
 
 const getVendorsNearYou = asyncHandler(async (req, res) => {
-    const { lat, lng, maxDistance = 5000 } = req.query;
+  const { lat, lng, maxDistance = 10 } = req.query; // ✅ default = 10 km
 
-    // ✅ Helper: Get all categories (no slicing)
-    const formatCategories = async (vendorId) => {
-        const categories = await Product.distinct("category", { vendor: vendorId }) || [];
-        return categories.length > 0 ? categories.join(", ") : "No categories listed";
-    };
+  // ❌ If location not provided
+  if (!lat || !lng) {
+    const vendors = await User.find({ role: "Vendor", status: "Active", isApproved: true })
+      .select("name profilePicture _id address vendorDetails");
 
-    // ❌ If location not provided
-    if (!lat || !lng) {
-        const vendors = await User.find({ role: "Vendor", status: "Active", isApproved: true })
-            .limit(10)
-            .select("name profilePicture _id address");
+    const enrichedFallbackVendors = await Promise.all(
+      vendors.map(async (vendor) => ({
+        id: vendor._id,
+        name: vendor.name,
+        profilePicture: vendor.profilePicture || "https://default-image-url.com/default.png",
+        distance: "N/A",
+        categories: await formatCategories(vendor._id),
+      }))
+    );
 
-        const enrichedFallbackVendors = await Promise.all(
-            vendors.map(async (vendor) => ({
-                id: vendor._id,
-                name: vendor.name,
-                profilePicture: vendor.profilePicture || "https://default-image-url.com/default.png",
-                distance: "N/A",
-                categories: await formatCategories(vendor._id),
-            }))
-        );
+    return res.status(200).json({
+      success: true,
+      count: enrichedFallbackVendors.length,
+      vendors: enrichedFallbackVendors,
+      message: "Location not provided by client, showing all active vendors.",
+    });
+  }
 
-        return res.status(200).json({
-            success: true,
-            count: enrichedFallbackVendors.length,
-            vendors: enrichedFallbackVendors,
-            message: "Location not provided by client, showing popular vendors instead.",
-        });
-    }
+  const latitude = parseFloat(lat);
+  const longitude = parseFloat(lng);
 
-    const latitude = parseFloat(lat);
-    const longitude = parseFloat(lng);
+  if (isNaN(latitude) || isNaN(longitude)) {
+    return res.status(400).json({ success: false, message: "Invalid latitude or longitude." });
+  }
 
-    if (isNaN(latitude) || isNaN(longitude)) {
-        return res.status(400).json({ success: false, message: "Invalid latitude or longitude." });
-    }
+  try {
+    // 🧭 Convert km → meters for MongoDB geo query
+    const maxDistanceMeters = parseFloat(maxDistance) * 1000;
 
-    try {
-        // 🧭 Find vendors near user (only active + approved)
-        const vendors = await User.find({
-            role: "Vendor",
-            status: "Active",
-            isApproved: true,
-            location: {
-                $near: {
-                    $geometry: { type: "Point", coordinates: [longitude, latitude] },
-                    $maxDistance: parseInt(maxDistance),
-                },
-            },
-        }).select("name profilePicture location");
+    // 🧮 Use $geoNear to get vendors within radius (no limit)
+    const vendors = await User.aggregate([
+      {
+        $geoNear: {
+          near: { type: "Point", coordinates: [longitude, latitude] },
+          distanceField: "distanceMeters",
+          spherical: true,
+          maxDistance: maxDistanceMeters,
+          query: { role: "Vendor", status: "Active", isApproved: true },
+        },
+      },
+      {
+        $addFields: {
+          distanceKm: { $divide: ["$distanceMeters", 1000] },
+          deliveryRegionMeters: { $multiply: [{ $ifNull: ["$vendorDetails.deliveryRegion", 0] }, 1000] },
+        },
+      },
+      {
+        $match: {
+          $expr: {
+            $cond: [
+              { $gt: ["$deliveryRegionMeters", 0] },
+              { $lte: ["$distanceMeters", "$deliveryRegionMeters"] },
+              true,
+            ],
+          },
+        },
+      },
+      {
+        $project: {
+          name: 1,
+          profilePicture: 1,
+          vendorDetails: 1,
+          location: 1,
+          distanceKm: 1,
+        },
+      },
+      // ✅ No $limit → returns all matching vendors
+    ]);
 
-        // 🧮 Calculate distance and attach categories
-        const enrichedVendors = await Promise.all(
-            vendors.map(async (vendor) => {
-                let distance = "N/A";
-                if (vendor.location?.coordinates?.length === 2) {
-                    const [vendorLng, vendorLat] = vendor.location.coordinates;
-                    distance = calculateDistance(latitude, longitude, vendorLat, vendorLng).toFixed(1);
-                }
+    // 🧩 Add product categories
+    const enrichedVendors = await Promise.all(
+      vendors.map(async (v) => ({
+        id: v._id,
+        name: v.name,
+        profilePicture: v.profilePicture || "https://default-image-url.com/default.png",
+        distance: `${v.distanceKm.toFixed(2)} km away`,
+        categories: await formatCategories(v._id),
+        vendorDetails: v.vendorDetails || {},
+      }))
+    );
 
-                return {
-                    id: vendor._id,
-                    name: vendor.name,
-                    profilePicture: vendor.profilePicture || "https://default-image-url.com/default.png",
-                    distance: distance !== "N/A" ? `${distance} km away` : "N/A",
-                    categories: await formatCategories(vendor._id),
-                };
-            })
-        );
-
-        res.status(200).json({
-            success: true,
-            count: enrichedVendors.length,
-            vendors: enrichedVendors,
-        });
-    } catch (err) {
-        console.error("Error fetching nearby vendors:", err);
-        res.status(500).json({
-            success: false,
-            message: "Failed to fetch nearby vendors. Check GeoJSON index.",
-            error: err.message,
-        });
-    }
+    return res.status(200).json({
+      success: true,
+      count: enrichedVendors.length,
+      vendors: enrichedVendors,
+    });
+  } catch (err) {
+    console.error("Error fetching nearby vendors:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch nearby vendors. Check your GeoJSON index.",
+      error: err.message,
+    });
+  }
 });
 
-const formatCategories = async (vendorId) => {
-    // Finds unique product categories associated with this vendor
-    const categories = await Product.distinct('category', { vendor: vendorId }) || [];
-    const displayCategories = categories.slice(0, 2);
-    const count = categories.length;
 
-    let categoryText = displayCategories.join(', ');
-    if (count > 2) {
-        // Changed to comma-separated format for better reading
-        categoryText += `, (+${count - 2})`;
-    } else if (count === 0) {
-        categoryText = 'No categories listed';
-    }
-    return categoryText;
-};
+
 
 
 const getAllVendors = asyncHandler(async (req, res) => {

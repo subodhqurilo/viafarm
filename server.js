@@ -22,6 +22,7 @@ const expo = new Expo();
 // ✅ CORS Setup — for Web & Expo App
 app.use(cors({
   origin: [
+    "https://viafarm-iy5q.vercel.app",
     "http://localhost:3000",   // Web (Admin Panel)
     "http://192.168.1.5:8081", // Expo Dev (replace IP)
     "exp://192.168.1.5:8081"   // Expo App (replace IP)

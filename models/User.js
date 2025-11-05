@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { addressToCoords, coordsToAddress } = require('../utils/geocode');
 
 const userSchema = new mongoose.Schema({
   name: { type: String },
@@ -8,13 +9,10 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: function () { return this.role !== 'Admin'; },
     unique: true,
-    sparse: true // allows multiple nulls
-  },
-  expoPushToken: {
-    type: String,
-    default: null,
+    sparse: true
   },
 
+  expoPushToken: { type: String, default: null },
 
   email: {
     type: String,
@@ -52,7 +50,7 @@ const userSchema = new mongoose.Schema({
 
   location: {
     type: { type: String, enum: ["Point"], default: "Point" },
-    coordinates: { type: [Number], default: [0, 0] }, // [longitude, latitude]
+    coordinates: { type: [Number], default: [0, 0] } // [longitude, latitude]
   },
 
   upiId: { type: String },
@@ -64,12 +62,10 @@ const userSchema = new mongoose.Schema({
     contactNo: String,
     totalOrders: { type: Number, default: 0 },
     farmImages: [{ type: String }],
-    deliveryRegion: { type: String, default: 50 }, // in km (max distance)
+    deliveryRegion: { type: Number, default: 10 } // ✅ must be a Number
   },
-  rejectionReason: {
-    type: String,
-    default: null,
-  },
+
+  rejectionReason: { type: String, default: null },
 
   notificationSettings: {
     newVendorRegistration: { type: Boolean, default: true },
@@ -88,7 +84,7 @@ userSchema.index({ location: '2dsphere' });
 // ✅ Pre-save logic
 userSchema.pre('save', async function (next) {
   try {
-    // Vendors must have location
+    // Vendors must have a location
     if (this.role === 'Vendor' && (!this.location || !Array.isArray(this.location.coordinates))) {
       this.location = { type: "Point", coordinates: [0, 0] };
     }
@@ -96,7 +92,30 @@ userSchema.pre('save', async function (next) {
     // Admins & Buyers do not need location
     if (this.role !== 'Vendor') this.location = undefined;
 
-    // ✅ Hash password only if it's modified AND not already hashed
+    // ✅ Auto geocode: Address → Coordinates
+    if (this.role === 'Vendor') {
+      const addr = this.vendorDetails.location || 
+                   `${this.address.houseNumber || ''} ${this.address.locality || ''} ${this.address.city || ''} ${this.address.state || ''} ${this.address.pinCode || ''}`.trim();
+
+      if (addr && (!this.location?.coordinates || this.location.coordinates[0] === 0)) {
+        const coords = await addressToCoords(addr);
+        if (coords) this.location = { type: 'Point', coordinates: coords };
+      }
+
+      // ✅ Reverse geocode: Coordinates → Address
+      else if (this.location?.coordinates && (!this.vendorDetails.location || this.vendorDetails.location === '')) {
+        const [lng, lat] = this.location.coordinates;
+        const addressData = await coordsToAddress(lat, lng);
+        if (addressData && addressData.fullAddress) {
+          this.vendorDetails.location = addressData.fullAddress;
+          if (!this.address.city) this.address.city = addressData.city;
+          if (!this.address.state) this.address.state = addressData.state;
+          if (!this.address.pinCode) this.address.pinCode = addressData.pinCode;
+        }
+      }
+    }
+
+    // ✅ Hash password only if it's new or changed
     if (this.isModified('password') && this.password && !this.password.startsWith('$2b$')) {
       const salt = await bcrypt.genSalt(10);
       this.password = await bcrypt.hash(this.password, salt);
@@ -104,18 +123,17 @@ userSchema.pre('save', async function (next) {
 
     next();
   } catch (err) {
+    console.error('User pre-save error:', err);
     next(err);
   }
 });
-
 
 // ✅ Compare password
 userSchema.methods.matchPassword = async function (enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
-
-// ✅ Drop mobileNumber unique index for Admins if it exists
+// ✅ Handle duplicate mobile index for Admins
 userSchema.on('index', async function (error) {
   if (error && error.code === 11000 && error.keyPattern?.mobileNumber) {
     console.warn('Duplicate mobileNumber index error ignored for Admins.');
