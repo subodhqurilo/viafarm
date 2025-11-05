@@ -51,11 +51,11 @@ const couponSchema = new mongoose.Schema({
   },
 
   usedBy: [
-  {
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    count: { type: Number, default: 0 }
-  }
-],
+    {
+      user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      count: { type: Number, default: 0 }
+    }
+  ],
 
   status: {
     type: String,

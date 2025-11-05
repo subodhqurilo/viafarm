@@ -32,18 +32,18 @@ const productSchema = new mongoose.Schema({
   },
   description: String,
   nutritionalValue: {
-  servingSize: String,
-  nutrients: [{
-    name: String,
-    amount: String
-  }],
-  additionalNote: String
-},
+    servingSize: String,
+    nutrients: [{
+      name: String,
+      amount: String
+    }],
+    additionalNote: String
+  },
 
-weightPerPiece: {
-        type: String,
-        min: 0,
-    },
+  weightPerPiece: {
+    type: String,
+    min: 0,
+  },
 
   images: [{
     type: String,

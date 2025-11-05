@@ -6,7 +6,7 @@ const CartItemSchema = new mongoose.Schema({
         ref: 'Product',
         required: true,
     },
-pickupDetails: {
+    pickupDetails: {
         vendor: { // The core fix is here
             type: mongoose.Schema.Types.ObjectId,
             ref: 'User',

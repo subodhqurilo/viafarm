@@ -14,14 +14,14 @@ const AddressSchema = new mongoose.Schema({
     state: { type: String, default: 'Delhi' },
     isDefault: { type: Boolean, default: false },
 
-    // ✅ Optional GeoJSON location
+    
     location: {
         type: {
             type: String,
-            enum: ['Point'], // Must be 'Point'
+            enum: ['Point'], 
         },
         coordinates: {
-            type: [Number], // [longitude, latitude]
+            type: [Number], 
         }
     }
 

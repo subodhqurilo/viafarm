@@ -46,41 +46,41 @@ const orderSchema = new mongoose.Schema({
     enum: ['Delivery', 'Pickup'],
     required: true,
   },
-orderStatus: {
-  type: String,
-  enum: [
-    'In-process',
-    'Confirmed',
-    'Out For Delivery',
-    'Cancelled',
-    'Ready For Pickup',
-    'Completed',  ],
-  default: 'In-process'
-},
+  orderStatus: {
+    type: String,
+    enum: [
+      'In-process',
+      'Confirmed',
+      'Out For Delivery',
+      'Cancelled',
+      'Ready For Pickup',
+      'Completed',],
+    default: 'In-process'
+  },
   shippingAddress: {
     type: Object, // embedded shipping address object
   },
-  
+
   pickupSlot: {
-  date: {
-    type: String,
-    required: function () {
-      return this.deliveryType === 'Pickup';
+    date: {
+      type: String,
+      required: function () {
+        return this.deliveryType === 'Pickup';
+      },
+    },
+    startTime: {
+      type: String,
+      required: function () {
+        return this.deliveryType === 'Pickup';
+      },
+    },
+    endTime: {
+      type: String,
+      required: function () {
+        return this.deliveryType === 'Pickup';
+      },
     },
   },
-  startTime: {
-    type: String,
-    required: function () {
-      return this.deliveryType === 'Pickup';
-    },
-  },
-  endTime: {
-    type: String,
-    required: function () {
-      return this.deliveryType === 'Pickup';
-    },
-  },
-},
 
 
   paymentMethod: {
@@ -98,7 +98,7 @@ orderStatus: {
     default: 0,
   },
   qrClosed: { type: Boolean, default: false },
-qrExpiry: { type: Date, default: null },
+  qrExpiry: { type: Date, default: null },
 
 }, { timestamps: true });
 

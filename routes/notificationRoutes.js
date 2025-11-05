@@ -1,6 +1,8 @@
 // routes/notificationRoutes.js
 const express = require("express");
 const router = express.Router();
+const { createAndSendNotification } = require("../utils/notificationUtils");
+
 const { authMiddleware } = require("../middleware/authMiddleware");
 const {
   sendNotification,
@@ -55,6 +57,35 @@ router.put("/save-push-token", authMiddleware, async (req, res) => {
     res
       .status(500)
       .json({ success: false, message: "Failed to save expo push token" });
+  }
+});
+
+
+router.post("/test-push", authMiddleware, async (req, res) => {
+  try {
+    const { title, message, userType = "Buyer", userId = null } = req.body;
+
+    // 🔔 Send test notification
+    await createAndSendNotification(
+      req,
+      title || "Test Notification ✅",
+      message || "This is a test Expo push notification!",
+      { from: "Postman" },
+      userType,
+      userId
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Test push sent successfully!",
+    });
+  } catch (error) {
+    console.error("❌ Push test error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to send test push.",
+      error: error.message,
+    });
   }
 });
 

@@ -4,18 +4,22 @@ const bcrypt = require('bcryptjs');
 const userSchema = new mongoose.Schema({
   name: { type: String },
 
-  mobileNumber: { 
-    type: String, 
-    required: function() { return this.role !== 'Admin'; }, 
-    unique: true, 
+  mobileNumber: {
+    type: String,
+    required: function () { return this.role !== 'Admin'; },
+    unique: true,
     sparse: true // allows multiple nulls
   },
-expoPushToken: { type: String },
+  expoPushToken: {
+    type: String,
+    default: null,
+  },
 
-  email: { 
-    type: String, 
-    required: function() { return this.role === 'Admin'; }, 
-    unique: true, 
+
+  email: {
+    type: String,
+    required: function () { return this.role === 'Admin'; },
+    unique: true,
     sparse: true
   },
 
@@ -52,20 +56,20 @@ expoPushToken: { type: String },
   },
 
   upiId: { type: String },
-  status: { type: String, enum: ['Active', 'Inactive', 'UnBlocked','Blocked','Rejected', 'Deleted'], default: 'Active' },
+  status: { type: String, enum: ['Active', 'Inactive', 'UnBlocked', 'Blocked', 'Rejected', 'Deleted'], default: 'Active' },
 
   vendorDetails: {
     about: { type: String, default: '' },
     location: String,
     contactNo: String,
     totalOrders: { type: Number, default: 0 },
-  farmImages: [{ type: String }],
-   deliveryRegion: { type: String, default: 50 }, // in km (max distance)
+    farmImages: [{ type: String }],
+    deliveryRegion: { type: String, default: 50 }, // in km (max distance)
   },
-    rejectionReason: {
-        type: String,
-        default: null,
-    },
+  rejectionReason: {
+    type: String,
+    default: null,
+  },
 
   notificationSettings: {
     newVendorRegistration: { type: Boolean, default: true },
@@ -112,7 +116,7 @@ userSchema.methods.matchPassword = async function (enteredPassword) {
 
 
 // ✅ Drop mobileNumber unique index for Admins if it exists
-userSchema.on('index', async function(error) {
+userSchema.on('index', async function (error) {
   if (error && error.code === 11000 && error.keyPattern?.mobileNumber) {
     console.warn('Duplicate mobileNumber index error ignored for Admins.');
   }
