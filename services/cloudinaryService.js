@@ -21,10 +21,9 @@ const storage = new CloudinaryStorage({
   },
 });
 
-// ✅ 5 MB Limit + Validation
+// ✅ Removed size limit
 const upload = multer({
   storage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 5 MB in bytes
   fileFilter: (req, file, cb) => {
     const allowed = ['image/jpeg', 'image/png', 'image/jpg'];
     if (!allowed.includes(file.mimetype)) {
@@ -34,7 +33,7 @@ const upload = multer({
   },
 });
 
-// 🔹 Helper functions for controller usage
+// 🔹 Helper functions
 const cloudinaryUpload = (filePath, folder = 'farm-ecomm-products') => {
   return cloudinary.uploader.upload(filePath, { folder });
 };
