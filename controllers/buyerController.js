@@ -313,11 +313,172 @@ const getFreshAndPopularProducts = asyncHandler(async (req, res) => {
 
 
 const getLocalBestProducts = asyncHandler(async (req, res) => {
-    const { lat, lng, maxDistance = 50000 } = req.query; // default 50 km
-    const latitude = parseFloat(lat);
-    const longitude = parseFloat(lng);
+  // parse & validate
+  const { lat, lng } = req.query;
+  let maxDistanceKm = parseFloat(req.query.maxDistance ?? '50'); // km
+  if (isNaN(maxDistanceKm) || maxDistanceKm < 0) maxDistanceKm = 50;
+  const maxDistanceMeters = maxDistanceKm * 1000; // for Mongo
 
-    // 📏 Helper: Haversine distance
+  // Fallback: if lat/lng missing or invalid -> return top-rated global products (existing behavior)
+  const latitude = parseFloat(lat);
+  const longitude = parseFloat(lng);
+  if (!lat || !lng || isNaN(latitude) || isNaN(longitude)) {
+    const fallbackProducts = await Product.find({ status: 'In Stock' })
+      .sort({ rating: -1, createdAt: -1 })
+      .limit(10)
+      .select('name images price unit rating vendor')
+      .populate('vendor', 'name status');
+
+    const data = fallbackProducts
+      .filter((p) => p.vendor?.status === 'Active')
+      .map((p) => ({
+        _id: p._id,
+        name: p.name,
+        image: p.images?.[0] || null,
+        vendorName: p.vendor?.name || 'Unknown Vendor',
+        distance: null,
+        price: p.price,
+        rating: p.rating,
+        unit: p.unit,
+      }));
+
+    return res.status(200).json({
+      success: true,
+      message: 'Location not provided or invalid. Showing top-rated products from all vendors.',
+      count: data.length,
+      data,
+    });
+  }
+
+  try {
+    // 1) Use geoNear to find nearby ACTIVE & APPROVED vendors and compute distances (meters)
+    const vendorsNearby = await User.aggregate([
+      {
+        $geoNear: {
+          near: { type: 'Point', coordinates: [parseFloat(longitude), parseFloat(latitude)] },
+          distanceField: 'distanceMeters',
+          spherical: true,
+          maxDistance: maxDistanceMeters,
+          query: { role: 'Vendor', status: 'Active', isApproved: true },
+        },
+      },
+      {
+        $project: {
+          _id: 1,
+          name: 1,
+          location: 1,
+          distanceMeters: 1,
+          'vendorDetails.deliveryRegion': 1,
+        },
+      }
+      // no limit -> return all vendors inside maxDistance
+    ]);
+
+    if (!vendorsNearby || vendorsNearby.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No active local vendors found in your area.',
+        data: [],
+      });
+    }
+
+    // 2) Build vendorId -> distanceKm map (and optionally filter by vendor deliveryRegion)
+    const vendorDistanceMap = {};
+    const eligibleVendorIds = [];
+    for (const v of vendorsNearby) {
+      const vendorId = v._id.toString();
+      const distanceKm = (v.distanceMeters ?? 0) / 1000;
+      // convert deliveryRegion (if present) to number and compare (defensive)
+      let deliveryRegionKm = 0;
+      if (v.vendorDetails && v.vendorDetails.deliveryRegion != null && v.vendorDetails.deliveryRegion !== '') {
+        const dr = Number(v.vendorDetails.deliveryRegion);
+        deliveryRegionKm = Number.isFinite(dr) ? dr : 0;
+      }
+      // if vendor has deliveryRegion > 0, ensure distance <= deliveryRegion
+      if (deliveryRegionKm > 0) {
+        if (distanceKm <= deliveryRegionKm) {
+          vendorDistanceMap[v._id.toString()] = distanceKm;
+          eligibleVendorIds.push(v._id);
+        }
+      } else {
+        // no deliveryRegion defined -> include vendor (you can change policy)
+        vendorDistanceMap[v._id.toString()] = distanceKm;
+        eligibleVendorIds.push(v._id);
+      }
+    }
+
+    if (eligibleVendorIds.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No vendors deliver to this location (based on vendor delivery regions).',
+        data: [],
+      });
+    }
+
+    // 3) Fetch top-rated products from eligible vendors
+    // Keep limit to a reasonable number to avoid huge payloads; you can remove or make configurable.
+    const localBestProducts = await Product.find({
+      vendor: { $in: eligibleVendorIds },
+      status: 'In Stock',
+    })
+      .sort({ rating: -1, createdAt: -1 })
+      // you can remove .limit(...) if you truly want all products (but be careful with payload size)
+      .limit(100)
+      .select('name images vendor price unit weightPerPiece rating quantity')
+      .populate('vendor', 'name location status');
+
+    // 4) Attach vendor distances (from vendorDistanceMap) and format response
+    const productsWithDistance = localBestProducts
+      .filter((p) => p.vendor?.status === 'Active')
+      .map((p) => {
+        const vendorId = p.vendor?._id?.toString();
+        const km = vendorDistanceMap[vendorId];
+        const distanceStr = (km == null) ? null : `${km.toFixed(2)} km away`;
+        return {
+          _id: p._id,
+          name: p.name,
+          image: p.images?.[0] || null,
+          vendorName: p.vendor?.name || 'Unknown Vendor',
+          distance: distanceStr,
+          price: p.price,
+          rating: p.rating,
+          unit: p.unit,
+          quantity: p.quantity,
+          weightPerPiece: p.weightPerPiece,
+        };
+      });
+
+    return res.status(200).json({
+      success: true,
+      count: productsWithDistance.length,
+      data: productsWithDistance,
+    });
+  } catch (err) {
+    console.error('Error fetching local best products:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch local products. Please check the GeoJSON index and vendor data.',
+      error: err.message,
+    });
+  }
+});
+
+
+
+const getAllAroundIndiaProducts = asyncHandler(async (req, res) => {
+    // 🧭 Step 1: Fetch buyer location
+    const buyer = await User.findById(req.user._id).select("location");
+
+    if (!buyer || !buyer.location?.coordinates) {
+        return res.status(400).json({
+            success: false,
+            message: "Buyer location not found. Please update your profile location first.",
+        });
+    }
+
+    const [buyerLng, buyerLat] = buyer.location.coordinates;
+
+    // 📏 Helper: Haversine formula (distance in km)
     const getDistanceKm = (lat1, lon1, lat2, lon2) => {
         const toRad = (v) => (v * Math.PI) / 180;
         const R = 6371;
@@ -327,173 +488,77 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
             Math.sin(dLat / 2) ** 2 +
             Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
             Math.sin(dLon / 2) ** 2;
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     };
 
-    // 🚨 Fallback if location invalid or missing
-    if (!lat || !lng || isNaN(latitude) || isNaN(longitude)) {
-        const fallbackProducts = await Product.find({ status: "In Stock" })
-            .sort({ rating: -1 })
-            .limit(10)
-            .select("name images price unit rating")
-            .populate("vendor", "name status");
+    // 🟢 Step 2: Active vendors
+    const activeVendorIds = (
+        await User.find({ role: "Vendor", status: "Active" }).select("_id")
+    ).map((v) => v._id);
 
-        return res.status(200).json({
-            success: true,
-            message:
-                "Location not provided or invalid. Showing top-rated products from all vendors.",
-            data: fallbackProducts
-                .filter((p) => p.vendor?.status === "Active")
-                .map((p) => ({
-                    _id: p._id,
-                    name: p.name,
-                    image: p.images?.[0] || null,
-                    vendorName: p.vendor?.name || "Unknown Vendor",
-                    distance: null,
-                    price: p.price,
-                    rating: p.rating,
-                    unit: p.unit,
-                })),
-        });
-    }
-
-    try {
-        // 🧭 Find nearby active vendors
-        const localVendors = await User.find({
-            status: "Active",
-            location: {
-                $near: {
-                    $geometry: { type: "Point", coordinates: [longitude, latitude] },
-                    $maxDistance: parseInt(maxDistance),
-                },
-            },
-        }).select("_id name location status");
-
-        const vendorIds = localVendors.map((v) => v._id);
-
-        if (vendorIds.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: "No active local vendors found in your area.",
-            });
-        }
-
-        // 📦 Fetch top-rated local products
-        const localBestProducts = await Product.find({
-            vendor: { $in: vendorIds },
-            status: "In Stock",
-        })
-            .sort({ rating: -1, createdAt: -1 })
-            .limit(20)
-            .select("name images vendor price unit weightPerPiece rating quantity")
-            .populate("vendor", "name location status");
-
-        // 🧮 Attach vendor distance
-        const productsWithDistance = localBestProducts
-            .filter((p) => p.vendor?.status === "Active")
-            .map((p) => {
-                const vendorLoc = p.vendor?.location?.coordinates;
-                let distance = null;
-
-                if (vendorLoc && vendorLoc.length === 2) {
-                    const km = getDistanceKm(latitude, longitude, vendorLoc[1], vendorLoc[0]);
-                    distance = `${km.toFixed(2)} km away`; // ✅ formatted string
-                }
-
-                return {
-                    _id: p._id,
-                    name: p.name,
-                    image: p.images?.[0] || null,
-                    vendorName: p.vendor?.name || "Unknown Vendor",
-                    distance, // e.g. "5.4 km away"
-                    price: p.price,
-                    rating: p.rating,
-                    unit: p.unit,
-                    quantity: p.quantity,
-                    weightPerPiece: p.weightPerPiece,
-                };
-            });
-
-        res.status(200).json({
-            success: true,
-            count: productsWithDistance.length,
-            data: productsWithDistance,
-        });
-    } catch (err) {
-        console.error("Error fetching local best products:", err);
-        res.status(500).json({
-            success: false,
-            message: "Failed to fetch local products. Please check the GeoJSON index.",
-        });
-    }
-});
-
-
-const getAllAroundIndiaProducts = asyncHandler(async (req, res) => {
-    const buyer = await User.findById(req.user._id).select('location');
-
-    // 📏 Helper: Haversine formula (distance in km)
-    const getDistanceKm = (lat1, lon1, lat2, lon2) => {
-        const toRad = (v) => (v * Math.PI) / 180;
-        const R = 6371; // Earth radius in km
-        const dLat = toRad(lat2 - lat1);
-        const dLon = toRad(lon2 - lon1);
-        const a =
-            Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-            Math.sin(dLon / 2) ** 2;
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c;
-    };
-
-    // 🟢 Step 1: Find all active vendors
-    const activeVendors = await User.find({ role: 'Vendor', status: 'Active' }).select('_id');
-    const activeVendorIds = activeVendors.map(v => v._id);
-
-    // 🟢 Step 2: Fetch all products with All India delivery & active vendor
+    // 🟢 Step 3: Find All India delivery products
     const products = await Product.find({
-        status: 'In Stock',
+        status: "In Stock",
         allIndiaDelivery: true,
-        vendor: { $in: activeVendorIds }
+        vendor: { $in: activeVendorIds },
     })
         .sort({ rating: -1, salesCount: -1 })
-        .populate('vendor', 'name location status');
+        .populate("vendor", "name location status");
 
-    if (products.length === 0) {
+    if (!products.length) {
         return res.status(404).json({
             success: false,
-            message: 'No All India delivery products found.'
+            message: "No All-India delivery products found.",
         });
     }
 
-    // 🧮 Step 3: Enrich with distance (if buyer and vendor have location)
+    // 🧮 Step 4: Enrich with distance
     const enrichedProducts = products.map((p) => {
-        let distanceText = 'N/A';
-        if (p.vendor?.location?.coordinates && buyer?.location?.coordinates) {
-            const [vendorLng, vendorLat] = p.vendor.location.coordinates;
-            const [buyerLng, buyerLat] = buyer.location.coordinates;
+        let distanceText = "N/A";
 
-            const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
-            if (!isNaN(distance)) {
+        if (Array.isArray(p.vendor?.location?.coordinates)) {
+            const [vendorLng, vendorLat] = p.vendor.location.coordinates;
+            if (vendorLng && vendorLat) {
+                const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
                 distanceText = `${distance.toFixed(2)} km away`;
             }
         }
 
         return {
-            ...p.toObject(),
-            distance: distanceText
+            _id: p._id,
+            name: p.name,
+            category: p.category,
+            image: p.images?.[0] || null,
+            vendorName: p.vendor?.name || "Unknown Vendor",
+            distance: distanceText,
+            price: p.price,
+            rating: p.rating,
+            unit: p.unit,
+            quantity: p.quantity,
+            weightPerPiece: p.weightPerPiece,
+            allIndiaDelivery: p.allIndiaDelivery,
         };
     });
 
-    // ✅ Step 4: Send Response
+    // 🧠 Step 5: Sort by nearest (optional UX improvement)
+    const sortedProducts = enrichedProducts.sort((a, b) => {
+        const da = parseFloat(a.distance);
+        const db = parseFloat(b.distance);
+        if (isNaN(da)) return 1;
+        if (isNaN(db)) return -1;
+        return da - db;
+    });
+
+    // ✅ Step 6: Response
     res.status(200).json({
         success: true,
-        message: 'All India delivery products fetched successfully.',
-        count: enrichedProducts.length,
-        data: enrichedProducts
+        message: "All-India delivery products fetched successfully.",
+        count: sortedProducts.length,
+        data: sortedProducts,
     });
 });
+
+
 
 
 
@@ -501,18 +566,19 @@ const getSmartPicks = asyncHandler(async (req, res) => {
     const { category } = req.query;
     const userId = req.user._id;
 
-    // ✅ Get Buyer (for location)
-    const buyer = await User.findById(userId).select('location');
+    // 🧭 Step 1: Fetch buyer location
+    const buyer = await User.findById(userId).select("location");
     if (!buyer?.location?.coordinates?.length) {
         return res.status(400).json({
             success: false,
-            message: 'User location not found. Please set your delivery address.',
+            message: "User location not found. Please set your delivery address.",
         });
     }
 
-    const [buyerLon, buyerLat] = buyer.location.coordinates;
+    // ✅ Correct order: [longitude, latitude]
+    const [buyerLng, buyerLat] = buyer.location.coordinates;
 
-    // 📏 Helper: Haversine formula — distance between two lat/lon points (in km)
+    // 📏 Helper: Haversine formula (distance in km)
     const getDistanceKm = (lat1, lon1, lat2, lon2) => {
         const toRad = (v) => (v * Math.PI) / 180;
         const R = 6371;
@@ -523,69 +589,68 @@ const getSmartPicks = asyncHandler(async (req, res) => {
             Math.cos(toRad(lat1)) *
             Math.cos(toRad(lat2)) *
             Math.sin(dLon / 2) ** 2;
-        return (R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     };
 
-    // ✅ Step 1: Find all Active Vendors
-    const activeVendors = await User.find({ role: 'Vendor', status: 'Active' }).select('_id');
-    const activeVendorIds = activeVendors.map(v => v._id);
+    // 🟢 Step 2: Get active vendors
+    const activeVendorIds = (
+        await User.find({ role: "Vendor", status: "Active" }).select("_id")
+    ).map((v) => v._id);
 
-    // ✅ Step 2: Product filter (only in-stock & from active vendors)
+    // 🟢 Step 3: Product filter
     const filter = {
-        status: 'In Stock',
+        status: "In Stock",
         vendor: { $in: activeVendorIds },
     };
     if (category) filter.category = category;
 
-    // ✅ Step 3: Fetch products with vendor details
+    // 🟢 Step 4: Fetch and populate
     const products = await Product.find(filter)
         .sort({ rating: -1, createdAt: -1 })
-        .populate('vendor', 'name profilePicture location status');
+        .limit(20)
+        .populate("vendor", "name profilePicture location status");
 
     if (!products.length) {
         return res.status(404).json({
             success: false,
             message: category
                 ? `No smart picks found for category: ${category}`
-                : 'No smart picks found at this time.',
+                : "No smart picks found at this time.",
         });
     }
 
-    // ✅ Step 4: Format each product
-    const formatted = products.map((product) => {
-        const image = product.images?.[0] || null;
-        let distance = 'N/A';
+    // 🧮 Step 5: Format and calculate distances
+    const formatted = products.map((p) => {
+        const image = p.images?.[0] || null;
+        let distanceText = "N/A";
 
-        if (product.vendor?.location?.coordinates?.length) {
-            const [vendorLon, vendorLat] = product.vendor.location.coordinates;
-            distance = `${getDistanceKm(
-                buyerLat,
-                buyerLon,
-                vendorLat,
-                vendorLon
-            )} km away`;
+        if (
+            p.vendor?.location?.coordinates?.length &&
+            p.vendor.location.coordinates[0] !== 0 &&
+            p.vendor.location.coordinates[1] !== 0
+        ) {
+            // ✅ Correct order
+            const [vendorLng, vendorLat] = p.vendor.location.coordinates;
+            const dist = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
+            distanceText = `${dist.toFixed(2)} km away`;
         }
 
         return {
-            id: product._id,
-            name: product.name,
-            price: product.price,
-            unit: product.unit || '',
-            weightPerPiece: product.weightPerPiece,
-            rating: product.rating || 0,
-            ratingCount: product.ratingCount || 0,
-            quantity: product.quantity,
+            id: p._id,
+            name: p.name,
             image,
-            vendor: {
-                id: product.vendor?._id,
-                name: product.vendor?.name || 'Unknown Vendor',
-                profilePicture: product.vendor?.profilePicture || null,
-            },
-            distanceFromVendor: distance,
+            price: p.price,
+            unit: p.unit,
+            rating: p.rating || 0,
+            quantity: p.quantity,
+            vendorId: p.vendor?._id,
+            vendorName: p.vendor?.name || "Unknown Vendor",
+            vendorImage: p.vendor?.profilePicture || null,
+            distance: distanceText,
         };
     });
 
-    // ✅ Step 5: Response
+    // ✅ Step 6: Send response
     res.status(200).json({
         success: true,
         count: formatted.length,
@@ -595,69 +660,111 @@ const getSmartPicks = asyncHandler(async (req, res) => {
 
 
 
+
 const getProductsByCategory = asyncHandler(async (req, res) => {
     const { category } = req.query;
-    const buyer = await User.findById(req.user._id).select('location');
-    const buyerLocation = buyer?.location?.coordinates;
 
     if (!category) {
-        return res.status(400).json({ success: false, message: "Category is required" });
+        return res.status(400).json({
+            success: false,
+            message: "Category is required",
+        });
     }
+
+    // 🧭 Step 1: Get buyer location
+    const buyer = await User.findById(req.user._id).select("location");
+    const buyerCoords = buyer?.location?.coordinates;
+    if (!buyerCoords) {
+        return res.status(400).json({
+            success: false,
+            message: "Buyer location not found. Please update your address first.",
+        });
+    }
+
+    const [buyerLng, buyerLat] = buyerCoords;
 
     // 📏 Helper: Haversine formula (distance in km)
     const getDistanceKm = (lat1, lon1, lat2, lon2) => {
         const toRad = (v) => (v * Math.PI) / 180;
-        const R = 6371; // Earth's radius in km
+        const R = 6371; // km
         const dLat = toRad(lat2 - lat1);
         const dLon = toRad(lon2 - lon1);
         const a =
             Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.cos(toRad(lat1)) *
+            Math.cos(toRad(lat2)) *
             Math.sin(dLon / 2) ** 2;
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     };
 
-    // 🧩 Step 1: Find all active vendors
-    const activeVendors = await User.find({ role: 'Vendor', status: 'Active' }).select('_id');
-    const activeVendorIds = activeVendors.map(v => v._id);
+    // 🟢 Step 2: Find active vendors
+    const activeVendorIds = (
+        await User.find({ role: "Vendor", status: "Active" }).select("_id")
+    ).map(v => v._id);
 
-    // 🧩 Step 2: Base query for products
-    const productQuery = {
+    // 🟢 Step 3: Find category products
+    const products = await Product.find({
         category,
-        status: 'In Stock',
+        status: "In Stock",
         vendor: { $in: activeVendorIds },
-    };
+    })
+        .populate("vendor", "name location profilePicture")
+        .sort({ rating: -1, createdAt: -1 });
 
-    // 🟢 Step 3: Fetch products with vendor details
-    const products = await Product.find(productQuery)
-        .populate('vendor', 'name location')
-        .sort({ createdAt: -1, rating: -1 });
+    if (!products.length) {
+        return res.status(404).json({
+            success: false,
+            message: `No products found in category: ${category}`,
+        });
+    }
 
     // 🧮 Step 4: Enrich with distance
-    const enriched = products.map(p => {
-        let distanceText = 'N/A';
+    const enrichedProducts = products.map((p) => {
+        let distanceText = "N/A";
 
-        if (p.vendor?.location?.coordinates && buyerLocation) {
+        if (
+            Array.isArray(p.vendor?.location?.coordinates) &&
+            p.vendor.location.coordinates[0] !== 0 &&
+            p.vendor.location.coordinates[1] !== 0
+        ) {
             const [vendorLng, vendorLat] = p.vendor.location.coordinates;
-            const [buyerLng, buyerLat] = buyerLocation;
             const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
-            distanceText = `${parseFloat(distance.toFixed(2))} km away`;
+            distanceText = `${distance.toFixed(2)} km away`;
         }
 
         return {
-            ...p.toObject(),
-            distance: distanceText, // ✅ formatted as "3.2 km away"
+            _id: p._id,
+            name: p.name,
+            category: p.category,
+            image: p.images?.[0] || null,
+            vendorName: p.vendor?.name || "Unknown Vendor",
+            vendorImage: p.vendor?.profilePicture || null,
+            distance: distanceText,
+            price: p.price,
+            rating: p.rating,
+            unit: p.unit,
+            quantity: p.quantity,
+            weightPerPiece: p.weightPerPiece,
         };
     });
 
-    // ✅ Step 5: Send response
+    // 🧠 Step 5: Sort by nearest (optional)
+    const sortedProducts = enrichedProducts.sort((a, b) => {
+        const da = parseFloat(a.distance);
+        const db = parseFloat(b.distance);
+        if (isNaN(da)) return 1;
+        if (isNaN(db)) return -1;
+        return da - db;
+    });
+
+    // ✅ Step 6: Send response
     res.status(200).json({
         success: true,
-        count: enriched.length,
-        data: enriched,
+        count: sortedProducts.length,
+        data: sortedProducts,
     });
 });
+
 
 
 
