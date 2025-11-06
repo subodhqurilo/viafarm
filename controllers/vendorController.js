@@ -475,33 +475,41 @@ const addProduct = asyncHandler(async (req, res) => {
     // 7️⃣ 🔔 Notifications
 
     // 👨‍💼 Admin (personal notification)
-    await createAndSendNotification(
-        req,
-        "🆕 New Product Added",
-        `${vendor.name} just added a new product "${newProduct.name}".`,
-        {
-            productId: newProduct._id,
-            vendorId,
-            category,
-            price,
-            quantity,
-        },
-        "Admin" // All Admin users
-    );
+await createAndSendNotification(
+  req,
+  "🆕 New Product Added",
+  `${vendor.name} just added a new product "${newProduct.name}".`,
+  {
+    type: "product",
+    productId: newProduct._id,
+  },
+  "Admin" // send to all admins
+);
 
-    // 🧑‍🌾 Vendor (personal confirmation)
-    await createAndSendNotification(
-        req,
-        "✅ Product Added Successfully",
-        `Your product "${newProduct.name}" has been added successfully and is now in stock.`,
-        {
-            productId: newProduct._id,
-            category,
-            price,
-        },
-        "Vendor",
-        vendorId // Personal vendor ID
-    );
+// 🧑‍🌾 Notify Vendor (personal)
+await createAndSendNotification(
+  req,
+  "✅ Product Added Successfully",
+  `Your product "${newProduct.name}" is now live in the store.`,
+  {
+    type: "product",
+    productId: newProduct._id,
+  },
+  "Vendor",
+  vendorId // send only to this vendor
+);
+
+// 🛍️ Notify All Buyers (broadcast)
+await createAndSendNotification(
+  req,
+  "🛒 New Product Available!",
+  `Check out the new product "${newProduct.name}". Grab it now!`,
+  {
+    type: "product",
+    productId: newProduct._id,
+  },
+  "Buyer" // send to all buyers
+);
 
     // 8️⃣ Send Response
     res.status(201).json({
@@ -611,36 +619,42 @@ const updateProduct = asyncHandler(async (req, res) => {
     // 8️⃣ 🔔 Notifications
 
     // 🧑‍🌾 Vendor (personal)
-    await createAndSendNotification(
-        req,
-        "✅ Product Updated",
-        `Your product "${updatedProduct.name}" was updated successfully.`,
-        {
-            productId: updatedProduct._id,
-            newPrice: updatedProduct.price,
-            oldPrice,
-        },
-        "Vendor",
-        updatedProduct.vendor._id
-    );
+// 8️⃣ 🔔 Notifications
 
-    // 🛒 Buyers (only if price dropped)
-    if (
-        updateFields.price !== undefined &&
-        Number(updateFields.price) < Number(oldPrice)
-    ) {
-        await createAndSendNotification(
-            req,
-            "💰 Price Drop Alert!",
-            `Good news! "${updatedProduct.name}" is now ₹${updateFields.price} (was ₹${oldPrice}). Hurry up before stock runs out!`,
-            {
-                productId: updatedProduct._id,
-                oldPrice,
-                newPrice: updateFields.price,
-            },
-            "Buyer" // 👈 sends to all buyers
-        );
-    }
+// 🧑‍🌾 Vendor (personal)
+await createAndSendNotification(
+  req,
+  "✅ Product Updated",
+  `Your product "${updatedProduct.name}" was updated successfully.`,
+  {
+    type: "product",
+    productId: updatedProduct._id,
+    oldPrice,
+    newPrice: updatedProduct.price,
+  },
+  "Vendor",
+  updatedProduct.vendor._id
+);
+
+// 🛒 Buyers (only if price dropped)
+if (
+  updateFields.price !== undefined &&
+  Number(updateFields.price) < Number(oldPrice)
+) {
+  await createAndSendNotification(
+    req,
+    "💰 Price Drop Alert!",
+    `Good news! "${updatedProduct.name}" is now ₹${updateFields.price} (was ₹${oldPrice}). Grab the offer!`,
+    {
+      type: "product",
+      productId: updatedProduct._id,
+      oldPrice,
+      newPrice: updateFields.price,
+    },
+    "Buyer" // send to all buyers
+  );
+}
+
 
     // ✅ 9️⃣ Final response
     res.status(200).json({
@@ -848,79 +862,47 @@ const getVendorOrders = asyncHandler(async (req, res) => {
 
 
 const updateOrderStatus = asyncHandler(async (req, res) => {
-    const { status } = req.body;
+  const { status } = req.body;
+  const order = await Order.findById(req.params.id)
+    .populate("buyer vendor", "name _id email");
 
-    // 1️⃣ Find the order
-    const order = await Order.findById(req.params.id)
-        .populate("products.product buyer vendor", "name _id email");
+  if (!order) {
+    return res.status(404).json({ success: false, message: "Order not found." });
+  }
 
-    if (!order) {
-        return res.status(404).json({
-            success: false,
-            message: "Order not found.",
-        });
-    }
+  if (order.vendor._id.toString() !== req.user._id.toString()) {
+    return res.status(401).json({ success: false, message: "Not authorized to update this order." });
+  }
 
-    // 2️⃣ Authorization: Only vendor who owns this order can update
-    if (order.vendor._id.toString() !== req.user._id.toString()) {
-        return res.status(401).json({
-            success: false,
-            message: "Not authorized to update this order.",
-        });
-    }
+  order.orderStatus = status;
+  const updatedOrder = await order.save();
 
-    // 3️⃣ Update status
-    order.orderStatus = status;
-    const updatedOrder = await order.save();
+  // 🔔 Notify Buyer
+  await createAndSendNotification(
+    req,
+    "Order Status Updated",
+    `Your order (${order.orderId}) status has been updated to "${status}".`,
+    {
+      orderId: order.orderId, // ✅ Send custom order ID
+      status,
+      vendorId: order.vendor._id,
+      vendorName: order.vendor.name,
+    },
+    "Buyer",
+    order.buyer._id
+  );
 
-    // 4️⃣ 🔔 Send Notifications
-    try {
-        // 🧍‍♂️ Personal Buyer Notification
-        await createAndSendNotification(
-            req,
-            "Order Status Updated",
-            `Your order (${order._id}) status has been updated to "${status}".`,
-            {
-                orderId: order._id,
-                status,
-                vendorId: order.vendor._id,
-                vendorName: order.vendor.name,
-            },
-            "Buyer",
-            order.buyer._id // 🎯 personal buyer
-        );
+  const responseOrder = updatedOrder.toObject();
+  responseOrder.status = responseOrder.orderStatus;
+  delete responseOrder.orderStatus;
 
-        // (Optional) 👨‍💼 Notify Admin — if you ever want to log status changes
-        /*
-        await createAndSendNotification(
-          req,
-          "Order Status Changed by Vendor",
-          `${order.vendor.name} updated order (${order._id}) status to "${status}".`,
-          {
-            orderId: order._id,
-            buyerId: order.buyer._id,
-            vendorId: order.vendor._id,
-            status,
-          },
-          "Admin"
-        );
-        */
-    } catch (err) {
-        console.error("❌ Notification sending failed:", err.message);
-    }
-
-    // 5️⃣ Prepare response (rename orderStatus → status)
-    const responseOrder = updatedOrder.toObject();
-    responseOrder.status = responseOrder.orderStatus;
-    delete responseOrder.orderStatus;
-
-    // ✅ Final Response
-    res.status(200).json({
-        success: true,
-        message: `Order status updated to "${status}" and buyer notified.`,
-        data: responseOrder,
-    });
+  res.status(200).json({
+    success: true,
+    message: `Order status updated to "${status}" and buyer notified.`,
+    data: responseOrder,
+  });
 });
+
 
 
 

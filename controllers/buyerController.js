@@ -663,108 +663,67 @@ const getSmartPicks = asyncHandler(async (req, res) => {
 
 const getProductsByCategory = asyncHandler(async (req, res) => {
     const { category } = req.query;
+    const buyer = await User.findById(req.user._id).select('location');
+    const buyerLocation = buyer?.location?.coordinates;
 
     if (!category) {
-        return res.status(400).json({
-            success: false,
-            message: "Category is required",
-        });
+        return res.status(400).json({ success: false, message: "Category is required" });
     }
-
-    // 🧭 Step 1: Get buyer location
-    const buyer = await User.findById(req.user._id).select("location");
-    const buyerCoords = buyer?.location?.coordinates;
-    if (!buyerCoords) {
-        return res.status(400).json({
-            success: false,
-            message: "Buyer location not found. Please update your address first.",
-        });
-    }
-
-    const [buyerLng, buyerLat] = buyerCoords;
 
     // 📏 Helper: Haversine formula (distance in km)
     const getDistanceKm = (lat1, lon1, lat2, lon2) => {
         const toRad = (v) => (v * Math.PI) / 180;
-        const R = 6371; // km
+        const R = 6371; // Earth's radius in km
         const dLat = toRad(lat2 - lat1);
         const dLon = toRad(lon2 - lon1);
         const a =
             Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(lat1)) *
-            Math.cos(toRad(lat2)) *
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
             Math.sin(dLon / 2) ** 2;
-        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return R * c;
     };
 
-    // 🟢 Step 2: Find active vendors
-    const activeVendorIds = (
-        await User.find({ role: "Vendor", status: "Active" }).select("_id")
-    ).map(v => v._id);
+    // 🧩 Step 1: Find all active vendors
+    const activeVendors = await User.find({ role: 'Vendor', status: 'Active' }).select('_id');
+    const activeVendorIds = activeVendors.map(v => v._id);
 
-    // 🟢 Step 3: Find category products
-    const products = await Product.find({
+    // 🧩 Step 2: Base query for products
+    const productQuery = {
         category,
-        status: "In Stock",
+        status: 'In Stock',
         vendor: { $in: activeVendorIds },
-    })
-        .populate("vendor", "name location profilePicture")
-        .sort({ rating: -1, createdAt: -1 });
+    };
 
-    if (!products.length) {
-        return res.status(404).json({
-            success: false,
-            message: `No products found in category: ${category}`,
-        });
-    }
+    // 🟢 Step 3: Fetch products with vendor details
+    const products = await Product.find(productQuery)
+        .populate('vendor', 'name location')
+        .sort({ createdAt: -1, rating: -1 });
 
     // 🧮 Step 4: Enrich with distance
-    const enrichedProducts = products.map((p) => {
-        let distanceText = "N/A";
+    const enriched = products.map(p => {
+        let distanceText = 'N/A';
 
-        if (
-            Array.isArray(p.vendor?.location?.coordinates) &&
-            p.vendor.location.coordinates[0] !== 0 &&
-            p.vendor.location.coordinates[1] !== 0
-        ) {
+        if (p.vendor?.location?.coordinates && buyerLocation) {
             const [vendorLng, vendorLat] = p.vendor.location.coordinates;
+            const [buyerLng, buyerLat] = buyerLocation;
             const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
-            distanceText = `${distance.toFixed(2)} km away`;
+            distanceText = `${parseFloat(distance.toFixed(2))} km away`;
         }
 
         return {
-            _id: p._id,
-            name: p.name,
-            category: p.category,
-            image: p.images?.[0] || null,
-            vendorName: p.vendor?.name || "Unknown Vendor",
-            vendorImage: p.vendor?.profilePicture || null,
-            distance: distanceText,
-            price: p.price,
-            rating: p.rating,
-            unit: p.unit,
-            quantity: p.quantity,
-            weightPerPiece: p.weightPerPiece,
+            ...p.toObject(),
+            distance: distanceText, // ✅ formatted as "3.2 km away"
         };
     });
 
-    // 🧠 Step 5: Sort by nearest (optional)
-    const sortedProducts = enrichedProducts.sort((a, b) => {
-        const da = parseFloat(a.distance);
-        const db = parseFloat(b.distance);
-        if (isNaN(da)) return 1;
-        if (isNaN(db)) return -1;
-        return da - db;
-    });
-
-    // ✅ Step 6: Send response
+    // ✅ Step 5: Send response
     res.status(200).json({
         success: true,
-        count: sortedProducts.length,
-        data: sortedProducts,
+        count: enriched.length,
+        data: enriched,
     });
 });
-
 
 
 
@@ -1046,12 +1005,12 @@ const getCartItems = asyncHandler(async (req, res) => {
             totalAmount: summary.totalAmount || 0,
         };
 
-        const formattedSummary = {
-            TotalMRP: `₹ ${priceDetails.totalMRP.toFixed(2)}`,
-            CouponDiscount: `₹ ${priceDetails.couponDiscount.toFixed(2)}`,
-            DeliveryCharge: `₹ ${priceDetails.deliveryCharge.toFixed(2)}`,
-            TotalAmount: `₹ ${priceDetails.totalAmount.toFixed(2)}`,
-        };
+const formattedSummary = {
+    totalMRP: priceDetails.totalMRP,
+    couponDiscount: priceDetails.couponDiscount,
+    deliveryCharge: priceDetails.deliveryCharge,
+    totalAmount: priceDetails.totalAmount,
+};
 
         res.json({
             success: true,
@@ -1501,6 +1460,7 @@ const reorder = asyncHandler(async (req, res) => {
         items: oldOrder.items,
         totalPrice: oldOrder.totalPrice,
         deliveryMethod: oldOrder.deliveryMethod,
+        orderType: "Reorder",     // ✅ FIXED (Required),
         status: 'In Process',
     });
 
@@ -1511,9 +1471,9 @@ const reorder = asyncHandler(async (req, res) => {
         req,
         '🛒 Reorder Placed',
         `Your reorder (${newOrder.orderId}) has been successfully placed.`,
-        { orderId: newOrder._id },
+        { orderId: newOrder.orderId }, // ✅ Now sends readable ORDER#xxxxx
         'Buyer',
-        req.user._id   // personal buyer
+        req.user._id
     );
 
     // 🔹 Vendor (personal)
@@ -1521,22 +1481,21 @@ const reorder = asyncHandler(async (req, res) => {
         await createAndSendNotification(
             req,
             '📦 New Reorder Received',
-            `A buyer has placed a reorder (Order ID: ${newOrder.orderId}).`,
-            { orderId: newOrder._id },
+            `A new reorder has been placed (${newOrder.orderId}).`,
+            { orderId: newOrder.orderId }, // ✅ human-readable ID
             'Vendor',
-            oldOrder.vendor._id   // personal vendor
+            oldOrder.vendor._id
         );
     }
 
-    // ✅ Admin notification removed
-
-    // 4️⃣ Respond
+    // 4️⃣ Response
     res.status(201).json({
         success: true,
         message: 'Reorder placed successfully and notifications sent.',
         data: newOrder,
     });
 });
+
 
 
 

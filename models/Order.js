@@ -43,7 +43,7 @@ const orderSchema = new mongoose.Schema({
   },
   orderType: {
     type: String,
-    enum: ['Delivery', 'Pickup'],
+    enum: ['Delivery', 'Pickup','Reorder'],
     required: true,
   },
   orderStatus: {
