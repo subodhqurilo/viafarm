@@ -1799,16 +1799,21 @@ const updateLocationDetails = asyncHandler(async (req, res) => {
       deliveryRegion
     } = req.body;
 
-    // --- 1️⃣ Validate Delivery Region ---
-    const region = parseFloat(deliveryRegion);
-    if (isNaN(region) || region <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Delivery Region must be a positive number.'
-      });
+    const updateFields = {};
+
+    // --- 1️⃣ Validate & Parse Delivery Region (Optional) ---
+    if (deliveryRegion !== undefined) {
+      const region = parseFloat(deliveryRegion);
+      if (isNaN(region) || region <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Delivery region must be a positive number.'
+        });
+      }
+      updateFields['vendorDetails.deliveryRegion'] = region;
     }
 
-    // --- 2️⃣ Handle Reverse Geocoding (if coordinates provided) ---
+    // --- 2️⃣ Handle Reverse Geocoding if Coordinates Provided ---
     let lat, lng;
     if (latitude && longitude) {
       lat = parseFloat(latitude);
@@ -1817,7 +1822,7 @@ const updateLocationDetails = asyncHandler(async (req, res) => {
       if (isNaN(lat) || isNaN(lng)) {
         return res.status(400).json({
           success: false,
-          message: 'Invalid latitude or longitude.'
+          message: 'Invalid latitude or longitude values.'
         });
       }
 
@@ -1835,55 +1840,46 @@ const updateLocationDetails = asyncHandler(async (req, res) => {
           }
         );
 
-        const addr = geoResponse.data.address;
-        if (addr) {
-          // Only fill fields that are missing
-          pinCode = pinCode || addr.postcode || '';
-          city = city || addr.city || addr.town || addr.village || '';
-          district = district || addr.state_district || addr.county || '';
-          locality = locality || addr.suburb || addr.neighbourhood || addr.road || '';
-        }
+        const addr = geoResponse.data?.address || {};
+        pinCode = pinCode || addr.postcode || '';
+        city = city || addr.city || addr.town || addr.village || '';
+        district = district || addr.state_district || addr.county || '';
+        locality =
+          locality ||
+          addr.suburb ||
+          addr.neighbourhood ||
+          addr.road ||
+          addr.hamlet ||
+          '';
+
+        updateFields['address.latitude'] = lat;
+        updateFields['address.longitude'] = lng;
+        updateFields['location'] = { type: 'Point', coordinates: [lng, lat] };
       } catch (geoErr) {
-        console.warn('Reverse geocoding failed:', geoErr.message);
-        // Continue silently — don’t block vendor update
+        console.warn('⚠️ Reverse geocoding failed:', geoErr.message);
+        // Still set raw coordinates if geocoding fails
+        updateFields['address.latitude'] = lat;
+        updateFields['address.longitude'] = lng;
+        updateFields['location'] = { type: 'Point', coordinates: [lng, lat] };
       }
     }
 
-    // --- 3️⃣ Validate Mandatory Address Fields ---
-    const requiredFields = { pinCode, houseNumber, locality, city, district };
-    const missing = Object.entries(requiredFields)
-      .filter(([_, v]) => !v)
-      .map(([k]) => k);
+    // --- 3️⃣ Apply Only Provided Fields ---
+    if (pinCode) updateFields['address.pinCode'] = pinCode;
+    if (houseNumber) updateFields['address.houseNumber'] = houseNumber;
+    if (locality) updateFields['address.locality'] = locality;
+    if (city) updateFields['address.city'] = city;
+    if (district) updateFields['address.district'] = district;
 
-    if (missing.length > 0) {
+    // --- 4️⃣ Prevent Empty Updates ---
+    if (Object.keys(updateFields).length === 0) {
       return res.status(400).json({
         success: false,
-        message: `Missing required fields: ${missing.join(', ')}`
+        message: 'No fields provided for update.'
       });
     }
 
-    // --- 4️⃣ Build Update Object ---
-    const updateFields = {
-      'address.pinCode': pinCode,
-      'address.houseNumber': houseNumber,
-      'address.locality': locality,
-      'address.city': city,
-      'address.district': district,
-      'vendorDetails.deliveryRegion': region
-    };
-
-    if (lat && lng) {
-      updateFields['address.latitude'] = lat;
-      updateFields['address.longitude'] = lng;
-      updateFields['location'] = { type: 'Point', coordinates: [lng, lat] };
-    } else {
-      // Optional: Keep previous location instead of clearing
-      updateFields['address.latitude'] = undefined;
-      updateFields['address.longitude'] = undefined;
-      updateFields['location'] = undefined;
-    }
-
-    // --- 5️⃣ Update in DB ---
+    // --- 5️⃣ Update Database ---
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
       { $set: updateFields },
@@ -1897,18 +1893,20 @@ const updateLocationDetails = asyncHandler(async (req, res) => {
       });
     }
 
-    // --- 6️⃣ Respond ---
+    // --- 6️⃣ Response ---
     res.status(200).json({
       success: true,
       message: 'Location and delivery details updated successfully.',
       data: {
         address: updatedUser.address,
         location: updatedUser.location,
-        deliveryRegion: `${Number(updatedUser.vendorDetails?.deliveryRegion || 0)} km`
+        deliveryRegion: updatedUser.vendorDetails?.deliveryRegion
+          ? `${updatedUser.vendorDetails.deliveryRegion} km`
+          : null
       }
     });
   } catch (error) {
-    console.error('Error updating vendor location:', error);
+    console.error('❌ Error updating vendor location:', error);
     res.status(500).json({
       success: false,
       message: 'Server error while updating location details.',
@@ -1916,6 +1914,8 @@ const updateLocationDetails = asyncHandler(async (req, res) => {
     });
   }
 });
+
+
 
 
 
