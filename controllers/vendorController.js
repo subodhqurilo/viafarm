@@ -1543,155 +1543,151 @@ const getUserProfile = asyncHandler(async (req, res) => {
 
 
 const updateUserProfile = asyncHandler(async (req, res) => {
-    console.log("🟢 Received body:", req.body);
+  console.log("🟢 Received body:", req.body);
 
-    const { name, mobileNumber, upiId, about, status } = req.body;
+  const { name, mobileNumber, upiId, about, status } = req.body;
 
-    // 1️⃣ Find User
-    const user = await User.findById(req.user._id);
-    if (!user) {
-        return res.status(404).json({ success: false, message: "User not found." });
-    }
+  // 1️⃣ Find User
+  const user = await User.findById(req.user._id);
+  if (!user) {
+    return res.status(404).json({ success: false, message: "User not found." });
+  }
 
-    // 2️⃣ Validation Checks
-    if (!name || !mobileNumber || !upiId) {
-        return res.status(400).json({
-            success: false,
-            message: "Name, Mobile Number, and UPI Id are mandatory fields.",
-        });
-    }
-
-    if (!/^\d{10}$/.test(mobileNumber)) {
-        return res.status(400).json({
-            success: false,
-            message: "Mobile number must be a valid 10-digit number.",
-        });
-    }
-
-    // ✅ Prevent duplicate mobile numbers
-    if (mobileNumber !== user.mobileNumber) {
-        const existingUser = await User.findOne({ mobileNumber });
-        if (existingUser) {
-            return res.status(400).json({
-                success: false,
-                message: "This mobile number is already registered.",
-            });
-        }
-    }
-
-    // 3️⃣ Handle Profile Picture Upload (Single)
-    if (req.files?.profileImage && req.files.profileImage[0]) {
-        try {
-            const result = await cloudinary.uploader.upload(req.files.profileImage[0].path, {
-                folder: "profile-images",
-            });
-            user.profileImage = result.secure_url;
-        } catch (err) {
-            console.error("Cloudinary error:", err);
-            return res.status(500).json({
-                success: false,
-                message: "Profile image upload failed.",
-            });
-        }
-    }
-
-    // 4️⃣ Handle Farm Images Upload (Multiple)
-    if (req.files?.farmImages && req.files.farmImages.length > 0) {
-        try {
-            const uploads = await Promise.all(
-                req.files.farmImages.map((file) =>
-                    cloudinary.uploader.upload(file.path, { folder: "farm-images" })
-                )
-            );
-            const farmImageUrls = uploads.map((u) => u.secure_url);
-            user.vendorDetails = user.vendorDetails || {};
-            user.vendorDetails.farmImages = farmImageUrls;
-        } catch (err) {
-            console.error("Cloudinary farm upload error:", err);
-            return res.status(500).json({
-                success: false,
-                message: "Farm images upload failed.",
-            });
-        }
-    }
-
-    // 5️⃣ Update Basic Info
-    user.name = name;
-    user.mobileNumber = mobileNumber;
-    user.upiId = upiId;
-
-    // 6️⃣ Vendor About Info
-    user.vendorDetails = user.vendorDetails || {};
-    user.vendorDetails.about = about || user.vendorDetails.about;
-
-    // 7️⃣ Handle Address Update
-    if (req.body.address) {
-        try {
-            user.address =
-                typeof req.body.address === "string"
-                    ? JSON.parse(req.body.address)
-                    : req.body.address;
-        } catch (e) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid address format. Must be valid JSON.",
-            });
-        }
-    }
-
-    // 8️⃣ Update User Status
-    if (status) {
-        const allowedStatuses = ["Active", "Inactive"];
-        if (!allowedStatuses.includes(status)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid status. Allowed values: Active or Inactive.",
-            });
-        }
-        user.status = status;
-    }
-
-    // 9️⃣ Save Updated User
-    const updatedUser = await user.save();
-
-    // 🔟 🔔 Send Personal Notification (Vendor only)
-    if (updatedUser.role === "Vendor") {
-        try {
-            await createAndSendNotification(
-                req,
-                "Profile Updated Successfully 🛠️",
-                `Hello ${updatedUser.name}, your vendor profile has been updated successfully.`,
-                {
-                    userId: updatedUser._id,
-                    name: updatedUser.name,
-                    mobileNumber: updatedUser.mobileNumber,
-                    upiId: updatedUser.upiId,
-                },
-                "Vendor", // userType
-                updatedUser._id // 🎯 personal vendor ID
-            );
-        } catch (err) {
-            console.error("❌ Notification sending failed:", err);
-        }
-    }
-
-    // ✅ 11️⃣ Response
-    res.status(200).json({
-        success: true,
-        message: "Profile updated successfully",
-        data: {
-            id: updatedUser._id,
-            name: updatedUser.name,
-            mobileNumber: updatedUser.mobileNumber,
-            upiId: updatedUser.upiId,
-            profilePicture: updatedUser.profileImage,
-            farmImages: updatedUser.vendorDetails?.farmImages || [],
-            address: updatedUser.address,
-            about: updatedUser.vendorDetails?.about || "",
-            status: updatedUser.status,
-        },
+  // 2️⃣ Optional Field Validations
+  if (mobileNumber && !/^\d{10}$/.test(mobileNumber)) {
+    return res.status(400).json({
+      success: false,
+      message: "Mobile number must be a valid 10-digit number.",
     });
+  }
+
+  // ✅ Prevent duplicate mobile numbers (if changed)
+  if (mobileNumber && mobileNumber !== user.mobileNumber) {
+    const existingUser = await User.findOne({ mobileNumber });
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: "This mobile number is already registered.",
+      });
+    }
+  }
+
+  // 3️⃣ Handle Profile Image Upload (optional)
+  if (req.files?.profileImage && req.files.profileImage[0]) {
+    try {
+      const result = await cloudinary.uploader.upload(req.files.profileImage[0].path, {
+        folder: "profile-images",
+      });
+      user.profileImage = result.secure_url;
+    } catch (err) {
+      console.error("Cloudinary error:", err);
+      return res.status(500).json({
+        success: false,
+        message: "Profile image upload failed.",
+      });
+    }
+  }
+
+  // 4️⃣ Handle Farm Images Upload (optional)
+  if (req.files?.farmImages && req.files.farmImages.length > 0) {
+    try {
+      const uploads = await Promise.all(
+        req.files.farmImages.map((file) =>
+          cloudinary.uploader.upload(file.path, { folder: "farm-images" })
+        )
+      );
+      const farmImageUrls = uploads.map((u) => u.secure_url);
+      user.vendorDetails = user.vendorDetails || {};
+      user.vendorDetails.farmImages = farmImageUrls;
+    } catch (err) {
+      console.error("Cloudinary farm upload error:", err);
+      return res.status(500).json({
+        success: false,
+        message: "Farm images upload failed.",
+      });
+    }
+  }
+
+  // 5️⃣ Update Only Provided Fields
+  if (name) user.name = name;
+  if (mobileNumber) user.mobileNumber = mobileNumber;
+  if (upiId) user.upiId = upiId;
+
+  // 6️⃣ Update Vendor About Info
+  if (about) {
+    user.vendorDetails = user.vendorDetails || {};
+    user.vendorDetails.about = about;
+  }
+
+  // 7️⃣ Update Address (if provided)
+  if (req.body.address) {
+    try {
+      user.address =
+        typeof req.body.address === "string"
+          ? JSON.parse(req.body.address)
+          : req.body.address;
+    } catch (e) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid address format. Must be valid JSON.",
+      });
+    }
+  }
+
+  // 8️⃣ Update Status (optional)
+  if (status) {
+    const allowedStatuses = ["Active", "Inactive"];
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status. Allowed values: Active or Inactive.",
+      });
+    }
+    user.status = status;
+  }
+
+  // 9️⃣ Save Updated User
+  const updatedUser = await user.save();
+
+  // 🔟 Send Vendor Notification (optional)
+  if (updatedUser.role === "Vendor") {
+    try {
+      await createAndSendNotification(
+        req,
+        "Profile Updated Successfully 🛠️",
+        `Hello ${updatedUser.name}, your vendor profile has been updated successfully.`,
+        {
+          userId: updatedUser._id,
+          name: updatedUser.name,
+          mobileNumber: updatedUser.mobileNumber,
+          upiId: updatedUser.upiId,
+        },
+        "Vendor",
+        updatedUser._id
+      );
+    } catch (err) {
+      console.error("❌ Notification sending failed:", err);
+    }
+  }
+
+  // ✅ 11️⃣ Response
+  res.status(200).json({
+    success: true,
+    message: "Profile updated successfully",
+    data: {
+      id: updatedUser._id,
+      name: updatedUser.name,
+      mobileNumber: updatedUser.mobileNumber,
+      upiId: updatedUser.upiId,
+      profilePicture: updatedUser.profileImage,
+      farmImages: updatedUser.vendorDetails?.farmImages || [],
+      address: updatedUser.address,
+      about: updatedUser.vendorDetails?.about || "",
+      status: updatedUser.status,
+    },
+  });
 });
+
 
 
 const uploadProfileImage = asyncHandler(async (req, res) => {
