@@ -2,12 +2,15 @@ const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const otpService = require('../services/otpService');
+const axios = require('axios');
 
 const asyncHandler = require('express-async-handler');
 const crypto = require('crypto');
 const sendEmail = require('../services/emailService');
 const Notification = require('../models/Notification');
 const { createAndSendNotification } = require('../utils/notificationUtils');
+const { Expo } = require("expo-server-sdk");
+const expo = new Expo();
 
 
 const generateToken = (user) =>
@@ -171,11 +174,51 @@ exports.completeProfile = async (req, res) => {
 
     const token = generateToken(user);
 
-    // ✅ Get io and online users
+    // ✅ 3️⃣ Send Personal Notification to User (App + Web)
+    await createAndSendNotification(
+      req,
+      "Profile Completed 🎉",
+      `Hi ${user.name}, your ${user.role} profile has been completed successfully.`,
+      {
+        action: "profile_completed",
+        userId: user._id,
+        role: user.role,
+      },
+      user.role,  // userType (Buyer/Vendor/Admin)
+      user._id    // specific user
+    );
+
+    // ✅ 4️⃣ Notify all Admins (App + Web + DB)
+    let title, message;
+
+    if (user.role === "Buyer") {
+      title = "New Buyer Registered 🛍️";
+      message = `Buyer "${user.name}" has completed registration.`;
+    } else if (user.role === "Vendor") {
+      title = "New Vendor Registered 🏪";
+      message = `Vendor "${user.name}" has completed registration.`;
+    } else {
+      title = "User Profile Completed";
+      message = `${user.name || "A user"} has completed their profile.`;
+    }
+
+    await createAndSendNotification(
+      req,
+      title,
+      message,
+      {
+        action: "user_profile_completed",
+        userId: user._id,
+        role: user.role,
+      },
+      "Admin" // Send to all admins
+    );
+
+    // ✅ 5️⃣ Also send live Socket.IO events (optional redundancy)
     const io = req.app.get("io");
     const onlineUsers = req.app.get("onlineUsers");
 
-    // 🟢 Personal notification to the user
+    // Personal real-time alert
     if (onlineUsers[user._id]) {
       io.to(onlineUsers[user._id].socketId).emit("notification", {
         title: "Profile Completed 🎉",
@@ -184,22 +227,9 @@ exports.completeProfile = async (req, res) => {
       });
     }
 
-    // 🟣 Notify all admins with role-specific message
+    // Admin real-time alert
     Object.entries(onlineUsers).forEach(([id, info]) => {
       if (info.role === "Admin") {
-        let title, message;
-
-        if (user.role === "Buyer") {
-          title = "New Buyer Registered 🛍️";
-          message = `Buyer "${user.name}" has completed registration.`;
-        } else if (user.role === "Vendor") {
-          title = "New Vendor Registered 🏪";
-          message = `Vendor "${user.name}" has completed registration.`;
-        } else {
-          title = "User Profile Completed";
-          message = `${user.name || "A user"} has completed their profile.`;
-        }
-
         io.to(info.socketId).emit("notification", {
           title,
           message,
@@ -208,7 +238,7 @@ exports.completeProfile = async (req, res) => {
       }
     });
 
-    // ✅ Response to client
+    // ✅ 6️⃣ Final Response to Client
     res.status(200).json({
       status: "success",
       message: "Profile completed successfully.",
@@ -223,13 +253,15 @@ exports.completeProfile = async (req, res) => {
       },
     });
   } catch (err) {
+    console.error("❌ completeProfile error:", err);
     res.status(500).json({
       status: "error",
-      message: "Server error",
+      message: "Server error while completing profile.",
       error: err.message,
     });
   }
 };
+
 
 
 exports.login = async (req, res) => {

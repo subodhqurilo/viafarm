@@ -83,6 +83,7 @@ app.use('/api/vendor', require('./routes/vendorRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/notifications', require('./routes/notificationRoutes'));
 app.use('/', require('./routes/resetRoutes'));
+app.use('/api', require('./routes/testRoutes'));
 
 // ✅ Default route
 app.get('/', (req, res) => res.send('API running...'));

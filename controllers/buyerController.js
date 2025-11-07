@@ -17,6 +17,7 @@ const PickupLocation = require('../models/PickupLocation');
 const Notification = require("../models/Notification");
 const { addressToCoords, coordsToAddress } = require('../utils/geocode');
 const axios = require('axios');
+const { getDistanceKm } = require("../utils/orderUtils"); // ✅ import Haversine function
 
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
@@ -24,17 +25,48 @@ const { Expo } = require("expo-server-sdk");
 const expo = new Expo();
 
 
-function getDistanceKm(lat1, lon1, lat2, lon2) {
-    const toRad = (v) => (v * Math.PI) / 180;
-    const R = 6371; // Earth radius in km
-    const dLat = toRad(lat2 - lat1);
-    const dLon = toRad(lon2 - lon1);
-    const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return (R * c).toFixed(2); // round to 2 decimals
-}
+ 
+const calculateEstimatedDelivery = (vendor, buyer, orderTime = new Date()) => {
+  let deliveryDate = new Date(orderTime);
+
+  const vendorCoords = vendor?.location?.coordinates || [0, 0];
+  const buyerCoords = buyer?.location?.coordinates || [0, 0];
+  const vendorLat = vendorCoords[1];
+  const vendorLng = vendorCoords[0];
+  const buyerLat = buyerCoords[1];
+  const buyerLng = buyerCoords[0];
+
+  const distanceKm = calculateDistanceKm(vendorLat, vendorLng, buyerLat, buyerLng);
+
+  const normalize = (s) => s?.trim()?.toLowerCase().replace(/\s+/g, "");
+  const vendorState = normalize(vendor?.address?.state);
+  const buyerState = normalize(buyer?.address?.state);
+
+  let deliveryDays = 0;
+
+  if (distanceKm <= (vendor?.vendorDetails?.deliveryRegion || vendor?.deliveryRegion || 0)) {
+    const cutoffHour = 17;
+    if (orderTime.getHours() >= cutoffHour) {
+      deliveryDays = 1; // after 5PM → next day
+    }
+  } else if (vendorState && buyerState && vendorState === buyerState) {
+    deliveryDays = 2; // same state
+  } else {
+    deliveryDays = 3; // different state
+  }
+
+  deliveryDate.setDate(deliveryDate.getDate() + deliveryDays);
+
+  // ✅ Format: "Nov 10 2025"
+  const options = { month: "short", day: "2-digit", year: "numeric" };
+  const formattedDate = deliveryDate.toLocaleDateString("en-US", options).replace(",", "");
+
+  return {
+    formatted: formattedDate, // "Nov 10 2025"
+    deliveryText: `Delivery by ${formattedDate}`,
+  };
+};
+
 
 
 
@@ -77,51 +109,7 @@ const formatCategories = async (vendorId) => {
   }
 };
 
-const calculateEstimatedDelivery = (vendor, buyer, orderTime = new Date()) => {
-  let deliveryDate = new Date(orderTime);
 
-  // Extract coordinates safely
-  const vendorCoords = vendor?.location?.coordinates || [0, 0];
-  const buyerCoords = buyer?.location?.coordinates || [0, 0];
-
-  const vendorLat = vendorCoords[1];
-  const vendorLng = vendorCoords[0];
-  const buyerLat = buyerCoords[1];
-  const buyerLng = buyerCoords[0];
-
-  // Calculate distance (in km)
-  const distanceKm = calculateDistanceKm(vendorLat, vendorLng, buyerLat, buyerLng);
-
-  // --- Delivery Time Logic ---
-  if (distanceKm <= (vendor?.deliveryRegion || 0)) {
-    // Within vendor region
-    const cutoffHour = 17; // 5 PM
-    if (orderTime.getHours() >= cutoffHour) {
-      deliveryDate.setDate(deliveryDate.getDate() + 1); // next day delivery if after 5PM
-    }
-  } else {
-    // Outside vendor region → add 2–4 days
-    let daysToAdd = 4;
-    if (
-      vendor?.address?.state &&
-      buyer?.address?.state &&
-      vendor.address.state === buyer.address.state
-    ) {
-      daysToAdd = 2 + Math.floor(Math.random() * 2); // 2-3 days
-    }
-    deliveryDate.setDate(deliveryDate.getDate() + daysToAdd);
-  }
-
-  // --- Format delivery date cleanly (no weekday or year) ---
-  const options = { month: 'short', day: '2-digit' }; // 👈 Only month + day
-  const formattedDate = deliveryDate.toLocaleDateString('en-US', options); // e.g. "Nov 07"
-
-  return {
-    formatted: formattedDate, // e.g. "Nov 07"
-    date: deliveryDate.toISOString(),
-    distanceKm: distanceKm.toFixed(1),
-  };
-};
 
 
 
@@ -1060,108 +1048,115 @@ const getAllVendors = asyncHandler(async (req, res) => {
 
 // 🛒 GET CART ITEMS
 const getCartItems = asyncHandler(async (req, res) => {
-    const userId = req.user._id;
+  const userId = req.user._id;
 
-    const deliveryDate = calculateEstimatedDelivery();
-    const deliveryDateText = `Delivery by ${deliveryDate.formatted}`;
+  const emptySummary = {
+    totalMRP: 0,
+    discount: 0,
+    deliveryCharge: 0,
+    totalAmount: 0,
+  };
 
-    const emptySummary = {
-        totalMRP: 0,
-        discount: 0,
-        deliveryCharge: 0,
-        totalAmount: 0,
+  try {
+    const cart = await Cart.findOne({ user: userId })
+      .populate({
+        path: "items.product",
+        select: "price vendor name images variety unit",
+        populate: {
+          path: "vendor",
+          select:
+            "name mobileNumber email upiId address vendorDetails profilePicture status location",
+        },
+      })
+      .lean();
+
+    if (!cart) {
+      return res.json({
+        success: true,
+        data: {
+          items: [],
+          summary: emptySummary,
+          priceDetails: emptySummary,
+          couponCode: "",
+        },
+      });
+    }
+
+    const validItems = cart.items.filter((i) => i.product);
+    const summaryResult = await calculateOrderSummary(cart, cart.couponCode);
+    const summary = summaryResult?.summary || emptySummary;
+
+    // ✅ Get buyer info for delivery distance logic
+    const buyer = await User.findById(userId)
+      .select("address location role")
+      .lean();
+
+    const items = validItems.map((i) => {
+      const vendor = i.product.vendor || {};
+
+      // ✅ Calculate delivery date based on vendor + buyer
+      const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
+      const deliveryDateText = deliveryInfo.deliveryText;
+
+      return {
+        id: i.product._id,
+        name: i.product.name,
+        subtitle: i.product.variety || "",
+        mrp: i.product.price,
+        imageUrl: i.product.images?.[0] || "https://placehold.co/100x100",
+        quantity: i.quantity,
+        unit: i.product.unit,
+        deliveryText: deliveryDateText, // ✅ Dynamic now
+        vendor: {
+          id: vendor._id,
+          name: vendor.name,
+          mobileNumber: vendor.mobileNumber,
+          email: vendor.email,
+          upiId: vendor.upiId,
+          contactNo: vendor.vendorDetails?.contactNo,
+          about: vendor.vendorDetails?.about,
+          location: vendor.vendorDetails?.location,
+          deliveryRegion: vendor.vendorDetails?.deliveryRegion,
+          totalOrders: vendor.vendorDetails?.totalOrders,
+          profilePicture: vendor.profilePicture,
+          address: vendor.address || {},
+          geoLocation: vendor.location?.coordinates || [0, 0],
+          status: vendor.status,
+        },
+      };
+    });
+
+    const priceDetails = {
+      totalMRP: summary.totalMRP || 0,
+      couponDiscount: summary.discount || 0,
+      deliveryCharge: summary.deliveryCharge || 0,
+      totalAmount: summary.totalAmount || 0,
     };
 
-    try {
-        const cart = await Cart.findOne({ user: userId })
-            .populate({
-                path: 'items.product',
-                select: 'price vendor name images variety unit',
-                populate: {
-                    path: 'vendor',
-                    select:
-                        'name mobileNumber email upiId address vendorDetails profilePicture status location',
-                },
-            })
-            .lean();
+    const formattedSummary = {
+      totalMRP: priceDetails.totalMRP,
+      couponDiscount: priceDetails.couponDiscount,
+      deliveryCharge: priceDetails.deliveryCharge,
+      totalAmount: priceDetails.totalAmount,
+    };
 
-        if (!cart) {
-            return res.json({
-                success: true,
-                data: {
-                    items: [],
-                    summary: emptySummary,
-                    priceDetails: emptySummary,
-                    couponCode: '',
-                },
-            });
-        }
-
-        const validItems = cart.items.filter((i) => i.product);
-
-        const summaryResult = await calculateOrderSummary(cart, cart.couponCode);
-        const summary = summaryResult?.summary || emptySummary;
-
-        const items = validItems.map((i) => {
-            const vendor = i.product.vendor || {};
-            return {
-                id: i.product._id,
-                name: i.product.name,
-                subtitle: i.product.variety || '',
-                mrp: i.product.price,
-                imageUrl: i.product.images?.[0] || 'https://placehold.co/100x100',
-                quantity: i.quantity,
-                unit: i.product.unit,
-                deliveryText: deliveryDateText,
-                vendor: {
-                    id: vendor._id,
-                    name: vendor.name,
-                    mobileNumber: vendor.mobileNumber,
-                    email: vendor.email,
-                    upiId: vendor.upiId,
-                    contactNo: vendor.vendorDetails?.contactNo,
-                    about: vendor.vendorDetails?.about,
-                    location: vendor.vendorDetails?.location,
-                    deliveryRegion: vendor.vendorDetails?.deliveryRegion,
-                    totalOrders: vendor.vendorDetails?.totalOrders,
-                    profilePicture: vendor.profilePicture,
-                    address: vendor.address || {},
-                    geoLocation: vendor.location?.coordinates || [0, 0],
-                    status: vendor.status,
-                },
-            };
-        });
-
-        const priceDetails = {
-            totalMRP: summary.totalMRP || 0,
-            couponDiscount: summary.discount || 0,
-            deliveryCharge: summary.deliveryCharge || 0,
-            totalAmount: summary.totalAmount || 0,
-        };
-
-const formattedSummary = {
-    totalMRP: priceDetails.totalMRP,
-    couponDiscount: priceDetails.couponDiscount,
-    deliveryCharge: priceDetails.deliveryCharge,
-    totalAmount: priceDetails.totalAmount,
-};
-
-        res.json({
-            success: true,
-            data: {
-                items,
-                summary: formattedSummary,
-                priceDetails,
-                couponCode: cart.couponCode || '',
-            },
-        });
-    } catch (error) {
-        console.error('❌ getCartItems error:', error);
-        res
-            .status(500)
-            .json({ success: false, message: 'Failed to load cart details.' });
-    }
+    res.json({
+      success: true,
+      data: {
+        items,
+        summary: formattedSummary,
+        priceDetails,
+        couponCode: cart.couponCode || "",
+      },
+    });
+  } catch (error) {
+    console.error("❌ getCartItems error:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to load cart details." });
+  }
 });
+
 
 
 
@@ -4308,34 +4303,90 @@ const getDonationsReceived = asyncHandler(async (req, res) => {
     }
 });
 const searchProductsByName = asyncHandler(async (req, res) => {
-    const { name } = req.query;
+  const { name } = req.query;
+  const buyerId = req.user?._id;
 
-    let query = {};
+  // ✅ Get buyer default address (location)
+  let buyerLat = null, buyerLng = null;
+  const buyerAddress = await Address.findOne({ user: buyerId, isDefault: true }).lean();
+  if (buyerAddress?.location?.coordinates?.length === 2) {
+    buyerLng = buyerAddress.location.coordinates[0];
+    buyerLat = buyerAddress.location.coordinates[1];
+  }
 
-    // If "name" is provided, filter by it (case-insensitive)
-    if (name && name.trim() !== '') {
-        query.name = { $regex: name.trim(), $options: 'i' };
+  let query = {};
+
+  if (name?.trim()) {
+    const text = name.trim();
+
+    // ✅ Vendors matching name
+    const vendors = await User.find({
+      role: "Vendor",
+      name: { $regex: text, $options: "i" }
+    }).select("_id");
+
+    const vendorIds = vendors.map((v) => v._id);
+
+    query.$or = [
+      { name: { $regex: text, $options: "i" } },        // Product Name
+      { category: { $regex: text, $options: "i" } },    // Category Name
+      { vendor: { $in: vendorIds } }                    // Vendor Name
+    ];
+  }
+
+  const products = await Product.find(query)
+    .populate("vendor", "name profilePicture mobileNumber location address")
+    .lean();
+
+  // ✅ Add distance to each product
+  const data = products.map((p) => {
+    let distanceInKm = null;
+    let distanceText = null;
+
+    // Ensure vendor has location
+    if (
+      buyerLat && buyerLng &&
+      p.vendor?.location?.coordinates?.length === 2
+    ) {
+      const vendorLng = p.vendor.location.coordinates[0];
+      const vendorLat = p.vendor.location.coordinates[1];
+
+      const toRad = (v) => (v * Math.PI) / 180;
+      const R = 6371;
+      const dLat = toRad(vendorLat - buyerLat);
+      const dLon = toRad(vendorLng - buyerLng);
+
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(buyerLat)) *
+          Math.cos(toRad(vendorLat)) *
+          Math.sin(dLon / 2) ** 2;
+
+      const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      distanceInKm = Number(dist.toFixed(2));
+      distanceText = `${distanceInKm} km away`;
     }
 
-    // Fetch products from DB
-    const products = await Product.find(query).populate('vendor', 'name');
+    return {
+      ...p,
+      distanceInKm,
+      distanceText,
+    };
+  });
 
-    // Handle no products
-    if (!products || products.length === 0) {
-        return res.status(200).json({
-            success: true,
-            message: 'No products found.',
-            products: [],
-        });
-    }
+  // ✅ Sort nearest vendors first if buyer location available
+  if (buyerLat && buyerLng) {
+    data.sort((a, b) => (a.distanceInKm ?? Infinity) - (b.distanceInKm ?? Infinity));
+  }
 
-    // Return all products or filtered results
-    res.status(200).json({
-        success: true,
-        count: products.length,
-        products,
-    });
+  return res.status(200).json({
+    success: true,
+    count: data.length,
+    data
+  });
 });
+
+
 
 
 const markOrderPaid = asyncHandler(async (req, res) => {
