@@ -16,6 +16,7 @@ const QRCode = require('qrcode');
 const PickupLocation = require('../models/PickupLocation');
 const Notification = require("../models/Notification");
 const { addressToCoords, coordsToAddress } = require('../utils/geocode');
+const axios = require('axios');
 
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
@@ -191,74 +192,200 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
 // @desc    Get detailed product view
 
 const getProductDetails = asyncHandler(async (req, res) => {
-    const { id } = req.params;
+  const { id } = req.params;
+  let { buyerLat, buyerLng } = req.query;
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-        return res.status(400).json({ success: false, message: "Invalid product ID." });
-    }
-
-    // 1️⃣ Fetch Product with Vendor
-    const product = await Product.findById(id)
-        .populate('vendor', 'name address mobileNumber weightPerPiece rating location profilePicture');
-
-    if (!product) {
-        return res.status(404).json({ success: false, message: "Product not found." });
-    }
-
-    // 2️⃣ Fetch Nutritional Value
-    let nutritionalInfo = product.nutritionalValue || await NutritionalValue.findOne({ product: id });
-
-    // 3️⃣ Fetch Reviews (include comment & images)
-    const reviewsRaw = await Review.find({ product: id })
-        .populate('user', 'name profilePicture')
-        .select('rating comment images createdAt updatedAt')
-        .sort({ createdAt: -1 })
-        .limit(5);
-
-    const reviews = reviewsRaw.map(r => ({
-        _id: r._id,
-        user: r.user,
-        rating: r.rating,
-        comment: r.comment || '',
-        images: r.images,
-        createdAt: r.createdAt,
-        updatedAt: r.updatedAt
-    }));
-
-    // 4️⃣ Recommended Products
-    const recommendedProducts = await Product.find({
-        category: product.category,
-        _id: { $ne: product._id },
-        status: 'In Stock'
-    })
-        .sort({ rating: -1 })
-        .limit(3);
-
-    // 5️⃣ Response
-    res.status(200).json({
-        success: true,
-        data: {
-            product: {
-                ...product.toObject(),
-                nutritionalValue: nutritionalInfo
-            },
-            vendor: {
-                id: product.vendor._id,
-                name: product.vendor.name,
-                mobileNumber: product.vendor.mobileNumber,
-                rating: product.vendor.rating || 0,
-                address: product.vendor.address || {}, // full address object
-                location: product.vendor.location || {},// coordinates and type
-                profilePicture: product.vendor.profilePicture,
-            },
-            reviews: {
-                totalCount: await Review.countDocuments({ product: id }),
-                list: reviews
-            },
-            recommendedProducts
-        }
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid product ID.",
     });
+  }
+
+  // 📏 Distance helper (Haversine formula)
+  const getDistanceKm = (lat1, lon1, lat2, lon2) => {
+    const toRad = (v) => (v * Math.PI) / 180;
+    const R = 6371; // Earth radius in km
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) *
+        Math.cos(toRad(lat2)) *
+        Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  // 🟢 Step 1: Fetch Product + Vendor
+  const product = await Product.findById(id).populate(
+    "vendor",
+    "name address mobileNumber rating location profilePicture vendorDetails"
+  );
+
+  if (!product) {
+    return res.status(404).json({
+      success: false,
+      message: "Product not found.",
+    });
+  }
+
+  // 🟢 Step 2: Fetch Buyer Location (auto-detect)
+  let buyerHasLocation = false;
+  if ((!buyerLat || !buyerLng) && req.user?._id) {
+    const buyer = await User.findById(req.user._id).select("location");
+    if (buyer?.location?.coordinates?.length === 2) {
+      buyerLng = buyer.location.coordinates[0];
+      buyerLat = buyer.location.coordinates[1];
+      buyerHasLocation = true;
+    }
+  } else if (buyerLat && buyerLng) {
+    buyerHasLocation = true;
+  }
+
+  // 🟢 Step 3: Always Show Distance (no limit condition)
+  let distanceText = "Please update your delivery address to view distance.";
+  if (
+    buyerHasLocation &&
+    product.vendor?.location?.coordinates?.length === 2
+  ) {
+    const [vendorLng, vendorLat] = product.vendor.location.coordinates;
+
+    const distance = getDistanceKm(
+      parseFloat(buyerLat),
+      parseFloat(buyerLng),
+      parseFloat(vendorLat),
+      parseFloat(vendorLng)
+    );
+
+    if (!isNaN(distance)) {
+      distanceText = `${distance.toFixed(2)} km away`;
+    } else {
+      distanceText = "Distance unavailable.";
+    }
+
+    // 🟢 Auto-save buyer location
+    if (req.user?._id && buyerLat && buyerLng) {
+      await User.findByIdAndUpdate(req.user._id, {
+        location: {
+          type: "Point",
+          coordinates: [parseFloat(buyerLng), parseFloat(buyerLat)],
+        },
+      });
+    }
+  }
+
+  // 🟢 Step 4: Nutritional Info (fallback)
+  const nutritionalInfo = product.nutritionalValue || {
+    servingSize: "",
+    nutrients: [],
+    additionalNote: "",
+  };
+
+  // 🟢 Step 5: Fetch Reviews
+  const reviewsRaw = await Review.find({ product: id })
+    .populate("user", "name profilePicture")
+    .select("rating comment images createdAt updatedAt")
+    .sort({ createdAt: -1 })
+    .limit(5);
+
+  const totalReviews = await Review.countDocuments({ product: id });
+  const reviews = reviewsRaw.map((r) => ({
+    _id: r._id,
+    user: r.user,
+    rating: r.rating,
+    comment: r.comment || "",
+    images: r.images,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  }));
+
+  // 🟢 Step 6: Product Rating (avg + count)
+  const productRatingAgg = await Review.aggregate([
+    { $match: { product: new mongoose.Types.ObjectId(id) } },
+    {
+      $group: {
+        _id: null,
+        avgRating: { $avg: "$rating" },
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const avgProductRating =
+    productRatingAgg[0]?.avgRating ?? product.rating ?? 0;
+  const productRatingCount =
+    productRatingAgg[0]?.count ?? product.ratingCount ?? 0;
+
+  // 🟢 Step 7: Cache product rating
+  await Product.findByIdAndUpdate(id, {
+    rating: parseFloat(avgProductRating.toFixed(1)),
+    ratingCount: productRatingCount,
+  });
+
+  // 🟢 Step 8: Recommended Products
+  const recommendedProducts = await Product.find({
+    _id: { $ne: product._id },
+    status: "In Stock",
+    $or: [{ vendor: product.vendor._id }, { category: product.category }],
+  })
+    .sort({ rating: -1, createdAt: -1 })
+    .limit(6)
+    .select(
+      "name category price unit quantity images rating status allIndiaDelivery"
+    );
+
+  // ✅ Step 9: Send Response
+  res.status(200).json({
+    success: true,
+    data: {
+      product: {
+        _id: product._id,
+        name: product.name,
+        category: product.category,
+        variety: product.variety,
+        price: product.price,
+        quantity: product.quantity,
+        unit: product.unit,
+        description: product.description,
+        weightPerPiece: product.weightPerPiece,
+        images: product.images,
+        status: product.status,
+        allIndiaDelivery: product.allIndiaDelivery,
+        rating: parseFloat(avgProductRating.toFixed(1)),
+        ratingCount: productRatingCount,
+        nutritionalValue: nutritionalInfo,
+        datePosted: product.datePosted,
+      },
+      vendor: {
+        id: product.vendor._id,
+        name: product.vendor.name,
+        mobileNumber: product.vendor.mobileNumber,
+        profilePicture: product.vendor.profilePicture,
+        rating: product.vendor.rating || 0,
+        distance: distanceText, // ✅ Always shows accurate distance
+        address: product.vendor.address || {},
+        location: product.vendor.location || {},
+        deliveryRegion:
+          product.vendor.vendorDetails?.deliveryRegion || null,
+        about: product.vendor.vendorDetails?.about || "",
+      },
+      reviews: {
+        totalCount: totalReviews,
+        list: reviews,
+      },
+      recommendedProducts,
+    },
+  });
 });
+
+
+
+
+
+
+
+
 
 
 
@@ -1276,88 +1403,152 @@ const updateCartItemQuantity = asyncHandler(async (req, res) => {
 
 
 const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
-    const { vendorId } = req.params;
-    const { buyerLat, buyerLng, category } = req.query;
+  const { vendorId } = req.params;
+  let { buyerLat, buyerLng, category } = req.query;
 
-    // 🔹 Fetch Vendor
-    const vendor = await User.findById(vendorId)
-        .where('role').equals('Vendor')
-        .where('status').equals('Active')
-        .select('name profilePicture address vendorDetails location rating comments mobileNumber');
+  // 🟢 Step 1: Fetch Vendor
+  const vendor = await User.findById(vendorId)
+    .where("role").equals("Vendor")
+    .where("status").equals("Active")
+    .select("name profilePicture address vendorDetails location rating comments mobileNumber");
 
-    if (!vendor) {
-        return res.status(404).json({ success: false, message: 'Vendor not found or inactive.' });
-    }
-
-    // 🔹 Distance Calculation
-    let distanceKm = null;
-    if (buyerLat && buyerLng && vendor.location?.coordinates) {
-        try {
-            distanceKm = calculateDistance(
-                parseFloat(buyerLat),
-                parseFloat(buyerLng),
-                vendor.location.coordinates[1],
-                vendor.location.coordinates[0]
-            ).toFixed(1);
-        } catch (e) {
-            console.error("Distance calculation failed:", e);
-        }
-    }
-
-    // 🔹 Fetch Reviews (with Comments)
-    const vendorProducts = await Product.find({ vendor: vendorId }).select('_id');
-    const productIds = vendorProducts.map(p => p._id);
-
-    const reviewsRaw = await Review.find({ product: { $in: productIds } })
-        .populate('user', 'name profilePicture')
-        .sort({ createdAt: -1 })
-        .limit(5);
-
-    const reviews = reviewsRaw.map(r => ({
-        _id: r._id,
-        user: r.user,
-        rating: r.rating,
-        comment: r.comment || "",  // ✅ Include comment
-        images: r.images,
-        createdAt: r.createdAt,
-        updatedAt: r.updatedAt
-    }));
-
-    const reviewCount = await Review.countDocuments({ product: { $in: productIds } });
-
-    // 🔹 Fetch Listed Products
-    const productFilter = { vendor: vendorId, status: 'In Stock' };
-    if (category) productFilter.category = category;
-
-    const listedProducts = await Product.find(productFilter)
-        .select('name category variety price quantity unit images rating comments')
-        .sort({ rating: -1 })
-        .limit(20);
-
-    // ✅ Prepare Response
-    res.status(200).json({
-        success: true,
-        data: {
-            vendor: {
-                id: vendor._id,
-                name: vendor.name,
-                mobileNumber: vendor.mobileNumber,
-                profilePicture: vendor.profilePicture,
-                locationText: vendor.address?.locality || vendor.address?.city || 'Unknown Location',
-                distance: distanceKm ? `${distanceKm} kms away` : null,
-                about: vendor.vendorDetails?.about || '',
-                rating: vendor.rating || 0,
-                farmImages: vendor.vendorDetails?.farmImages || []
-            },
-            reviews: {
-                count: reviewCount,
-                list: reviews
-            },
-            listedProducts,
-            availableCategories: await Product.distinct('category', { vendor: vendorId })
-        }
+  if (!vendor) {
+    return res.status(404).json({
+      success: false,
+      message: "Vendor not found or inactive.",
     });
+  }
+
+  // 📏 Step 2: Distance Helper
+  const getDistanceKm = (lat1, lon1, lat2, lon2) => {
+    const toRad = (v) => (v * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  // 🟢 Step 3: Auto-fetch Buyer Location (if not provided)
+  let buyerHasLocation = false;
+  if ((!buyerLat || !buyerLng) && req.user?._id) {
+    const buyer = await User.findById(req.user._id).select("location");
+    if (buyer?.location?.coordinates?.length === 2) {
+      buyerLng = buyer.location.coordinates[0];
+      buyerLat = buyer.location.coordinates[1];
+      buyerHasLocation = true;
+    }
+  } else if (buyerLat && buyerLng) {
+    buyerHasLocation = true;
+  }
+
+  // 🟢 Step 4: Always Show Distance
+  let distanceText = "Please update your delivery address to view distance.";
+  if (buyerHasLocation && vendor.location?.coordinates?.length === 2) {
+    const [vendorLng, vendorLat] = vendor.location.coordinates;
+    const distance = getDistanceKm(
+      parseFloat(buyerLat),
+      parseFloat(buyerLng),
+      parseFloat(vendorLat),
+      parseFloat(vendorLng)
+    );
+    if (!isNaN(distance)) distanceText = `${distance.toFixed(2)} km away`;
+  }
+
+  // 🟢 Step 5: Fetch Vendor Products
+  const vendorProducts = await Product.find({ vendor: vendorId }).select("_id");
+  const productIds = vendorProducts.map((p) => p._id);
+
+  // 🟢 Step 6: Fetch Reviews
+  const reviewsRaw = await Review.find({ product: { $in: productIds } })
+    .populate("user", "name profilePicture")
+    .sort({ createdAt: -1 })
+    .limit(5);
+
+  const reviews = reviewsRaw.map((r) => ({
+    _id: r._id,
+    user: r.user,
+    rating: r.rating,
+    comment: r.comment || "",
+    images: r.images,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  }));
+
+  const reviewCount = await Review.countDocuments({ product: { $in: productIds } });
+
+  // 🟢 Step 7: Calculate Vendor Rating (Real-time)
+  const ratingAgg = await Review.aggregate([
+    { $match: { product: { $in: productIds } } },
+    { $group: { _id: null, avgRating: { $avg: "$rating" } } },
+  ]);
+
+  const avgVendorRating = ratingAgg[0]?.avgRating ?? vendor.rating ?? 0;
+  const vendorFinalRating = parseFloat(avgVendorRating.toFixed(1));
+
+  // Update vendor rating in DB (awaited)
+  await User.findByIdAndUpdate(vendorId, { rating: vendorFinalRating });
+
+  // 🟢 Step 8: Listed Products
+  const productFilter = { vendor: vendorId, status: "In Stock" };
+  if (category) productFilter.category = category;
+
+  const listedProducts = await Product.find(productFilter)
+    .select("name category variety price quantity unit images rating")
+    .sort({ rating: -1 })
+    .limit(20);
+
+  // 🟢 Step 9: Available Categories
+  const availableCategories = await Product.distinct("category", { vendor: vendorId });
+
+  // 🟢 Step 10: Format Full Address
+  const addr = vendor.address || {};
+  const fullAddressText = [
+    addr.houseNumber,
+    addr.street,
+    addr.locality,
+    addr.district,
+    addr.city,
+    addr.state,
+    addr.pinCode,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  // ✅ Step 11: Final Response
+  res.status(200).json({
+    success: true,
+    data: {
+      vendor: {
+        id: vendor._id,
+        name: vendor.name,
+        mobileNumber: vendor.mobileNumber,
+        profilePicture: vendor.profilePicture,
+        locationText: `${fullAddressText} (${distanceText})`, // 🏡 Full address + distance
+        distance: distanceText,
+        about: vendor.vendorDetails?.about || "",
+        rating: vendorFinalRating, // ⭐ Updated rating
+        farmImages: vendor.vendorDetails?.farmImages || [],
+        fullAddress: {
+          ...addr,
+          latitude: addr.latitude || null,
+          longitude: addr.longitude || null,
+        },
+      },
+      reviews: {
+        count: reviewCount,
+        list: reviews,
+      },
+      listedProducts,
+      availableCategories,
+    },
+  });
 });
+
 
 
 const getProductReviews = asyncHandler(async (req, res) => {
@@ -2822,73 +3013,122 @@ const updateBuyerProfile = asyncHandler(async (req, res) => {
 
 
 
+
+
 const updateBuyerLocation = asyncHandler(async (req, res) => {
-    const {
-        pinCode,
-        houseNumber,
-        locality,
-        city,
-        district,
-        latitude,
-        longitude
+  try {
+    let {
+      pinCode,
+      houseNumber,
+      locality,
+      city,
+      district,
+      latitude,
+      longitude
     } = req.body;
 
-    // --- 1. Address Validation (Mandatory fields from UI) ---
-    if (!pinCode || !houseNumber || !locality || !city || !district) {
+    // --- 1️⃣ Validate Coordinates if Present ---
+    let locationData = null;
+    if (latitude && longitude) {
+      const lat = parseFloat(latitude);
+      const lng = parseFloat(longitude);
+
+      if (isNaN(lat) || isNaN(lng)) {
         return res.status(400).json({
-            success: false,
-            message: 'All address fields (Pin Code, House Number, Locality, City, District) are required for an update.'
+          success: false,
+          message: 'Invalid latitude or longitude provided.'
         });
+      }
+
+      // --- 2️⃣ Reverse Geocode using OpenStreetMap ---
+      const geoResponse = await axios.get(
+        `https://nominatim.openstreetmap.org/reverse`,
+        {
+          params: {
+            lat,
+            lon: lng,
+            format: 'json',
+            addressdetails: 1
+          },
+          headers: { 'User-Agent': 'ViaFarm/1.0 (viafarm.app)' } // required by OSM
+        }
+      );
+
+      const addr = geoResponse.data.address;
+      if (addr) {
+        // Fill missing address fields from reverse geocode data
+        pinCode = pinCode || addr.postcode || '';
+        city = city || addr.city || addr.town || addr.village || '';
+        district = district || addr.state_district || addr.county || '';
+        locality = locality || addr.suburb || addr.neighbourhood || addr.road || '';
+      }
+
+      locationData = {
+        type: 'Point',
+        coordinates: [lng, lat]
+      };
     }
 
-    // --- 2. Build Update Object for Address Text ---
+    // --- 3️⃣ Address Validation ---
+    const requiredFields = { pinCode, houseNumber, locality, city, district };
+    const missing = Object.entries(requiredFields)
+      .filter(([_, v]) => !v)
+      .map(([k]) => k);
+
+    if (missing.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Missing required fields: ${missing.join(', ')}`
+      });
+    }
+
+    // --- 4️⃣ Build Update Object ---
     const updateFields = {
-        'address.pinCode': pinCode,
-        'address.houseNumber': houseNumber,
-        'address.locality': locality,
-        'address.city': city,
-        'address.district': district,
+      'address.pinCode': pinCode,
+      'address.houseNumber': houseNumber,
+      'address.locality': locality,
+      'address.city': city,
+      'address.district': district,
     };
 
-    // --- 3. Handle GeoJSON Location (Optional) ---
-    if (latitude && longitude) {
-        const lat = parseFloat(latitude);
-        const lng = parseFloat(longitude);
-
-        if (isNaN(lat) || isNaN(lng)) {
-            return res.status(400).json({ success: false, message: 'Invalid latitude or longitude provided.' });
-        }
-
-        // GeoJSON Point is always stored as [longitude, latitude]
-        updateFields['location'] = {
-            type: 'Point',
-            coordinates: [lng, lat]
-        };
-    } else {
-        // Explicitly clear location if no new coordinates are provided
-        updateFields['location'] = undefined;
+    if (locationData) {
+      updateFields['location'] = locationData;
     }
 
-    // --- 4. Update and Respond ---
+    // --- 5️⃣ Update & Respond ---
     const updatedUser = await User.findByIdAndUpdate(
-        req.user._id,
-        { $set: updateFields },
-        { new: true, runValidators: true }
-    );
+      req.user._id,
+      { $set: updateFields },
+      { new: true, runValidators: true }
+    ).select('address location');
 
     if (!updatedUser) {
-        return res.status(404).json({ success: false, message: 'User not found.' });
+      return res.status(404).json({
+        success: false,
+        message: 'User not found.'
+      });
     }
 
     res.status(200).json({
-        success: true,
-        message: 'Location updated successfully.',
-        data: {
-            address: updatedUser.address,
-            location: updatedUser.location
-        }
+      success: true,
+      message: 'Location updated successfully.',
+      data: updatedUser
     });
+  } catch (error) {
+    console.error('Error updating buyer location:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while updating location.',
+      error: error.message
+    });
+  }
 });
+
+
+
+
+
+
 
 
 const updateBuyerLanguage = asyncHandler(async (req, res) => {
@@ -2942,149 +3182,291 @@ const getAddresses = asyncHandler(async (req, res) => {
 
 
 const addAddress = asyncHandler(async (req, res) => {
-    const {
-        pinCode,
-        houseNumber,
-        locality,
-        city,
-        district,
-        state,
-        isDefault,
-        latitude,
-        longitude
-    } = req.body;
+  const {
+    pinCode,
+    houseNumber,
+    street,
+    locality,
+    city,
+    district,
+    state,
+    isDefault,
+    latitude,
+    longitude,
+  } = req.body;
 
-    // --- 1. Basic Validation ---
-    if (!pinCode || !houseNumber || !locality || !city || !district) {
-        return res.status(400).json({
-            success: false,
-            message: 'All required address fields must be filled.'
-        });
-    }
-
-    // --- 2. GeoJSON Location ---
-    let geoJsonLocation = undefined;
-    if (latitude && longitude) {
-        const lat = parseFloat(latitude);
-        const lng = parseFloat(longitude);
-
-        if (!isNaN(lat) && !isNaN(lng)) {
-            geoJsonLocation = {
-                type: 'Point',
-                coordinates: [lng, lat] // GeoJSON is always [lng, lat]
-            };
-        }
-    }
-
-    // --- 3. Default Address Logic ---
-    if (isDefault) {
-        await Address.updateMany({ user: req.user._id, isDefault: true }, { isDefault: false });
-    }
-
-    // --- 4. Create New Address ---
-    const newAddress = await Address.create({
-        user: req.user._id,
-        pinCode,
-        houseNumber,
-        locality,
-        city,
-        district,
-        state,
-        isDefault: isDefault || false,
-        location: geoJsonLocation
+  // --- 1. Validation ---
+  if (!pinCode || !houseNumber || !locality || !city || !district || !state) {
+    return res.status(400).json({
+      success: false,
+      message: "All required address fields must be filled.",
     });
+  }
 
-    res.status(201).json({
-        success: true,
-        message: 'Address added successfully.',
-        address: newAddress
-    });
+  // --- 2. Validate and set GeoJSON location ---
+  let geoJsonLocation = undefined;
+  if (latitude && longitude) {
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
+
+    if (
+      !isNaN(lat) &&
+      !isNaN(lng) &&
+      lat >= -90 &&
+      lat <= 90 &&
+      lng >= -180 &&
+      lng <= 180
+    ) {
+      geoJsonLocation = {
+        type: "Point",
+        coordinates: [lng, lat], // GeoJSON is always [lng, lat]
+      };
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid latitude or longitude values.",
+      });
+    }
+  }
+
+  // --- 3. Handle Default Address ---
+  const existingAddresses = await Address.find({ user: req.user._id });
+  let makeDefault = isDefault;
+
+  // If no address exists yet, make this default automatically
+  if (existingAddresses.length === 0) {
+    makeDefault = true;
+  }
+
+  if (makeDefault) {
+    await Address.updateMany(
+      { user: req.user._id, isDefault: true },
+      { isDefault: false }
+    );
+  }
+
+  // --- 4. Create New Address ---
+  const newAddress = await Address.create({
+    user: req.user._id,
+    pinCode,
+    houseNumber,
+    street: street || "",
+    locality,
+    city,
+    district,
+    state,
+    isDefault: makeDefault,
+    location: geoJsonLocation,
+  });
+
+  // --- 5. Formatted Address for response ---
+  const formattedAddress = [
+    newAddress.houseNumber,
+    newAddress.street,
+    newAddress.locality,
+    newAddress.city,
+    newAddress.district,
+    newAddress.state,
+    newAddress.pinCode,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  // --- 6. Response ---
+  res.status(201).json({
+    success: true,
+    message: "Address added successfully.",
+    address: {
+      id: newAddress._id,
+      user: newAddress.user,
+      formattedAddress,
+      isDefault: newAddress.isDefault,
+      coordinates: newAddress.location?.coordinates || [],
+      details: {
+        houseNumber: newAddress.houseNumber,
+        street: newAddress.street,
+        locality: newAddress.locality,
+        district: newAddress.district,
+        city: newAddress.city,
+        state: newAddress.state,
+        pinCode: newAddress.pinCode,
+      },
+    },
+  });
 });
+
 
 
 
 
 const updateAddress = asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const { pinCode, houseNumber, locality, city, district, state, isDefault, latitude, longitude } = req.body;
+  const { id } = req.params;
+  const {
+    pinCode,
+    houseNumber,
+    street,
+    locality,
+    city,
+    district,
+    state,
+    isDefault,
+    latitude,
+    longitude,
+  } = req.body;
 
-    if (!pinCode) {
-        return res.status(400).json({ success: false, message: "Pin Code is required." });
-    }
-
-    // Validate ObjectId
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-        return res.status(400).json({ success: false, message: "Invalid address ID." });
-    }
-
-    const address = await Address.findOne({ _id: id, user: req.user._id });
-    if (!address) {
-        return res.status(404).json({ success: false, message: "Address not found." });
-    }
-
-    // Unset other defaults if needed
-    if (isDefault) {
-        await Address.updateMany({ user: req.user._id, isDefault: true }, { isDefault: false });
-    }
-
-    // Update main fields
-    address.pinCode = pinCode;
-    address.houseNumber = houseNumber;
-    address.locality = locality;
-    address.city = city;
-    address.district = district;
-    address.state = state;
-    address.isDefault = isDefault || address.isDefault;
-
-    // Optional GeoJSON location
-    if (latitude && longitude) {
-        const lat = parseFloat(latitude);
-        const lng = parseFloat(longitude);
-        if (!isNaN(lat) && !isNaN(lng)) {
-            address.location = {
-                type: 'Point',
-                coordinates: [lng, lat] // GeoJSON format
-            };
-        }
-    }
-
-    await address.save();
-
-    res.status(200).json({
-        success: true,
-        message: "Address updated successfully.",
-        address
+  // --- 1. Validation ---
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid address ID.",
     });
+  }
+
+  if (!pinCode || !houseNumber || !locality || !city || !district || !state) {
+    return res.status(400).json({
+      success: false,
+      message: "All required address fields must be filled.",
+    });
+  }
+
+  // --- 2. Fetch address ---
+  const address = await Address.findOne({ _id: id, user: req.user._id });
+  if (!address) {
+    return res.status(404).json({
+      success: false,
+      message: "Address not found.",
+    });
+  }
+
+  // --- 3. Default address handling ---
+  if (isDefault) {
+    await Address.updateMany(
+      { user: req.user._id, isDefault: true },
+      { isDefault: false }
+    );
+  }
+
+  // --- 4. Update address fields ---
+  address.pinCode = pinCode;
+  address.houseNumber = houseNumber;
+  address.street = street || address.street;
+  address.locality = locality;
+  address.city = city;
+  address.district = district;
+  address.state = state;
+  address.isDefault = !!isDefault;
+
+  // --- 5. Update GeoJSON location ---
+  if (latitude && longitude) {
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
+
+    if (
+      !isNaN(lat) &&
+      !isNaN(lng) &&
+      lat >= -90 &&
+      lat <= 90 &&
+      lng >= -180 &&
+      lng <= 180
+    ) {
+      address.location = {
+        type: "Point",
+        coordinates: [lng, lat], // GeoJSON format
+      };
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid latitude or longitude values.",
+      });
+    }
+  }
+
+  // --- 6. Save updated address ---
+  await address.save();
+
+  // --- 7. Format address for response ---
+  const formattedAddress = [
+    address.houseNumber,
+    address.street,
+    address.locality,
+    address.city,
+    address.district,
+    address.state,
+    address.pinCode,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  // --- 8. Response ---
+  res.status(200).json({
+    success: true,
+    message: "Address updated successfully.",
+    address: {
+      id: address._id,
+      user: address.user,
+      formattedAddress,
+      isDefault: address.isDefault,
+      coordinates: address.location?.coordinates || [],
+      details: {
+        houseNumber: address.houseNumber,
+        street: address.street,
+        locality: address.locality,
+        district: address.district,
+        city: address.city,
+        state: address.state,
+        pinCode: address.pinCode,
+      },
+    },
+  });
 });
+
 
 const deleteAddress = asyncHandler(async (req, res) => {
-    const { id } = req.params;
+  const { id } = req.params;
 
-    // Validate ID format
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-        return res.status(400).json({
-            success: false,
-            message: "Invalid address ID."
-        });
-    }
-
-    // Find address belonging to the logged-in user
-    const address = await Address.findOne({ _id: id, user: req.user._id });
-    if (!address) {
-        return res.status(404).json({
-            success: false,
-            message: "Address not found."
-        });
-    }
-
-    // Delete the address
-    await Address.deleteOne({ _id: id });
-
-    res.status(200).json({
-        success: true,
-        message: "Address deleted successfully."
+  // --- 1. Validate Address ID ---
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid address ID.",
     });
+  }
+
+  // --- 2. Find address for logged-in user ---
+  const address = await Address.findOne({ _id: id, user: req.user._id });
+  if (!address) {
+    return res.status(404).json({
+      success: false,
+      message: "Address not found.",
+    });
+  }
+
+  // --- 3. Delete Address ---
+  await Address.deleteOne({ _id: id });
+
+  // --- 4. If deleted address was default, assign another as default ---
+  if (address.isDefault) {
+    const nextAddress = await Address.findOne({ user: req.user._id }).sort({
+      createdAt: -1,
+    });
+    if (nextAddress) {
+      nextAddress.isDefault = true;
+      await nextAddress.save();
+    }
+  }
+
+  // --- 5. Count remaining addresses ---
+  const remainingCount = await Address.countDocuments({ user: req.user._id });
+
+  // --- 6. Respond ---
+  res.status(200).json({
+    success: true,
+    message: "Address deleted successfully.",
+    deletedAddressId: id,
+    remainingAddresses: remainingCount,
+  });
 });
+
 
 
 

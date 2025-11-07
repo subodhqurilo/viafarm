@@ -9,6 +9,7 @@ const Coupon = require('../models/Coupon');
 const Address = require('../models/Address');
 const Notification = require('../models/Notification');
 const { addressToCoords, coordsToAddress } = require('../utils/geocode');
+const axios = require('axios');
 
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
@@ -1788,83 +1789,140 @@ const changePassword = asyncHandler(async (req, res) => {
 });
 
 
+
 const updateLocationDetails = asyncHandler(async (req, res) => {
-    const {
-        pinCode,
-        houseNumber,
-        locality,
-        city,
-        district,
-        latitude,
-        longitude,
-        deliveryRegion
+  try {
+    let {
+      pinCode,
+      houseNumber,
+      locality,
+      city,
+      district,
+      latitude,
+      longitude,
+      deliveryRegion
     } = req.body;
 
-    // --- 1. Validation ---
-    if (!pinCode || !houseNumber || !locality || !city || !district) {
-        return res.status(400).json({ success: false, message: 'All address fields are required.' });
-    }
-
-    // Parse deliveryRegion as number
+    // --- 1️⃣ Validate Delivery Region ---
     const region = parseFloat(deliveryRegion);
     if (isNaN(region) || region <= 0) {
-        return res.status(400).json({ success: false, message: 'Delivery Region must be a positive number.' });
+      return res.status(400).json({
+        success: false,
+        message: 'Delivery Region must be a positive number.'
+      });
     }
 
-    // --- 2. Build Update Object ---
-    const updateFields = {
-        // Update Address sub-document
-        'address.pinCode': pinCode,
-        'address.houseNumber': houseNumber,
-        'address.locality': locality,
-        'address.city': city,
-        'address.district': district,
+    // --- 2️⃣ Handle Reverse Geocoding (if coordinates provided) ---
+    let lat, lng;
+    if (latitude && longitude) {
+      lat = parseFloat(latitude);
+      lng = parseFloat(longitude);
 
-        // Update delivery region in vendorDetails sub-document
-        'vendorDetails.deliveryRegion': region
+      if (isNaN(lat) || isNaN(lng)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid latitude or longitude.'
+        });
+      }
+
+      try {
+        const geoResponse = await axios.get(
+          `https://nominatim.openstreetmap.org/reverse`,
+          {
+            params: {
+              lat,
+              lon: lng,
+              format: 'json',
+              addressdetails: 1
+            },
+            headers: { 'User-Agent': 'ViaFarm/1.0 (viafarm.app)' }
+          }
+        );
+
+        const addr = geoResponse.data.address;
+        if (addr) {
+          // Only fill fields that are missing
+          pinCode = pinCode || addr.postcode || '';
+          city = city || addr.city || addr.town || addr.village || '';
+          district = district || addr.state_district || addr.county || '';
+          locality = locality || addr.suburb || addr.neighbourhood || addr.road || '';
+        }
+      } catch (geoErr) {
+        console.warn('Reverse geocoding failed:', geoErr.message);
+        // Continue silently — don’t block vendor update
+      }
+    }
+
+    // --- 3️⃣ Validate Mandatory Address Fields ---
+    const requiredFields = { pinCode, houseNumber, locality, city, district };
+    const missing = Object.entries(requiredFields)
+      .filter(([_, v]) => !v)
+      .map(([k]) => k);
+
+    if (missing.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Missing required fields: ${missing.join(', ')}`
+      });
+    }
+
+    // --- 4️⃣ Build Update Object ---
+    const updateFields = {
+      'address.pinCode': pinCode,
+      'address.houseNumber': houseNumber,
+      'address.locality': locality,
+      'address.city': city,
+      'address.district': district,
+      'vendorDetails.deliveryRegion': region
     };
 
-    // --- 3. Handle GeoJSON Location (Mandatory for Near You feature) ---
-    if (latitude && longitude) {
-        const lat = parseFloat(latitude);
-        const lng = parseFloat(longitude);
-
-        if (isNaN(lat) || isNaN(lng)) {
-            return res.status(400).json({ success: false, message: 'Invalid latitude or longitude.' });
-        }
-
-        // Store latitude and longitude directly in the address for easy access (optional, but good for UI)
-        updateFields['address.latitude'] = lat;
-        updateFields['address.longitude'] = lng;
-
-        updateFields['location'] = { type: 'Point', coordinates: [lng, lat] };
+    if (lat && lng) {
+      updateFields['address.latitude'] = lat;
+      updateFields['address.longitude'] = lng;
+      updateFields['location'] = { type: 'Point', coordinates: [lng, lat] };
     } else {
-        updateFields['location'] = undefined;
-        updateFields['address.latitude'] = undefined; // Clear if not provided
-        updateFields['address.longitude'] = undefined;
+      // Optional: Keep previous location instead of clearing
+      updateFields['address.latitude'] = undefined;
+      updateFields['address.longitude'] = undefined;
+      updateFields['location'] = undefined;
     }
 
-    // --- 4. Update and Respond ---
+    // --- 5️⃣ Update in DB ---
     const updatedUser = await User.findByIdAndUpdate(
-        req.user._id,
-        { $set: updateFields },
-        { new: true, runValidators: true }
+      req.user._id,
+      { $set: updateFields },
+      { new: true, runValidators: true }
     ).select('-password');
 
     if (!updatedUser) {
-        return res.status(404).json({ success: false, message: 'Vendor not found.' });
+      return res.status(404).json({
+        success: false,
+        message: 'Vendor not found.'
+      });
     }
 
+    // --- 6️⃣ Respond ---
     res.status(200).json({
-        success: true,
-        message: 'Location and delivery details updated successfully.',
-        data: {
-            address: updatedUser.address,
-            location: updatedUser.location,
-            deliveryRegion: `${Number(updatedUser.vendorDetails?.deliveryRegion || 0)} km` // Append " km" for clean response
-        }
+      success: true,
+      message: 'Location and delivery details updated successfully.',
+      data: {
+        address: updatedUser.address,
+        location: updatedUser.location,
+        deliveryRegion: `${Number(updatedUser.vendorDetails?.deliveryRegion || 0)} km`
+      }
     });
+  } catch (error) {
+    console.error('Error updating vendor location:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while updating location details.',
+      error: error.message
+    });
+  }
 });
+
+
+
 
 const getVendorLocationDetails = asyncHandler(async (req, res) => {
     // Ensure the user is a Vendor (though route middleware should enforce this)
