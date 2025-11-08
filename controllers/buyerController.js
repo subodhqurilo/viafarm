@@ -3391,7 +3391,7 @@ const addAddress = asyncHandler(async (req, res) => {
   }
 });
 
-module.exports = { addAddress };
+
 
 
 
@@ -3421,7 +3421,7 @@ const updateAddress = asyncHandler(async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid address ID.',
+        message: "Invalid address ID.",
       });
     }
 
@@ -3430,72 +3430,82 @@ const updateAddress = asyncHandler(async (req, res) => {
     if (!address) {
       return res.status(404).json({
         success: false,
-        message: 'Address not found.',
+        message: "Address not found.",
       });
     }
 
-    // --- 3️⃣ Handle Coordinates (Optional) ---
+    // --- 3️⃣ Update coordinates intelligently ---
     if (latitude && longitude) {
+      // ✅ Case 1: User provided coordinates → reverse-geocode for missing fields
       const lat = parseFloat(latitude);
       const lng = parseFloat(longitude);
-
       if (
-        !isNaN(lat) &&
-        !isNaN(lng) &&
-        lat >= -90 &&
-        lat <= 90 &&
-        lng >= -180 &&
-        lng <= 180
+        isNaN(lat) ||
+        isNaN(lng) ||
+        lat < -90 ||
+        lat > 90 ||
+        lng < -180 ||
+        lng > 180
       ) {
-        // Try reverse geocoding to fill missing fields
-        try {
-          const geoResponse = await axios.get(
-            'https://nominatim.openstreetmap.org/reverse',
-            {
-              params: {
-                lat,
-                lon: lng,
-                format: 'json',
-                addressdetails: 1,
-              },
-              headers: { 'User-Agent': 'ViaFarm/1.0 (viafarm.app)' },
-            }
-          );
-
-          const addr = geoResponse.data.address || {};
-          pinCode = pinCode || addr.postcode || '';
-          city = city || addr.city || addr.town || addr.village || '';
-          district = district || addr.state_district || addr.county || '';
-          state = state || addr.state || '';
-          locality =
-            locality ||
-            addr.suburb ||
-            addr.neighbourhood ||
-            addr.road ||
-            addr.hamlet ||
-            '';
-
-          address.location = {
-            type: 'Point',
-            coordinates: [lng, lat],
-          };
-        } catch (geoErr) {
-          console.warn('⚠️ Reverse geocoding failed:', geoErr.message);
-          // Still update location without address auto-fill
-          address.location = {
-            type: 'Point',
-            coordinates: [lng, lat],
-          };
-        }
-      } else {
         return res.status(400).json({
           success: false,
-          message: 'Invalid latitude or longitude values.',
+          message: "Invalid latitude or longitude values.",
         });
+      }
+
+      address.location = { type: "Point", coordinates: [lng, lat] };
+
+      // Reverse geocode to fill missing address fields
+      try {
+        const geoResponse = await axios.get(
+          "https://nominatim.openstreetmap.org/reverse",
+          {
+            params: {
+              lat,
+              lon: lng,
+              format: "json",
+              addressdetails: 1,
+            },
+            headers: { "User-Agent": "ViaFarm/1.0 (viafarm.app)" },
+          }
+        );
+
+        const addr = geoResponse.data.address || {};
+        pinCode = pinCode || addr.postcode || "";
+        city = city || addr.city || addr.town || addr.village || "";
+        district = district || addr.state_district || addr.county || "";
+        state = state || addr.state || "";
+        locality =
+          locality ||
+          addr.suburb ||
+          addr.neighbourhood ||
+          addr.road ||
+          addr.hamlet ||
+          "";
+      } catch (err) {
+        console.warn("⚠️ Reverse geocoding failed:", err.message);
+      }
+    } else {
+      // ✅ Case 2: No lat/lng provided → geocode from address fields
+      const coords = await geocodeAddress({
+        houseNumber,
+        street,
+        locality,
+        city,
+        district,
+        state,
+        pinCode,
+      });
+
+      if (coords) {
+        address.location = { type: "Point", coordinates: coords };
+        console.log("📍 Auto-fetched coordinates:", coords);
+      } else {
+        console.warn("⚠️ Could not fetch coordinates from address.");
       }
     }
 
-    // --- 4️⃣ Handle Default Address ---
+    // --- 4️⃣ Handle default address ---
     if (isDefault) {
       await Address.updateMany(
         { user: req.user._id, isDefault: true },
@@ -3504,20 +3514,20 @@ const updateAddress = asyncHandler(async (req, res) => {
       address.isDefault = true;
     }
 
-    // --- 5️⃣ Update Fields (Partial Safe Update) ---
+    // --- 5️⃣ Partial safe update ---
     if (pinCode) address.pinCode = pinCode;
     if (houseNumber) address.houseNumber = houseNumber;
-    if (street !== undefined) address.street = street || '';
+    if (street !== undefined) address.street = street || "";
     if (locality) address.locality = locality;
     if (city) address.city = city;
     if (district) address.district = district;
     if (state) address.state = state;
-    if (typeof isDefault === 'boolean') address.isDefault = isDefault;
+    if (typeof isDefault === "boolean") address.isDefault = isDefault;
 
-    // --- 6️⃣ Save Updated Address ---
+    // --- 6️⃣ Save updated document ---
     await address.save();
 
-    // --- 7️⃣ Format Address for Response ---
+    // --- 7️⃣ Format response ---
     const formattedAddress = [
       address.houseNumber,
       address.street,
@@ -3528,12 +3538,11 @@ const updateAddress = asyncHandler(async (req, res) => {
       address.pinCode,
     ]
       .filter(Boolean)
-      .join(', ');
+      .join(", ");
 
-    // --- 8️⃣ Send Response ---
     res.status(200).json({
       success: true,
-      message: 'Address updated successfully.',
+      message: "Address updated successfully.",
       address: {
         id: address._id,
         user: address.user,
@@ -3552,10 +3561,10 @@ const updateAddress = asyncHandler(async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('❌ Error updating address:', error);
+    console.error("❌ Error updating address:", error);
     res.status(500).json({
       success: false,
-      message: 'Server error while updating address.',
+      message: "Server error while updating address.",
       error: error.message,
     });
   }
@@ -3563,51 +3572,45 @@ const updateAddress = asyncHandler(async (req, res) => {
 
 
 
+
+
 const deleteAddress = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
-  // --- 1. Validate Address ID ---
+  // 1️⃣ Validate ObjectId
   if (!mongoose.Types.ObjectId.isValid(id)) {
-    return res.status(400).json({
-      success: false,
-      message: "Invalid address ID.",
-    });
+    return res.status(400).json({ success: false, message: "Invalid address ID." });
   }
 
-  // --- 2. Find address for logged-in user ---
-  const address = await Address.findOne({ _id: id, user: req.user._id });
+  // 2️⃣ Find and delete address
+  const address = await Address.findOneAndDelete({ _id: id, user: req.user._id });
   if (!address) {
-    return res.status(404).json({
-      success: false,
-      message: "Address not found.",
-    });
+    return res.status(404).json({ success: false, message: "Address not found." });
   }
 
-  // --- 3. Delete Address ---
-  await Address.deleteOne({ _id: id });
-
-  // --- 4. If deleted address was default, assign another as default ---
+  // 3️⃣ If default, reassign next one
+  let newDefaultAddress = null;
   if (address.isDefault) {
-    const nextAddress = await Address.findOne({ user: req.user._id }).sort({
-      createdAt: -1,
-    });
-    if (nextAddress) {
-      nextAddress.isDefault = true;
-      await nextAddress.save();
+    newDefaultAddress = await Address.findOne({ user: req.user._id }).sort({ createdAt: -1 });
+    if (newDefaultAddress) {
+      newDefaultAddress.isDefault = true;
+      await newDefaultAddress.save();
     }
   }
 
-  // --- 5. Count remaining addresses ---
+  // 4️⃣ Count remaining addresses
   const remainingCount = await Address.countDocuments({ user: req.user._id });
 
-  // --- 6. Respond ---
+  // 5️⃣ Send response
   res.status(200).json({
     success: true,
     message: "Address deleted successfully.",
     deletedAddressId: id,
+    newDefaultAddressId: newDefaultAddress?._id || null,
     remainingAddresses: remainingCount,
   });
 });
+
 
 
 
