@@ -861,68 +861,49 @@ const getStaticPageContent = asyncHandler(async (req, res) => {
 });
 
 const getVendorsNearYou = asyncHandler(async (req, res) => {
-  const { lat, lng, maxDistance = 10 } = req.query; // ✅ default = 10 km
-
-  // ❌ If location not provided
-  if (!lat || !lng) {
-    const vendors = await User.find({ role: "Vendor", status: "Active", isApproved: true })
-      .select("name profilePicture _id address vendorDetails");
-
-    const enrichedFallbackVendors = await Promise.all(
-      vendors.map(async (vendor) => ({
-        id: vendor._id,
-        name: vendor.name,
-        profilePicture: vendor.profilePicture || "https://default-image-url.com/default.png",
-        distance: "N/A",
-        categories: await formatCategories(vendor._id),
-      }))
-    );
-
-    return res.status(200).json({
-      success: true,
-      count: enrichedFallbackVendors.length,
-      vendors: enrichedFallbackVendors,
-      message: "Location not provided by client, showing all active vendors.",
-    });
-  }
-
-  const latitude = parseFloat(lat);
-  const longitude = parseFloat(lng);
-
-  if (isNaN(latitude) || isNaN(longitude)) {
-    return res.status(400).json({ success: false, message: "Invalid latitude or longitude." });
-  }
-
   try {
-    // 🧭 Convert km → meters for MongoDB geo query
-    const maxDistanceMeters = parseFloat(maxDistance) * 1000;
+    const buyerId = req.user?._id;
 
-    // 🧮 Use $geoNear to get vendors within radius (no limit)
+    // 🧭 1️⃣ Ensure user is logged in
+    if (!buyerId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized: Please log in as a buyer.",
+      });
+    }
+
+    // 📍 2️⃣ Get buyer’s location (from profile)
+    const buyer = await User.findById(buyerId).select("location");
+    const buyerCoords = buyer?.location?.coordinates;
+
+    if (!buyerCoords || buyerCoords.length !== 2) {
+      return res.status(400).json({
+        success: false,
+        message: "Buyer location not found. Please update your address.",
+      });
+    }
+
+    const [buyerLng, buyerLat] = buyerCoords.map(Number);
+    console.log("📍 Buyer Location:", buyerLat, buyerLng);
+
+    // 📏 3️⃣ Get maxDistance from query (default = 50 km)
+    const maxDistanceKm = parseFloat(req.query.maxDistance) || 50;
+    const maxDistanceMeters = maxDistanceKm * 1000;
+
+    // 🧮 4️⃣ Find nearby vendors with $geoNear
     const vendors = await User.aggregate([
       {
         $geoNear: {
-          near: { type: "Point", coordinates: [longitude, latitude] },
+          near: { type: "Point", coordinates: [buyerLng, buyerLat] },
           distanceField: "distanceMeters",
           spherical: true,
-          maxDistance: maxDistanceMeters,
-          query: { role: "Vendor", status: "Active", isApproved: true },
+          maxDistance: maxDistanceMeters, // ✅ apply limit here
+          query: { role: "Vendor", status: "Active" },
         },
       },
       {
         $addFields: {
           distanceKm: { $divide: ["$distanceMeters", 1000] },
-          deliveryRegionMeters: { $multiply: [{ $ifNull: ["$vendorDetails.deliveryRegion", 0] }, 1000] },
-        },
-      },
-      {
-        $match: {
-          $expr: {
-            $cond: [
-              { $gt: ["$deliveryRegionMeters", 0] },
-              { $lte: ["$distanceMeters", "$deliveryRegionMeters"] },
-              true,
-            ],
-          },
         },
       },
       {
@@ -930,39 +911,58 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
           name: 1,
           profilePicture: 1,
           vendorDetails: 1,
-          location: 1,
           distanceKm: 1,
         },
       },
-      // ✅ No $limit → returns all matching vendors
     ]);
 
-    // 🧩 Add product categories
+    if (!vendors || vendors.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `No vendors found within ${maxDistanceKm} km.`,
+      });
+    }
+
+    // 🧩 5️⃣ Add categories & format distances
     const enrichedVendors = await Promise.all(
       vendors.map(async (v) => ({
         id: v._id,
         name: v.name,
-        profilePicture: v.profilePicture || "https://default-image-url.com/default.png",
-        distance: `${v.distanceKm.toFixed(2)} km away`,
+        profilePicture:
+          v.profilePicture ||
+          "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
+        distance: `${v.distanceKm.toFixed(1)} km away`,
+        distanceValue: parseFloat(v.distanceKm.toFixed(1)),
         categories: await formatCategories(v._id),
-        vendorDetails: v.vendorDetails || {},
+        deliveryRegion: v.vendorDetails?.deliveryRegion || 0,
       }))
     );
 
+    // ✅ 6️⃣ Sort nearest first
+    enrichedVendors.sort((a, b) => a.distanceValue - b.distanceValue);
+
+    // 📤 7️⃣ Response
     return res.status(200).json({
       success: true,
       count: enrichedVendors.length,
       vendors: enrichedVendors,
+      buyerLocation: {
+        latitude: buyerLat,
+        longitude: buyerLng,
+      },
+      maxDistanceKm,
     });
   } catch (err) {
-    console.error("Error fetching nearby vendors:", err);
+    console.error("❌ Error fetching nearby vendors:", err);
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch nearby vendors. Check your GeoJSON index.",
+      message: "Failed to fetch nearby vendors.",
       error: err.message,
     });
   }
 });
+
+
 
 
 
