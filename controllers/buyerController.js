@@ -3224,6 +3224,34 @@ const getAddresses = asyncHandler(async (req, res) => {
 
 
 
+
+// Helper: Convert address → coordinates using OpenStreetMap
+async function geocodeAddress({ houseNumber, street, locality, city, district, state, pinCode }) {
+  try {
+    const fullAddress = [houseNumber, street, locality, city, district, state, pinCode]
+      .filter(Boolean)
+      .join(", ");
+
+    if (!fullAddress) return null;
+
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(fullAddress)}&format=json&limit=1`;
+
+    const { data } = await axios.get(url, {
+      headers: { "User-Agent": "ViaFarm/1.0 (viafarm.app)" },
+    });
+
+    if (data.length > 0) {
+      const lat = parseFloat(data[0].lat);
+      const lon = parseFloat(data[0].lon);
+      if (!isNaN(lat) && !isNaN(lon)) return [lon, lat];
+    }
+    return null;
+  } catch (err) {
+    console.warn("⚠️ Geocoding failed:", err.message);
+    return null;
+  }
+}
+
 const addAddress = asyncHandler(async (req, res) => {
   try {
     let {
@@ -3239,8 +3267,17 @@ const addAddress = asyncHandler(async (req, res) => {
       longitude,
     } = req.body;
 
-    // --- 1️⃣ Validate Coordinates (Optional) ---
-    let geoJsonLocation = undefined;
+    // --- 1️⃣ Validate minimum required field ---
+    if (!houseNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "House number is required.",
+      });
+    }
+
+    let geoJsonLocation;
+
+    // --- 2️⃣ Use coordinates if provided ---
     if (latitude && longitude) {
       const lat = parseFloat(latitude);
       const lng = parseFloat(longitude);
@@ -3254,87 +3291,64 @@ const addAddress = asyncHandler(async (req, res) => {
         lng <= 180
       ) {
         geoJsonLocation = {
-          type: 'Point',
+          type: "Point",
           coordinates: [lng, lat],
         };
-
-        // --- 2️⃣ Auto-fill Address Fields from Reverse Geocoding ---
-        try {
-          const geoResponse = await axios.get(
-            'https://nominatim.openstreetmap.org/reverse',
-            {
-              params: {
-                lat,
-                lon: lng,
-                format: 'json',
-                addressdetails: 1,
-              },
-              headers: { 'User-Agent': 'ViaFarm/1.0 (viafarm.app)' },
-            }
-          );
-
-          const addr = geoResponse.data.address || {};
-          pinCode = pinCode || addr.postcode || '';
-          city = city || addr.city || addr.town || addr.village || '';
-          district = district || addr.state_district || addr.county || '';
-          state = state || addr.state || '';
-          locality =
-            locality ||
-            addr.suburb ||
-            addr.neighbourhood ||
-            addr.road ||
-            addr.hamlet ||
-            '';
-        } catch (geoErr) {
-          console.warn('⚠️ Reverse geocoding failed:', geoErr.message);
-        }
       } else {
         return res.status(400).json({
           success: false,
-          message: 'Invalid latitude or longitude values.',
+          message: "Invalid latitude or longitude values.",
         });
       }
-    }
-
-    // --- 3️⃣ Minimal Validation (Now Optional Fields) ---
-    if (!houseNumber) {
-      return res.status(400).json({
-        success: false,
-        message: 'House number is required.',
+    } else {
+      // --- 3️⃣ If no coordinates → auto geocode from address ---
+      const coords = await geocodeAddress({
+        houseNumber,
+        street,
+        locality,
+        city,
+        district,
+        state,
+        pinCode,
       });
+
+      if (coords) {
+        geoJsonLocation = {
+          type: "Point",
+          coordinates: coords,
+        };
+        console.log("📍 Auto-coordinates fetched:", coords);
+      } else {
+        console.warn("⚠️ Unable to auto-fetch coordinates from address.");
+      }
     }
 
     // --- 4️⃣ Handle Default Address Logic ---
     const existingAddresses = await Address.find({ user: req.user._id });
     let makeDefault = isDefault;
 
-    // If this is the first address, make it default automatically
     if (existingAddresses.length === 0) {
-      makeDefault = true;
+      makeDefault = true; // first address always default
     }
 
     if (makeDefault) {
-      await Address.updateMany(
-        { user: req.user._id, isDefault: true },
-        { isDefault: false }
-      );
+      await Address.updateMany({ user: req.user._id, isDefault: true }, { isDefault: false });
     }
 
     // --- 5️⃣ Create New Address ---
     const newAddress = await Address.create({
       user: req.user._id,
-      pinCode: pinCode || '',
+      pinCode: pinCode || "",
       houseNumber,
-      street: street || '',
-      locality: locality || '',
-      city: city || '',
-      district: district || '',
-      state: state || '',
+      street: street || "",
+      locality: locality || "",
+      city: city || "",
+      district: district || "",
+      state: state || "",
       isDefault: makeDefault,
-      location: geoJsonLocation,
+      location: geoJsonLocation, // ✅ will always be Point or undefined
     });
 
-    // --- 6️⃣ Formatted Address for Response ---
     const formattedAddress = [
       newAddress.houseNumber,
       newAddress.street,
@@ -3345,12 +3359,11 @@ const addAddress = asyncHandler(async (req, res) => {
       newAddress.pinCode,
     ]
       .filter(Boolean)
-      .join(', ');
+      .join(", ");
 
-    // --- 7️⃣ Response ---
     res.status(201).json({
       success: true,
-      message: 'Address added successfully.',
+      message: "Address added successfully.",
       address: {
         id: newAddress._id,
         user: newAddress.user,
@@ -3369,14 +3382,17 @@ const addAddress = asyncHandler(async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('❌ Error adding address:', error);
+    console.error("❌ Error adding address:", error);
     res.status(500).json({
       success: false,
-      message: 'Server error while adding address.',
+      message: "Server error while adding address.",
       error: error.message,
     });
   }
 });
+
+module.exports = { addAddress };
+
 
 
 

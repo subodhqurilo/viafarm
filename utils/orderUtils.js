@@ -58,36 +58,51 @@ async function addressToCoords(address) {
  * --- Speed Post Rate Table ---
  */
 function getSpeedPostRate(weightGrams, distanceKm) {
-  // normalize
-  const weight = Math.ceil(weightGrams / 50) * 50; // next 50g step
-  const ranges = [
+  // --- Normalize weight to nearest 50g step ---
+  const weight = Math.min(Math.ceil(weightGrams / 50) * 50, 20000);
+
+  // --- Distance slabs ---
+  const distanceSlabs = [
     { limit: 200, key: "upto200" },
     { limit: 1000, key: "upto1000" },
     { limit: 2000, key: "upto2000" },
     { limit: Infinity, key: "above2000" },
   ];
+  const slab = distanceSlabs.find((r) => distanceKm <= r.limit)?.key || "above2000";
 
-  const slab = ranges.find((r) => distanceKm <= r.limit)?.key;
-
-  // simplified rates table (from image)
+  // --- Full rate table (from India Post Speed Post chart) ---
   const rateTable = {
-    50: { upto200: 18, upto1000: 41, upto2000: 41, above2000: 41 },
-    200: { upto200: 30, upto1000: 41, upto2000: 47, above2000: 71 },
-    500: { upto200: 35, upto1000: 59, upto2000: 71, above2000: 83 },
-    1000: { upto200: 47, upto1000: 77, upto2000: 106, above2000: 165 },
-    1500: { upto200: 59, upto1000: 94, upto2000: 142, above2000: 189 },
-    2000: { upto200: 71, upto1000: 112, upto2000: 177, above2000: 236 },
-    2500: { upto200: 83, upto1000: 130, upto2000: 212, above2000: 283 },
-    3000: { upto200: 94, upto1000: 148, upto2000: 248, above2000: 330 },
+    50:   { upto200: 18,  upto1000: 41,   upto2000: 41,   above2000: 41 },
+    200:  { upto200: 30,  upto1000: 41,   upto2000: 47,   above2000: 71 },
+    500:  { upto200: 35,  upto1000: 59,   upto2000: 71,   above2000: 83 },
+    1000: { upto200: 47,  upto1000: 77,   upto2000: 106,  above2000: 165 },
+    1500: { upto200: 59,  upto1000: 94,   upto2000: 142,  above2000: 189 },
+    2000: { upto200: 71,  upto1000: 112,  upto2000: 177,  above2000: 236 },
+    2500: { upto200: 83,  upto1000: 130,  upto2000: 212,  above2000: 283 },
+    3000: { upto200: 94,  upto1000: 148,  upto2000: 248,  above2000: 330 },
+    3500: { upto200: 106, upto1000: 165,  upto2000: 283,  above2000: 378 },
+    4000: { upto200: 118, upto1000: 183,  upto2000: 319,  above2000: 425 },
+    4500: { upto200: 130, upto1000: 201,  upto2000: 354,  above2000: 472 },
+    5000: { upto200: 142, upto1000: 218,  upto2000: 389,  above2000: 519 },
+    6000: { upto200: 165, upto1000: 254,  upto2000: 460,  above2000: 755 },
+    8000: { upto200: 212, upto1000: 325,  upto2000: 602,  above2000: 991 },
+    10000:{ upto200: 260, upto1000: 395,  upto2000: 743,  above2000: 1227 },
+    15000:{ upto200: 378, upto1000: 572,  upto2000:1097,  above2000:1463 },
+    20000:{ upto200: 496, upto1000: 749,  upto2000:1451,  above2000:2407 },
   };
 
-  const rate =
-    rateTable[weight] && rateTable[weight][slab]
-      ? rateTable[weight][slab]
-      : 200; // default if higher
+  // --- Find nearest weight tier if exact not in table ---
+  const availableWeights = Object.keys(rateTable).map(Number);
+  const nearest = availableWeights.find((w) => weight <= w) || 20000;
 
-  return rate;
+  const rate = rateTable[nearest]?.[slab] || 200;
+  return {
+    rate,
+    weight: nearest,
+    distanceCategory: slab,
+  };
 }
+
 
 /**
  * --- Delivery charge calculator ---
