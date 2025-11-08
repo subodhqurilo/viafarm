@@ -15,11 +15,12 @@ const {
 
 const { upload } = require('../services/cloudinaryService');
 
-router.get('/local-best', getLocalBestProducts); 
+
 router.get('/products/search', searchProducts); 
 router.get('/donation', getDonationsReceived);
 
 router.use(authMiddleware); 
+router.get('/local-best', getLocalBestProducts); 
 
 // ---------------------------------------------------------------------
 // 2. BUYER AUTHORIZED ROUTES 
