@@ -1025,10 +1025,15 @@ const getAllVendors = asyncHandler(async (req, res) => {
             Math.cos(toRad(latitude)) *
               Math.cos(toRad(vendorLat)) *
               Math.sin(dLon / 2) ** 2;
-          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-          distance = R * c;
-          distanceText = `${distance.toFixed(1)} km away`;
-        }
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const distanceKm = (R * c).toFixed(1);
+
+  distance = `${distanceKm} km away`; // 👈 always a string now
+  distanceText = `${distanceKm} km away`;
+} else {
+  distance = "N/A";
+  distanceText = "N/A";
+}
 
         return {
           id: vendor._id.toString(),
