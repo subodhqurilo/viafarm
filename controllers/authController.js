@@ -4,13 +4,15 @@ const jwt = require('jsonwebtoken');
 const otpService = require('../services/otpService');
 const axios = require('axios');
 
+
 const asyncHandler = require('express-async-handler');
 const crypto = require('crypto');
-const sendEmail = require('../services/emailService');
+
 const Notification = require('../models/Notification');
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
 const expo = new Expo();
+const sendEmail = require('../utils/sendEmail');
 
 
 const generateToken = (user) =>
@@ -560,25 +562,29 @@ exports.adminrequestPasswordReset = asyncHandler(async (req, res) => {
 
   const user = await User.findOne({ email });
 
-  const genericMessage = 'If an account with that email exists, a password reset link has been sent.';
+  const genericMessage =
+    'If an account with that email exists, a password reset link has been sent.';
 
   if (!user) {
-    return res.status(200).json({ success: true, message: genericMessage, token: null });
+    return res
+      .status(200)
+      .json({ success: true, message: genericMessage, token: null });
   }
 
-  // Generate raw token
+  // ✅ 1️⃣ Generate raw token
   const resetToken = crypto.randomBytes(32).toString('hex');
 
-  // Hash it for DB
+  // ✅ 2️⃣ Hash it for database storage
   user.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-  user.passwordResetExpires = Date.now() + 60 * 60 * 1000; // 1 hour
+  user.passwordResetExpires = Date.now() + 60 * 60 * 1000; // expires in 1 hour
 
   await user.save();
 
-  // ✅ Always use Render domain for reset link
-  const BASE_URL = process.env.FRONTEND_URL || "https://viafarm-1.onrender.com";
+  // ✅ 3️⃣ Build reset link
+  const BASE_URL = process.env.FRONTEND_URL || 'https://viafarm-1.onrender.com';
   const resetUrl = `${BASE_URL}/reset-password/${resetToken}`;
 
+  // ✅ 4️⃣ Email message
   const message = `
 Hi ${user.name || 'User'},
 
@@ -590,20 +596,22 @@ If you did not request this, please ignore this email. This link will expire in 
 `;
 
   try {
+    // ✅ 5️⃣ Send email via Resend
     await sendEmail({
       email: user.email,
       subject: 'Password Reset Request',
       message,
     });
 
+    // ✅ 6️⃣ Respond success
     res.status(200).json({
       success: true,
       message: genericMessage,
-      resetToken, // (for testing only)
-      resetUrl,
+      resetUrl, // (for dev/testing)
+      resetToken, // (for dev/testing)
     });
-
   } catch (error) {
+    // ❌ If email fails, remove token fields
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
     await user.save();
@@ -615,6 +623,7 @@ If you did not request this, please ignore this email. This link will expire in 
     });
   }
 });
+
 
 
 
