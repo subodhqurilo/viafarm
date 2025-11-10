@@ -574,8 +574,10 @@ exports.adminrequestPasswordReset = asyncHandler(async (req, res) => {
   user.passwordResetExpires = Date.now() + 60 * 60 * 1000; // 1 hour
 
   await user.save();
-  // Construct reset URL (raw token in URL)
-  const resetUrl = `${req.protocol}://${req.get('host')}/reset-password/${resetToken}`;
+
+  // ✅ Always use Render domain for reset link
+  const BASE_URL = process.env.FRONTEND_URL || "https://viafarm-1.onrender.com";
+  const resetUrl = `${BASE_URL}/reset-password/${resetToken}`;
 
   const message = `
 Hi ${user.name || 'User'},
@@ -591,25 +593,29 @@ If you did not request this, please ignore this email. This link will expire in 
     await sendEmail({
       email: user.email,
       subject: 'Password Reset Request',
-      message
+      message,
     });
 
-    // Return token in response for testing
     res.status(200).json({
       success: true,
       message: genericMessage,
-      resetToken, // <-- raw token here
-      resetUrl
+      resetToken, // (for testing only)
+      resetUrl,
     });
 
   } catch (error) {
-    // Clear token if email fails
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
     await user.save();
-    res.status(500).json({ success: false, message: 'Failed to send email. Please try again later.', error: error.message });
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send email. Please try again later.',
+      error: error.message,
+    });
   }
 });
+
 
 
 exports.adminresetPassword = asyncHandler(async (req, res) => {
