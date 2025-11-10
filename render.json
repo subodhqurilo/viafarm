@@ -27,7 +27,28 @@
         {
           "key": "CLOUDINARY_API_SECRET",
           "value": "OOvfM-6pzXeFK50lcKvjgRie6qU"
+        },
+        {
+          "key": "FRONTEND_URL",
+          "value": "https://viafarm-1.onrender.com"
+        },
+        {
+          "key": "SMTP_PASS",
+          "value": "fwuhfjixlvgyelsy" 
+        },
+        {
+          "key": "SMTP_HOST",
+          "value": "smtp.sendgrid.net" 
+        },
+        {
+          "key": "SMTP_PORT",
+          "value": "587" 
+        },
+        {
+          "key": "SMTP_USER",
+          "value": "subodh.qurilo@gmail.com" 
         }
+
       ]
     }
   ]
