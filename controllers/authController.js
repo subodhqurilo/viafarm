@@ -12,8 +12,9 @@ const Notification = require('../models/Notification');
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
 const expo = new Expo();
-const sendEmail = require('../services/emailService')
 
+
+const sendEmail = require('../services/emailService');
 
 const generateToken = (user) =>
   jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '15d' });
