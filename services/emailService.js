@@ -1,36 +1,39 @@
 // services/emailService.js
 
 const nodemailer = require('nodemailer');
-// dotenv को यहां भी require करना सुनिश्चित करें यदि यह किसी अन्य फ़ाइल से import नहीं हो रहा है
-require('dotenv').config(); // अगर .env variables लोड नहीं हो रहे हैं
+require('dotenv').config();
 
-// 💡 Nodemailer Transporter कॉन्फ़िगरेशन में सुधार
+// Nodemailer Transporter कॉन्फ़िगरेशन (SendGrid SMTP के लिए)
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: process.env.SMTP_PORT,
-  secure: false, // 💡 पोर्ट 465 के लिए इसे TRUE होना चाहिए!
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  // port 465 (secure: true) के साथ 'tls' सेटिंग्स की आवश्यकता नहीं है
+  host: process.env.SMTP_HOST, // smtp.sendgrid.net
+  port: process.env.SMTP_PORT, // 587
+  secure: false, // 587 के लिए FALSE (STARTTLS)
+  auth: {
+    user: process.env.SMTP_USER, // apikey
+    pass: process.env.SMTP_PASS, // SendGrid API Key
+  },
+    tls: {
+        rejectUnauthorized: false
+    }
 });
 
 // Function to send email
 const sendEmail = async ({ email, subject, message }) => {
-  try {
-    const info = await transporter.sendMail({
-      from: `ViaFarm <${process.env.SMTP_USER}>`,
-      to: email,
-      subject: subject,
-      text: message,
-    });
+  try {
+    const info = await transporter.sendMail({
+      // ⚠️ SendGrid में यह ईमेल Verified होना चाहिए
+      from: `ViaFarm <subodh.qurilo@gmail.com>`, 
+      to: email,
+      subject: subject,
+      text: message,
+    });
 
-    console.log('✅ Email sent successfully:', info.messageId);
-  } catch (error) {
-    console.error('❌ Email sending error:', error.message);
-    throw new Error(error.message); // केवल error.message को throw करें
-  }
+    console.log('✅ Email sent successfully:', info.messageId);
+    return true;
+  } catch (error) {
+    console.error('❌ Email sending error:', error.message);
+    throw new Error(error.message); 
+  }
 };
 
 module.exports = sendEmail;

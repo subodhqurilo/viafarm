@@ -31,8 +31,8 @@ router.post('/forgot-password', forgotPassword);
 router.post('/reset-password', resetPassword);
 router.post('/admin-login', adminLogin);
 router.post('/admin-signup', adminSignup);
-router.post('/request-password-reset', adminrequestPasswordReset);
-router.post('/reset-password/:token', adminresetPassword);
+
+
 router.post('/logout', logout);
 router.get('/reset-password/:token', (req, res) => {
   res.render('resetPassword', { token: req.params.token });
