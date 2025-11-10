@@ -6,7 +6,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 const sendEmail = async ({ email, subject, message }) => {
   try {
     const response = await resend.emails.send({
-      from: 'ViaFarm <no-reply@viafarm.app>', // must be verified sender domain in Resend
+      from: 'subodhkumar2520@gmail.com', // must be verified sender domain in Resend
       to: email,
       subject,
       text: message,
