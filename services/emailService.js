@@ -1,39 +1,34 @@
 // services/emailService.js
-
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
-// Nodemailer Transporter कॉन्फ़िगरेशन (SendGrid SMTP के लिए)
+// ✅ Mailtrap SMTP configuration
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST, // smtp.sendgrid.net
-  port: process.env.SMTP_PORT, // 587
-  secure: false, // 587 के लिए FALSE (STARTTLS)
-  auth: {
-    user: process.env.SMTP_USER, // apikey
-    pass: process.env.SMTP_PASS, // SendGrid API Key
-  },
-    tls: {
-        rejectUnauthorized: false
-    }
+  host: "sandbox.smtp.mailtrap.io",
+  port: 2525,
+  auth: {
+    user: process.env.MAILTRAP_USER, // using env vars is safer
+    pass: process.env.MAILTRAP_PASS
+  }
 });
 
-// Function to send email
+// ✅ Function to send email
 const sendEmail = async ({ email, subject, message }) => {
-  try {
-    const info = await transporter.sendMail({
-      // ⚠️ SendGrid में यह ईमेल Verified होना चाहिए
-      from: `ViaFarm <subodh.qurilo@gmail.com>`, 
-      to: email,
-      subject: subject,
-      text: message,
-    });
+  try {
+    const info = await transporter.sendMail({
+      from: 'ViaFarm <no-reply@viafarm.com>',
+      to: email,
+      subject: subject,
+      text: message,
+      html: `<p>${message}</p>`
+    });
 
-    console.log('✅ Email sent successfully:', info.messageId);
+    console.log('✅ Email sent successfully:', info.messageId);
     return true;
-  } catch (error) {
-    console.error('❌ Email sending error:', error.message);
-    throw new Error(error.message); 
-  }
+  } catch (error) {
+    console.error('❌ Email sending error:', error.message);
+    throw new Error(error.message);
+  }
 };
 
 module.exports = sendEmail;

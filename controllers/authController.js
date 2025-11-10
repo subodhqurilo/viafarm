@@ -553,76 +553,30 @@ exports.adminLogin = asyncHandler(async (req, res) => {
 });
 
 
-exports.adminrequestPasswordReset = asyncHandler(async (req, res) => {
-  const { email } = req.body;
-
-  if (!email) {
-    return res.status(400).json({ success: false, message: 'Email is required.' });
-  }
-
-  const user = await User.findOne({ email });
-
-  const genericMessage =
-    'If an account with that email exists, a password reset link has been sent.';
-
-  if (!user) {
-    return res
-      .status(200)
-      .json({ success: true, message: genericMessage, token: null });
-  }
-
-  // ✅ 1️⃣ Generate raw token
-  const resetToken = crypto.randomBytes(32).toString('hex');
-
-  // ✅ 2️⃣ Hash it for database storage
-  user.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-  user.passwordResetExpires = Date.now() + 60 * 60 * 1000; // expires in 1 hour
-
-  await user.save();
-
-  // ✅ 3️⃣ Build reset link
-  const BASE_URL = process.env.FRONTEND_URL || 'https://viafarm-1.onrender.com';
-  const resetUrl = `${BASE_URL}/reset-password/${resetToken}`;
-
-  // ✅ 4️⃣ Email message
-  const message = `
-Hi ${user.name || 'User'},
-
-You requested a password reset. Click the link below to reset your password:
-
-${resetUrl}
-
-If you did not request this, please ignore this email. This link will expire in 1 hour.
-`;
-
+exports.adminrequestPasswordReset = async (req, res) => {
   try {
-    // ✅ 5️⃣ Send email via Resend
-    await sendEmail({
-      email: user.email,
-      subject: 'Password Reset Request',
-      message,
-    });
+    const { email } = req.body;
+    // ... generate token etc.
 
-    // ✅ 6️⃣ Respond success
-    res.status(200).json({
-      success: true,
-      message: genericMessage,
-      resetUrl, // (for dev/testing)
-      resetToken, // (for dev/testing)
-    });
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${token}`;
+
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: "ViaFarm Password Reset",
+      html: `<p>Click the link below to reset your password:</p>
+             <a href="${resetLink}">${resetLink}</a>`
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.status(200).json({ success: true, message: "Reset link sent to your email" });
   } catch (error) {
-    // ❌ If email fails, remove token fields
-    user.passwordResetToken = undefined;
-    user.passwordResetExpires = undefined;
-    await user.save();
-
-    res.status(500).json({
-      success: false,
-      message: 'Failed to send email. Please try again later.',
-      error: error.message,
-    });
+    console.error("❌ Email sending error:", error.message);
+    res.status(500).json({ success: false, message: "Email send failed" });
   }
-});
+};
+
 
 
 
