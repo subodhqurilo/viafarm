@@ -15,8 +15,8 @@ const {
   resetPassword,
   adminLogin,
   adminSignup,
-  adminrequestPasswordReset,
-  adminresetPassword,
+  adminRequestPasswordOtp,
+  adminResetPasswordByOtp,
   logout,
 } = require('../controllers/authController');
 
@@ -37,7 +37,11 @@ router.post('/logout', logout);
 router.get('/reset-password/:token', (req, res) => {
   res.render('resetPassword', { token: req.params.token });
 });
-router.post('/reset-password/:token', adminresetPassword);
-router.post('/request-password-reset', adminrequestPasswordReset);
+// ✅ Send OTP to admin email for password reset
+router.post('/request-password-otp', adminRequestPasswordOtp);
+
+// ✅ Verify OTP and reset password
+router.post('/reset-password-otp', adminResetPasswordByOtp);
+
 
 module.exports = router;

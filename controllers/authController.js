@@ -555,109 +555,123 @@ exports.adminLogin = asyncHandler(async (req, res) => {
 
 
 // Replace existing adminrequestPasswordReset with this
-exports.adminrequestPasswordReset = asyncHandler(async (req, res) => {
+
+
+
+exports.adminRequestPasswordOtp = asyncHandler(async (req, res) => {
   const { email } = req.body;
 
-  if (!email) {
-    return res.status(400).json({ success: false, message: 'Email is required.' });
-  }
+  if (!email)
+    return res.status(400).json({ success: false, message: "Email is required." });
 
-  // Find user by email
-  const user = await User.findOne({ email });
-  if (!user) {
-    // Generic message — avoids user enumeration
-    return res.status(200).json({
-      success: true,
-      message: 'If an account with that email exists, a password reset link has been sent.'
-    });
-  }
+  const user = await User.findOne({ email, role: "Admin" });
+  const genericMsg = "If an admin account with that email exists, an OTP has been sent.";
+
+  if (!user)
+    return res.status(200).json({ success: true, message: genericMsg });
+
+  // 🔢 Generate 4-digit OTP
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
+  user.passwordResetOtp = otp;
+  user.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+  await user.save();
+
+  // ✉️ Email the OTP
+  const message = `
+Hi ${user.name || "Admin"},
+
+Your ViaFarm password-reset OTP is: **${otp}**
+
+This OTP will expire in 10 minutes.
+If you didn’t request this, please ignore this email.
+`;
 
   try {
-    // 1️⃣ Create raw reset token and hashed token
-    const resetToken = crypto.randomBytes(32).toString('hex'); // raw token to send via email
-    const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-
-    // 2️⃣ Save hashed token + expiry on user
-    user.passwordResetToken = hashedToken;
-    user.passwordResetExpires = Date.now() + 60 * 60 * 1000; // 1 hour expiry
-    await user.save();
-
-    // 3️⃣ Build reset link (raw token)
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
-
-    // 4️⃣ Build email HTML
-    const htmlMessage = `
-      <h3>ViaFarm Password Reset</h3>
-      <p>You requested a password reset. Click the link below to reset your password. This link expires in 1 hour.</p>
-      <p><a href="${resetLink}" target="_blank">${resetLink}</a></p>
-      <p>If you did not request this, please ignore this email.</p>
-    `;
-
-    // 5️⃣ Send email using Mailtrap
     await sendEmail({
       email: user.email,
-      subject: 'ViaFarm — Password Reset',
-      message: htmlMessage
+      subject: "ViaFarm Password Reset OTP",
+      message,
     });
 
-    // 6️⃣ Respond with link (for testing or dev)
-    return res.status(200).json({
+    // ✅ Include OTP in response for testing
+    res.status(200).json({
       success: true,
-      message: 'Password reset link generated successfully.',
-      resetLink // 👈 this is the link you requested in the response
+      message: "OTP sent to your email address.",
+      otp, // 4-digit OTP
+      expiresIn: "10 minutes"
     });
 
-  } catch (error) {
-    // On error, clear any saved tokens
-    user.passwordResetToken = undefined;
+  } catch (err) {
+    user.passwordResetOtp = undefined;
     user.passwordResetExpires = undefined;
-    await user.save().catch(err => console.error('Failed to clear reset token:', err));
+    await user.save();
 
-    console.error('❌ Email sending / reset-token error:', error.message || error);
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
-      message: 'Failed to send reset email. Please try again later.'
+      message: "Failed to send OTP email.",
+      error: err.message,
     });
   }
 });
 
 
 
+// controllers/authController.js (or wherever you keep auth controllers)
+exports.adminResetPasswordByOtp = asyncHandler(async (req, res) => {
+  const { otp, password } = req.body;
 
+  if (!otp || !password) {
+    return res.status(400).json({
+      success: false,
+      message: "Both otp and password are required.",
+    });
+  }
 
+  // Find admin user by OTP
+  const user = await User.findOne({ passwordResetOtp: otp, role: "Admin" });
 
+  if (!user) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid OTP.",
+    });
+  }
 
-exports.adminresetPassword = asyncHandler(async (req, res) => {
-  const rawToken = req.params.token;
-  const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
-  const { password, confirmPassword } = req.body;
+  // Check expiry
+  if (!user.passwordResetExpires || user.passwordResetExpires < Date.now()) {
+    // cleanup expired fields
+    user.passwordResetOtp = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save().catch(() => {});
+    return res.status(400).json({
+      success: false,
+      message: "OTP expired. Please request a new one.",
+    });
+  }
 
-  if (!password || !confirmPassword)
-    return res.status(400).json({ success: false, message: 'Password and confirmation are required.' });
-
-  if (password !== confirmPassword)
-    return res.status(400).json({ success: false, message: 'Passwords do not match.' });
-
-  const user = await User.findOne({
-    passwordResetToken: hashedToken,
-    passwordResetExpires: { $gt: Date.now() }
-  });
-
-  if (!user)
-    return res.status(400).json({ success: false, message: 'Invalid or expired token.' });
-
-  // ✅ Assign plain password (auto-hashed by pre-save)
+  // Assign new password (pre-save hook should hash it)
   user.password = password;
-  user.passwordResetToken = undefined;
+  user.passwordResetOtp = undefined;
   user.passwordResetExpires = undefined;
 
   await user.save();
 
-  res.status(200).json({
+  return res.status(200).json({
     success: true,
-    message: 'Password reset successful.'
+    message: "Password has been reset successfully.",
   });
 });
+
+
+
+
+
+
+
+
+
+
 
 
 

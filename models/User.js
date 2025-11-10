@@ -33,6 +33,8 @@ const userSchema = new mongoose.Schema({
   otpExpiry: { type: Date },
   profilePicture: { type: String },
   language: { type: String, default: 'English' },
+passwordResetOtp: { type: String },
+passwordResetExpires: { type: Date },
 
   address: {
     street: String,
