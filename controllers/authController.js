@@ -12,7 +12,7 @@ const Notification = require('../models/Notification');
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
 const expo = new Expo();
-const sendEmail = require('../utils/sendEmail');
+const sendEmail = require('../services/emailService')
 
 
 const generateToken = (user) =>
