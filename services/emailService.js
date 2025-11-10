@@ -1,26 +1,23 @@
-// services/emailService.js
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
-// ✅ Mailtrap SMTP configuration
 const transporter = nodemailer.createTransport({
   host: "sandbox.smtp.mailtrap.io",
   port: 2525,
   auth: {
-    user: process.env.MAILTRAP_USER, // using env vars is safer
+    user: process.env.MAILTRAP_USER,
     pass: process.env.MAILTRAP_PASS
   }
 });
 
-// ✅ Function to send email
 const sendEmail = async ({ email, subject, message }) => {
   try {
     const info = await transporter.sendMail({
-      from: 'ViaFarm <no-reply@viafarm.com>',
+      from: 'ViaFarm <no-reply@viafarm.com>', // ✅ use this
       to: email,
-      subject: subject,
-      text: message,
-      html: `<p>${message}</p>`
+      subject,
+      text: message.replace(/<[^>]*>/g, ''), // plain text fallback
+      html: message
     });
 
     console.log('✅ Email sent successfully:', info.messageId);

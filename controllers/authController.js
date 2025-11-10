@@ -553,29 +553,74 @@ exports.adminLogin = asyncHandler(async (req, res) => {
 });
 
 
-exports.adminrequestPasswordReset = async (req, res) => {
-  try {
-    const { email } = req.body;
-    // ... generate token etc.
+// Replace existing adminrequestPasswordReset with this
+exports.adminrequestPasswordReset = asyncHandler(async (req, res) => {
+  const { email } = req.body;
 
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${token}`;
-
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: "ViaFarm Password Reset",
-      html: `<p>Click the link below to reset your password:</p>
-             <a href="${resetLink}">${resetLink}</a>`
-    };
-
-    await transporter.sendMail(mailOptions);
-
-    res.status(200).json({ success: true, message: "Reset link sent to your email" });
-  } catch (error) {
-    console.error("❌ Email sending error:", error.message);
-    res.status(500).json({ success: false, message: "Email send failed" });
+  if (!email) {
+    return res.status(400).json({ success: false, message: 'Email is required.' });
   }
-};
+
+  // Find user by email
+  const user = await User.findOne({ email });
+  if (!user) {
+    // Generic message — avoids user enumeration
+    return res.status(200).json({
+      success: true,
+      message: 'If an account with that email exists, a password reset link has been sent.'
+    });
+  }
+
+  try {
+    // 1️⃣ Create raw reset token and hashed token
+    const resetToken = crypto.randomBytes(32).toString('hex'); // raw token to send via email
+    const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+
+    // 2️⃣ Save hashed token + expiry on user
+    user.passwordResetToken = hashedToken;
+    user.passwordResetExpires = Date.now() + 60 * 60 * 1000; // 1 hour expiry
+    await user.save();
+
+    // 3️⃣ Build reset link (raw token)
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
+
+    // 4️⃣ Build email HTML
+    const htmlMessage = `
+      <h3>ViaFarm Password Reset</h3>
+      <p>You requested a password reset. Click the link below to reset your password. This link expires in 1 hour.</p>
+      <p><a href="${resetLink}" target="_blank">${resetLink}</a></p>
+      <p>If you did not request this, please ignore this email.</p>
+    `;
+
+    // 5️⃣ Send email using Mailtrap
+    await sendEmail({
+      email: user.email,
+      subject: 'ViaFarm — Password Reset',
+      message: htmlMessage
+    });
+
+    // 6️⃣ Respond with link (for testing or dev)
+    return res.status(200).json({
+      success: true,
+      message: 'Password reset link generated successfully.',
+      resetLink // 👈 this is the link you requested in the response
+    });
+
+  } catch (error) {
+    // On error, clear any saved tokens
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save().catch(err => console.error('Failed to clear reset token:', err));
+
+    console.error('❌ Email sending / reset-token error:', error.message || error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to send reset email. Please try again later.'
+    });
+  }
+});
+
+
 
 
 
