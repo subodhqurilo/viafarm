@@ -3392,15 +3392,6 @@ const addAddress = asyncHandler(async (req, res) => {
 });
 
 
-
-
-
-
-
-
-
-
-
 const updateAddress = asyncHandler(async (req, res) => {
   try {
     const { id } = req.params;
@@ -3569,9 +3560,6 @@ const updateAddress = asyncHandler(async (req, res) => {
     });
   }
 });
-
-
-
 
 
 const deleteAddress = asyncHandler(async (req, res) => {

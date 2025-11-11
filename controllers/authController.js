@@ -616,26 +616,35 @@ exports.adminRequestPasswordOtp = asyncHandler(async (req, res) => {
 
 // controllers/authController.js (or wherever you keep auth controllers)
 exports.adminResetPasswordByOtp = asyncHandler(async (req, res) => {
-  const { otp, password } = req.body;
+  const { email, otp, password } = req.body;
 
-  if (!otp || !password) {
+  // --- Validate inputs ---
+  if (!email || !otp || !password) {
     return res.status(400).json({
       success: false,
-      message: "Both otp and password are required.",
+      message: "Email, OTP, and password are required.",
     });
   }
 
-  // Find admin user by OTP
-  const user = await User.findOne({ passwordResetOtp: otp, role: "Admin" });
+  // --- Find admin user by email ---
+  const user = await User.findOne({ email, role: "Admin" });
 
   if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: "Admin not found with this email.",
+    });
+  }
+
+  // --- Verify OTP ---
+  if (user.passwordResetOtp !== otp) {
     return res.status(400).json({
       success: false,
       message: "Invalid OTP.",
     });
   }
 
-  // Check expiry
+  // --- Check expiry ---
   if (!user.passwordResetExpires || user.passwordResetExpires < Date.now()) {
     // cleanup expired fields
     user.passwordResetOtp = undefined;
@@ -647,7 +656,7 @@ exports.adminResetPasswordByOtp = asyncHandler(async (req, res) => {
     });
   }
 
-  // Assign new password (pre-save hook should hash it)
+  // --- Update password (hash via pre-save hook) ---
   user.password = password;
   user.passwordResetOtp = undefined;
   user.passwordResetExpires = undefined;
@@ -657,8 +666,11 @@ exports.adminResetPasswordByOtp = asyncHandler(async (req, res) => {
   return res.status(200).json({
     success: true,
     message: "Password has been reset successfully.",
+    email: user.email, // optional: include for clarity
   });
 });
+
+
 
 
 
