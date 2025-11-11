@@ -2393,7 +2393,7 @@ const calculateDistance = (lat1, lon1, lat2, lon2) => {
 };
 
 const getWishlist = asyncHandler(async (req, res) => {
-    const { page = 1, limit = 10 } = req.query; // default: page 1, 10 items per page
+    const { page = 1, limit = 1000 } = req.query; // default: page 1, 10 items per page
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const buyer = await User.findById(req.user._id);
@@ -2440,6 +2440,7 @@ const getWishlist = asyncHandler(async (req, res) => {
                 rating: product.rating || 0,
                 image: product.images?.[0] || null,
                 price: product.price,
+                quantity:product.quantity,
                 unit: product.unit,
                 weightPerPiece: product.weightPerPiece,
                 vendor: vendor
@@ -3560,6 +3561,7 @@ const updateAddress = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 const deleteAddress = asyncHandler(async (req, res) => {
