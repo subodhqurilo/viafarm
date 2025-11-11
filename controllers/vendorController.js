@@ -10,6 +10,7 @@ const Address = require('../models/Address');
 const Notification = require('../models/Notification');
 const { addressToCoords, coordsToAddress } = require('../utils/geocode');
 const axios = require('axios');
+const Review = require('../models/Review');
 
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
@@ -1507,39 +1508,64 @@ const deleteVendorCoupon = asyncHandler(async (req, res) => {
 
 
 const getUserProfile = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id).select('-password');
-    if (!user) {
-        return res.status(404).json({ success: false, message: 'User not found.' });
+  const user = await User.findById(req.user.id).select("-password");
+  if (!user) {
+    return res
+      .status(404)
+      .json({ success: false, message: "User not found." });
+  }
+
+  const vendorDetails = user.vendorDetails || {};
+
+  // 🧩 Base profile response
+  const responseData = {
+    id: user._id,
+    name: user.name,
+    mobileNumber: user.mobileNumber,
+    profilePicture: user.profilePicture,
+    role: user.role,
+    upiId: user.upiId,
+    address: user.address,
+    language: user.language,
+    about: vendorDetails.about || "",
+    status: user.status,
+  };
+
+  // 🧮 If user is Vendor → add vendor fields + rating
+  if (user.role === "Vendor") {
+    responseData.totalOrders = vendorDetails.totalOrders || 0;
+    responseData.deliveryRegion = vendorDetails.deliveryRegion || 5;
+    responseData.farmImages = vendorDetails.farmImages || [];
+
+    // 🟡 Fetch rating and total reviews
+    const ratingsData = await Review.aggregate([
+      { $match: { vendor: user._id } },
+      {
+        $group: {
+          _id: "$vendor",
+          averageRating: { $avg: "$rating" },
+          totalReviews: { $sum: 1 },
+        },
+      },
+    ]);
+
+    if (ratingsData.length > 0) {
+      responseData.rating = parseFloat(ratingsData[0].averageRating.toFixed(1));
+      responseData.totalReviews = ratingsData[0].totalReviews;
+    } else {
+      responseData.rating = 0;
+      responseData.totalReviews = 0;
     }
+  }
 
-    // ✅ Ensure vendorDetails exists to safely access nested fields
-    const vendorDetails = user.vendorDetails || {};
+  // 🧾 If Buyer
+  if (user.role === "Buyer") {
+    responseData.totalOrdersAsBuyer = user.totalOrdersAsBuyer || 0;
+  }
 
-    const responseData = {
-        id: user._id,
-        name: user.name,
-        mobileNumber: user.mobileNumber,
-        profilePicture: user.profilePicture,
-        role: user.role,
-        upiId: user.upiId,
-        address: user.address,
-        language: user.language,
-        about: vendorDetails.about || '',
-        status: user.status,
-    };
-
-    if (user.role === 'Vendor') {
-        responseData.totalOrders = vendorDetails.totalOrders || 0;
-        responseData.deliveryRegion = vendorDetails.deliveryRegion || 5;
-        responseData.farmImages = vendorDetails.farmImages || []; // ✅ Correct access
-    }
-
-    if (user.role === 'Buyer') {
-        responseData.totalOrdersAsBuyer = user.totalOrdersAsBuyer || 0;
-    }
-
-    res.status(200).json({ success: true, user: responseData });
+  res.status(200).json({ success: true, user: responseData });
 });
+
 
 
 const updateUserProfile = asyncHandler(async (req, res) => {
