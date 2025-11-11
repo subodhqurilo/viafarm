@@ -1510,9 +1510,7 @@ const deleteVendorCoupon = asyncHandler(async (req, res) => {
 const getUserProfile = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user.id).select("-password");
   if (!user) {
-    return res
-      .status(404)
-      .json({ success: false, message: "User not found." });
+    return res.status(404).json({ success: false, message: "User not found." });
   }
 
   const vendorDetails = user.vendorDetails || {};
@@ -1531,40 +1529,70 @@ const getUserProfile = asyncHandler(async (req, res) => {
     status: user.status,
   };
 
-  // 🧮 If user is Vendor → add vendor fields + rating
+  // 🧮 Vendor Profile (with Rating)
   if (user.role === "Vendor") {
     responseData.totalOrders = vendorDetails.totalOrders || 0;
     responseData.deliveryRegion = vendorDetails.deliveryRegion || 5;
     responseData.farmImages = vendorDetails.farmImages || [];
 
-    // 🟡 Fetch rating and total reviews
-    const ratingsData = await Review.aggregate([
-      { $match: { vendor: user._id } },
-      {
-        $group: {
-          _id: "$vendor",
-          averageRating: { $avg: "$rating" },
-          totalReviews: { $sum: 1 },
-        },
-      },
+    // ⭐ Step 1: Find all products of this vendor
+    const vendorProducts = await Product.find({ vendor: user._id }).select("_id");
+    const productIds = vendorProducts.map((p) => p._id);
+
+    // ⭐ Step 2: Fetch last 5 reviews
+    const reviewsRaw = await Review.find({ product: { $in: productIds } })
+      .populate("user", "name profilePicture")
+      .sort({ createdAt: -1 })
+      .limit(5);
+
+    const reviews = reviewsRaw.map((r) => ({
+      _id: r._id,
+      user: r.user,
+      rating: r.rating,
+      comment: r.comment || "",
+      images: r.images,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    }));
+
+    const reviewCount = await Review.countDocuments({ product: { $in: productIds } });
+
+    // ⭐ Step 3: Calculate average rating (real-time)
+    const ratingAgg = await Review.aggregate([
+      { $match: { product: { $in: productIds } } },
+      { $group: { _id: null, avgRating: { $avg: "$rating" } } },
     ]);
 
-    if (ratingsData.length > 0) {
-      responseData.rating = parseFloat(ratingsData[0].averageRating.toFixed(1));
-      responseData.totalReviews = ratingsData[0].totalReviews;
-    } else {
-      responseData.rating = 0;
-      responseData.totalReviews = 0;
+    // 🟢 Step 4: Apply default rating = 5 if no reviews found
+    let avgVendorRating = ratingAgg[0]?.avgRating ?? user.rating ?? 0;
+    let vendorFinalRating = parseFloat(avgVendorRating.toFixed(1));
+
+    if (!vendorFinalRating || isNaN(vendorFinalRating) || vendorFinalRating === 0) {
+      vendorFinalRating = 5; // ✅ default rating
     }
+
+    // ⭐ Step 5: Update rating in DB (optional)
+    await User.findByIdAndUpdate(user._id, { rating: vendorFinalRating });
+
+    // ✅ Step 6: Add to response
+    responseData.rating = vendorFinalRating;
+    responseData.totalReviews = reviewCount;
+    responseData.reviews = {
+      count: reviewCount,
+      list: reviews,
+    };
   }
 
-  // 🧾 If Buyer
+  // 🧾 Buyer Profile
   if (user.role === "Buyer") {
     responseData.totalOrdersAsBuyer = user.totalOrdersAsBuyer || 0;
   }
 
+  // ✅ Final Response
   res.status(200).json({ success: true, user: responseData });
 });
+
+
 
 
 
