@@ -13,8 +13,10 @@ const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
 const expo = new Expo();
 
+const { sendEmailOTP } = require("../services/emailService");
 
-const sendEmail = require('../services/emailService');
+
+
 
 const generateToken = (user) =>
   jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '15d' });
@@ -558,6 +560,7 @@ exports.adminLogin = asyncHandler(async (req, res) => {
 
 
 
+
 exports.adminRequestPasswordOtp = asyncHandler(async (req, res) => {
   const { email } = req.body;
 
@@ -577,36 +580,29 @@ exports.adminRequestPasswordOtp = asyncHandler(async (req, res) => {
   user.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
   await user.save();
 
-  // ✉️ Email the OTP
-  const message = `
-Hi ${user.name || "Admin"},
-
-Your ViaFarm password-reset OTP is: **${otp}**
-
-This OTP will expire in 10 minutes.
-If you didn’t request this, please ignore this email.
-`;
-
   try {
-    await sendEmail({
-      email: user.email,
-      subject: "ViaFarm Password Reset OTP",
-      message,
-    });
+    // ✅ Send OTP email using Resend API function
+    const sent = await sendEmailOTP(user.email, otp);
 
-    // ✅ Include OTP in response for testing
+    if (!sent) {
+      throw new Error("Email send failed");
+    }
+
+    // ✅ Include OTP in response for testing only
     res.status(200).json({
       success: true,
       message: "OTP sent to your email address.",
-      otp, // 4-digit OTP
-      expiresIn: "10 minutes"
+      otp,
+      expiresIn: "10 minutes",
     });
 
   } catch (err) {
+    // rollback fields
     user.passwordResetOtp = undefined;
     user.passwordResetExpires = undefined;
     await user.save();
 
+    console.error("❌ Failed to send OTP email:", err.message);
     res.status(500).json({
       success: false,
       message: "Failed to send OTP email.",
@@ -614,6 +610,7 @@ If you didn’t request this, please ignore this email.
     });
   }
 });
+
 
 
 
