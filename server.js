@@ -23,6 +23,7 @@ const expo = new Expo();
 app.use(cors({
   origin: [
     "https://viafarm-iy5q.vercel.app",
+    "https://viafarm-e3tc.vercel.app",
     "http://localhost:3000",   // Web (Admin Panel)
     "http://192.168.1.5:8081", // Expo Dev (replace IP)
     "exp://192.168.1.5:8081" ,
