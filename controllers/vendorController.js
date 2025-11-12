@@ -432,7 +432,7 @@ const addProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // 5️⃣ Upload images
+    // 5️⃣ Upload images to Cloudinary
     let images = [];
     if (req.files && req.files.length > 0) {
         try {
@@ -456,23 +456,7 @@ const addProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // 6️⃣ ✅ Handle Variety Logic
-    let varietyDoc = await Variety.findOne({ name: variety.trim() });
-
-    // If variety not found → create new one
-    if (!varietyDoc) {
-        varietyDoc = await Variety.create({
-            name: variety.trim(),
-            category: category, // link to category id
-        });
-
-        // 🔗 Optional: Push variety to category's varieties array
-        await Category.findByIdAndUpdate(category, {
-            $addToSet: { varieties: varietyDoc._id },
-        });
-    }
-
-    // 7️⃣ Create product
+    // 6️⃣ Create product in database
     const isAllIndiaDelivery =
         allIndiaDelivery === "true" || allIndiaDelivery === true;
 
@@ -480,7 +464,7 @@ const addProduct = asyncHandler(async (req, res) => {
         name: name.trim(),
         vendor: vendorId,
         category: category.trim(),
-        variety: varietyDoc._id, // ✅ linked to variety ID
+        variety: variety.trim(),
         price: Number(price),
         quantity: Number(quantity),
         unit: unit.trim(),
@@ -491,40 +475,52 @@ const addProduct = asyncHandler(async (req, res) => {
         weightPerPiece: unit === "pc" ? weightPerPiece : null,
     });
 
-    // 8️⃣ Notifications
-    await createAndSendNotification(
-        req,
-        "🆕 New Product Added",
-        `${vendor.name} just added a new product "${newProduct.name}".`,
-        { type: "product", productId: newProduct._id },
-        "Admin"
-    );
+    // 7️⃣ 🔔 Notifications
 
-    await createAndSendNotification(
-        req,
-        "✅ Product Added Successfully",
-        `Your product "${newProduct.name}" is now live in the store.`,
-        { type: "product", productId: newProduct._id },
-        "Vendor",
-        vendorId
-    );
+    // 👨‍💼 Admin (personal notification)
+await createAndSendNotification(
+  req,
+  "🆕 New Product Added",
+  `${vendor.name} just added a new product "${newProduct.name}".`,
+  {
+    type: "product",
+    productId: newProduct._id,
+  },
+  "Admin" // send to all admins
+);
 
-    await createAndSendNotification(
-        req,
-        "🛒 New Product Available!",
-        `Check out the new product "${newProduct.name}". Grab it now!`,
-        { type: "product", productId: newProduct._id },
-        "Buyer"
-    );
+// 🧑‍🌾 Notify Vendor (personal)
+await createAndSendNotification(
+  req,
+  "✅ Product Added Successfully",
+  `Your product "${newProduct.name}" is now live in the store.`,
+  {
+    type: "product",
+    productId: newProduct._id,
+  },
+  "Vendor",
+  vendorId // send only to this vendor
+);
 
-    // 9️⃣ Response
+// 🛍️ Notify All Buyers (broadcast)
+await createAndSendNotification(
+  req,
+  "🛒 New Product Available!",
+  `Check out the new product "${newProduct.name}". Grab it now!`,
+  {
+    type: "product",
+    productId: newProduct._id,
+  },
+  "Buyer" // send to all buyers
+);
+
+    // 8️⃣ Send Response
     res.status(201).json({
         success: true,
-        message: "Product added successfully with variety ID.",
+        message: "Product added successfully and notifications sent.",
         data: newProduct,
     });
 });
-
 
 
 const updateProduct = asyncHandler(async (req, res) => {
@@ -539,10 +535,9 @@ const updateProduct = asyncHandler(async (req, res) => {
 
     // 2️⃣ Vendor Authorization
     if (product.vendor.toString() !== req.user._id.toString()) {
-        return res.status(401).json({
-            success: false,
-            message: "Not authorized to update this product.",
-        });
+        return res
+            .status(401)
+            .json({ success: false, message: "Not authorized to update this product." });
     }
 
     // 3️⃣ Define allowed fields
@@ -561,7 +556,7 @@ const updateProduct = asyncHandler(async (req, res) => {
 
     const updateFields = {};
 
-    // 4️⃣ Prepare updates
+    // 4️⃣ Validate and prepare updates
     for (const field of allowedFields) {
         if (updates[field] !== undefined) {
             if (field === "price" || field === "quantity") {
@@ -617,78 +612,60 @@ const updateProduct = asyncHandler(async (req, res) => {
     // --- Save old price before updating ---
     const oldPrice = product.price;
 
-    // 7️⃣ 🧩 Handle Variety Logic (if provided)
-    if (updates.variety) {
-        const categoryId = updates.category || product.category;
-
-        let varietyDoc = await Variety.findOne({ name: updates.variety.trim() });
-
-        if (!varietyDoc) {
-            varietyDoc = await Variety.create({
-                name: updates.variety.trim(),
-                category: categoryId,
-            });
-
-            // Also push variety to category
-            await Category.findByIdAndUpdate(categoryId, {
-                $addToSet: { varieties: varietyDoc._id },
-            });
-        }
-
-        updateFields.variety = varietyDoc._id;
-    }
-
-    // 8️⃣ Update product
+    // 7️⃣ Update product in DB
     const updatedProduct = await Product.findByIdAndUpdate(
         id,
         { $set: updateFields },
         { new: true, runValidators: true }
     ).populate("vendor", "name _id");
 
-    // 9️⃣ 🔔 Notifications
+    // 8️⃣ 🔔 Notifications
 
-    // Vendor
-    await createAndSendNotification(
-        req,
-        "✅ Product Updated",
-        `Your product "${updatedProduct.name}" was updated successfully.`,
-        {
-            type: "product",
-            productId: updatedProduct._id,
-            oldPrice,
-            newPrice: updatedProduct.price,
-        },
-        "Vendor",
-        updatedProduct.vendor._id
-    );
+    // 🧑‍🌾 Vendor (personal)
+// 8️⃣ 🔔 Notifications
 
-    // Buyers (if price dropped)
-    if (
-        updateFields.price !== undefined &&
-        Number(updateFields.price) < Number(oldPrice)
-    ) {
-        await createAndSendNotification(
-            req,
-            "💰 Price Drop Alert!",
-            `Good news! "${updatedProduct.name}" is now ₹${updateFields.price} (was ₹${oldPrice}). Grab it now!`,
-            {
-                type: "product",
-                productId: updatedProduct._id,
-                oldPrice,
-                newPrice: updateFields.price,
-            },
-            "Buyer"
-        );
-    }
+// 🧑‍🌾 Vendor (personal)
+await createAndSendNotification(
+  req,
+  "✅ Product Updated",
+  `Your product "${updatedProduct.name}" was updated successfully.`,
+  {
+    type: "product",
+    productId: updatedProduct._id,
+    oldPrice,
+    newPrice: updatedProduct.price,
+  },
+  "Vendor",
+  updatedProduct.vendor._id
+);
 
-    // ✅ Final response
+// 🛒 Buyers (only if price dropped)
+if (
+  updateFields.price !== undefined &&
+  Number(updateFields.price) < Number(oldPrice)
+) {
+  await createAndSendNotification(
+    req,
+    "💰 Price Drop Alert!",
+    `Good news! "${updatedProduct.name}" is now ₹${updateFields.price} (was ₹${oldPrice}). Grab the offer!`,
+    {
+      type: "product",
+      productId: updatedProduct._id,
+      oldPrice,
+      newPrice: updateFields.price,
+    },
+    "Buyer" // send to all buyers
+  );
+}
+
+
+    // ✅ 9️⃣ Final response
     res.status(200).json({
         success: true,
         message: "Product updated successfully.",
         data: updatedProduct,
     });
 });
-
 
 
 
@@ -699,23 +676,15 @@ const getProductById = asyncHandler(async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(id)) {
         return res.status(400).json({
             success: false,
-            message: "Invalid product ID."
+            message: 'Invalid product ID.'
         });
     }
 
-    // 2️⃣ Find Product + Vendor + Category + Variety
+    // 2️⃣ Find Product + Vendor Details
     const product = await Product.findById(id)
         .populate({
-            path: "vendor",
-            select: "name mobileNumber email address vendorDetails.about profilePicture"
-        })
-        .populate({
-            path: "category",
-            select: "name image"
-        })
-        .populate({
-            path: "variety",
-            select: "name"
+            path: 'vendor',
+            select: 'name mobileNumber email address vendorDetails.about profilePicture'
         })
         .lean();
 
@@ -723,7 +692,7 @@ const getProductById = asyncHandler(async (req, res) => {
     if (!product) {
         return res.status(404).json({
             success: false,
-            message: "Product not found."
+            message: 'Product not found.'
         });
     }
 
@@ -731,19 +700,8 @@ const getProductById = asyncHandler(async (req, res) => {
     const responseData = {
         _id: product._id,
         name: product.name,
-        category: product.category
-            ? {
-                  _id: product.category._id,
-                  name: product.category.name,
-                  image: product.category.image?.url || null
-              }
-            : null,
-        variety: product.variety
-            ? {
-                  _id: product.variety._id,
-                  name: product.variety.name
-              }
-            : null,
+        category: product.category,
+        variety: product.variety,
         description: product.description,
         price: product.price,
         quantity: product.quantity,
@@ -754,16 +712,16 @@ const getProductById = asyncHandler(async (req, res) => {
         status: product.status,
         vendor: product.vendor
             ? {
-                  name: product.vendor.name,
-                  about: product.vendor.vendorDetails?.about || "",
-                  mobileNumber: product.vendor.mobileNumber,
-                  email: product.vendor.email || "",
-                  address:
-                      product.vendor.address ||
-                      product.vendor.vendorDetails?.address ||
-                      null,
-                  profilePicture: product.vendor.profilePicture || ""
-              }
+                name: product.vendor.name,
+                about: product.vendor.vendorDetails?.about || '',
+                mobileNumber: product.vendor.mobileNumber,
+                email: product.vendor.email || '',
+                address:
+                    product.vendor.address ||
+                    product.vendor.vendorDetails?.address ||
+                    null,
+                profilePicture: product.vendor.profilePicture || ''
+            }
             : null,
         createdAt: product.createdAt,
         updatedAt: product.updatedAt
@@ -772,11 +730,10 @@ const getProductById = asyncHandler(async (req, res) => {
     // 5️⃣ Send Response
     res.status(200).json({
         success: true,
-        message: "Product fetched successfully.",
+        message: 'Product fetched successfully.',
         data: responseData
     });
 });
-
 
 
 
@@ -787,72 +744,49 @@ const deleteProduct = asyncHandler(async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(id)) {
         return res.status(400).json({
             success: false,
-            message: "Invalid product ID.",
+            message: 'Invalid product ID.'
         });
     }
 
     // 2️⃣ Find Product
     const product = await Product.findById(id);
+
     if (!product) {
         return res.status(404).json({
             success: false,
-            message: "Product not found.",
+            message: 'Product not found.'
         });
     }
 
-    // 3️⃣ Authorization Check
+    // 3️⃣ Check Authorization
     if (product.vendor.toString() !== req.user._id.toString()) {
         return res.status(403).json({
             success: false,
-            message: "You are not authorized to delete this product.",
+            message: 'You are not authorized to delete this product.'
         });
     }
 
-    // 4️⃣ Delete Images from Cloudinary
+    // 4️⃣ (Optional) Delete Product Images from Cloudinary
     if (product.images && product.images.length > 0) {
         for (const imageUrl of product.images) {
             try {
-                const parts = imageUrl.split("/");
-                const fileName = parts[parts.length - 1];
-                const publicId = fileName.split(".")[0]; // Extract public ID
+                const publicId = imageUrl.split('/').pop().split('.')[0]; // extract Cloudinary public ID
                 await cloudinary.uploader.destroy(`product-images/${publicId}`);
             } catch (err) {
-                console.error("❌ Cloudinary image deletion failed:", err.message);
+                console.error('Cloudinary image deletion failed:', err.message);
             }
         }
     }
 
-    // --- Save variety and category before deletion ---
-    const varietyId = product.variety;
-    const categoryId = product.category;
-
-    // 5️⃣ Delete Product
+    // 5️⃣ Delete Product from DB
     await Product.findByIdAndDelete(id);
 
-    // 6️⃣ 🧩 Cleanup Variety (if no other product uses it)
-    if (varietyId) {
-        const isUsedElsewhere = await Product.exists({ variety: varietyId });
-
-        // If not used in any other product, remove it from DB
-        if (!isUsedElsewhere) {
-            await Variety.findByIdAndDelete(varietyId);
-
-            // Also remove from Category.varieties array
-            if (categoryId) {
-                await Category.findByIdAndUpdate(categoryId, {
-                    $pull: { varieties: varietyId },
-                });
-            }
-        }
-    }
-
-    // 7️⃣ Send Response
+    // 6️⃣ Respond
     res.status(200).json({
         success: true,
-        message: "Product deleted successfully.",
+        message: 'Product deleted successfully.'
     });
 });
-
 
 
 
