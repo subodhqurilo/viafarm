@@ -1145,18 +1145,22 @@ const createCategory = asyncHandler(async (req, res) => {
 
 
 const updateCategory = asyncHandler(async (req, res) => {
-    const category = await Category.findById(req.params.id);
+    const { id } = req.params;
 
+    // 🔹 Find the category
+    const category = await Category.findById(id);
     if (!category) {
-        return res.status(404).json({ message: 'Category not found' });
+        return res.status(404).json({ success: false, message: 'Category not found' });
     }
 
-    // Update name
-    category.name = req.body.name || category.name;
+    // 🔹 Update name only if provided
+    if (req.body.name) {
+        category.name = req.body.name;
+    }
 
-    // If new image is uploaded
+    // 🔹 If image is uploaded, replace the old one
     if (req.file) {
-        // Delete old image from Cloudinary if exists
+        // Delete old image if it exists
         if (category.image && category.image.public_id) {
             await cloudinaryDestroy(category.image.public_id);
         }
@@ -1169,9 +1173,16 @@ const updateCategory = asyncHandler(async (req, res) => {
         };
     }
 
+    // 🔹 Save changes (works even if only one field changed)
     const updatedCategory = await category.save();
-    res.json(updatedCategory);
+
+    res.status(200).json({
+        success: true,
+        message: 'Category updated successfully',
+        data: updatedCategory
+    });
 });
+
 
 const deleteCategory = asyncHandler(async (req, res) => {
     const category = await Category.findById(req.params.id);
