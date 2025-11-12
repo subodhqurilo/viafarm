@@ -16,6 +16,7 @@ const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
 const expo = new Expo();
 
+const NotificationSettings = require('../models/NotificationSettings');
 
 
 const getDashboardData = asyncHandler(async (req, res) => {

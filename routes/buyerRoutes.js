@@ -4,7 +4,7 @@ const { authMiddleware, authorizeRoles } = require('../middleware/authMiddleware
 
 // Get all exported controllers from the buyerController file
 const { 
-    getBuyerProfile, updateBuyerProfile, updateBuyerLocation, updateBuyerLanguage, getWishlist, addToWishlist, getBuyerOrders, removeFromWishlist, 
+    getBuyerProfile, updateBuyerProfile, updateBuyerLocation, updateBuyerLanguage, getWishlist, addToWishlist, getBuyerOrders, removeFromWishlist, getProductsByVariety ,
     getStaticPageContent, writeReview, getCartItems, addItemToCart, removeItemFromCart, updateCartItemQuantity, placeOrder,updateAddress,deleteAddress,
     reorder, getReviewsForProduct, updateReview, deleteReview, applyCouponToCart,getAllVendors,searchAllProducts,getProductsByVendorId,getProductById,
     getOrderDetails, startCheckout, getHighlightedCoupon, getPickupLocationDetails, selectPickupSlot,getProductsByName,getPickupLocationDetailsPost,
@@ -31,6 +31,8 @@ router.use(authorizeRoles('Buyer'));
 router.get('/home', getHomePageData);
 router.get('/products/filters', getFilteredProducts);
 router.get('/products/by-category', getProductsByCategory);
+router.get('/products/variety', getProductsByVariety );
+
 router.get('/products/search', searchProductsByName);
 router.get('/vendors-near-you', getVendorsNearYou);
 router.get('/allvendors', getAllVendors);

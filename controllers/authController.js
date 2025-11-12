@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const otpService = require('../services/otpService');
 const axios = require('axios');
+const NotificationSettings = require('../models/NotificationSettings');
 
 
 const asyncHandler = require('express-async-handler');
