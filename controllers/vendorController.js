@@ -377,13 +377,21 @@ const getTodaysOrders = asyncHandler(async (req, res) => {
 const getVendorProducts = asyncHandler(async (req, res) => {
     const vendorId = req.user._id;
 
+    // 1️⃣ Populate category to get name
     const products = await Product.find({ vendor: vendorId })
-        .populate("category", "name image"); // ⭐ category name + image
+        .populate("category", "name");
+
+    // 2️⃣ Convert category => category.name
+    const cleanProducts = products.map(p => {
+        const obj = p.toObject();
+        obj.category = obj.category?.name || null;   // ⭐ Only category name
+        return obj;
+    });
 
     res.json({
         success: true,
-        count: products.length,
-        data: products
+        count: cleanProducts.length,
+        data: cleanProducts
     });
 });
 
