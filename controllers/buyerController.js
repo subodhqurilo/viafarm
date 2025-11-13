@@ -844,67 +844,93 @@ const getSmartPicks = asyncHandler(async (req, res) => {
 
 const getProductsByCategory = asyncHandler(async (req, res) => {
     const { category } = req.query;
-    const buyer = await User.findById(req.user._id).select('location');
-    const buyerLocation = buyer?.location?.coordinates;
 
     if (!category) {
         return res.status(400).json({ success: false, message: "Category is required" });
     }
 
-    // 📏 Helper: Haversine formula (distance in km)
+    // Convert category (name OR id) → ObjectId
+    let categoryId;
+
+    if (mongoose.isValidObjectId(category)) {
+        categoryId = category;
+    } else {
+        const cat = await Category.findOne({
+            name: { $regex: new RegExp(`^${category.trim()}$`, "i") }
+        });
+
+        if (!cat) {
+            return res.status(404).json({
+                success: false,
+                message: `Category "${category}" not found.`,
+            });
+        }
+
+        categoryId = cat._id;
+    }
+
+    // Buyer geo
+    const buyer = await User.findById(req.user._id).select("location");
+    const buyerLocation = buyer?.location?.coordinates;
+
     const getDistanceKm = (lat1, lon1, lat2, lon2) => {
         const toRad = (v) => (v * Math.PI) / 180;
-        const R = 6371; // Earth's radius in km
+        const R = 6371;
         const dLat = toRad(lat2 - lat1);
         const dLon = toRad(lon2 - lon1);
+
         const a =
             Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-            Math.sin(dLon / 2) ** 2;
+            Math.cos(toRad(lat1)) *
+                Math.cos(toRad(lat2)) *
+                Math.sin(dLon / 2) ** 2;
+
         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         return R * c;
     };
 
-    // 🧩 Step 1: Find all active vendors
-    const activeVendors = await User.find({ role: 'Vendor', status: 'Active' }).select('_id');
-    const activeVendorIds = activeVendors.map(v => v._id);
+    // Get active vendors
+    const activeVendors = await User.find({
+        role: "Vendor",
+        status: "Active",
+    }).select("_id");
 
-    // 🧩 Step 2: Base query for products
-    const productQuery = {
-        category,
-        status: 'In Stock',
+    const activeVendorIds = activeVendors.map((v) => v._id);
+
+    // Query products
+    const products = await Product.find({
+        category: categoryId,
+        status: "In Stock",
         vendor: { $in: activeVendorIds },
-    };
-
-    // 🟢 Step 3: Fetch products with vendor details
-    const products = await Product.find(productQuery)
-        .populate('vendor', 'name location')
+    })
+        .populate("vendor", "name location")
         .sort({ createdAt: -1, rating: -1 });
 
-    // 🧮 Step 4: Enrich with distance
-    const enriched = products.map(p => {
-        let distanceText = 'N/A';
+    // Add distance
+    const enriched = products.map((p) => {
+        let distanceText = "N/A";
 
         if (p.vendor?.location?.coordinates && buyerLocation) {
             const [vendorLng, vendorLat] = p.vendor.location.coordinates;
             const [buyerLng, buyerLat] = buyerLocation;
+
             const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
-            distanceText = `${parseFloat(distance.toFixed(2))} km away`;
+            distanceText = `${distance.toFixed(2)} km away`;
         }
 
         return {
             ...p.toObject(),
-            distance: distanceText, // ✅ formatted as "3.2 km away"
+            distance: distanceText,
         };
     });
 
-    // ✅ Step 5: Send response
     res.status(200).json({
         success: true,
         count: enriched.length,
         data: enriched,
     });
 });
+
 
 const getProductsByVariety = asyncHandler(async (req, res) => {
   const { variety } = req.query;
