@@ -376,8 +376,15 @@ const getTodaysOrders = asyncHandler(async (req, res) => {
 
 const getVendorProducts = asyncHandler(async (req, res) => {
     const vendorId = req.user._id;
-    const products = await Product.find({ vendor: vendorId });
-    res.json({ success: true, count: products.length, data: products });
+
+    const products = await Product.find({ vendor: vendorId })
+        .populate("category", "name image"); // ⭐ category name + image
+
+    res.json({
+        success: true,
+        count: products.length,
+        data: products
+    });
 });
 
 
