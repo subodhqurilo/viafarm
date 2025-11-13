@@ -173,14 +173,16 @@ exports.completeProfile = async (req, res) => {
     user.role = role;
 
     if (password) {
-      user.password = password; // password hashing handled in User model pre-save
+      user.password = password; // auto-hashed by model
     }
 
     await user.save();
 
     const token = generateToken(user);
 
-    // ✅ 3️⃣ Send Personal Notification to User (App + Web)
+    // ==============================
+    // 🟢 PERSONAL USER NOTIFICATION
+    // ==============================
     await createAndSendNotification(
       req,
       "Profile Completed 🎉",
@@ -190,61 +192,41 @@ exports.completeProfile = async (req, res) => {
         userId: user._id,
         role: user.role,
       },
-      user.role,  // userType (Buyer/Vendor/Admin)
-      user._id    // specific user
+      user.role,    // userType (Buyer/Vendor)
+      user._id      // personal user
     );
 
-    // ✅ 4️⃣ Notify all Admins (App + Web + DB)
-    let title, message;
+    // ==============================
+    // 🟡 ADMIN NOTIFICATION (Broadcast)
+    // ==============================
+    let adminTitle, adminMessage;
 
     if (user.role === "Buyer") {
-      title = "New Buyer Registered 🛍️";
-      message = `Buyer "${user.name}" has completed registration.`;
+      adminTitle = "New Buyer Registered 🛍️";
+      adminMessage = `Buyer "${user.name}" has completed registration.`;
     } else if (user.role === "Vendor") {
-      title = "New Vendor Registered 🏪";
-      message = `Vendor "${user.name}" has completed registration.`;
+      adminTitle = "New Vendor Registered 🏪";
+      adminMessage = `Vendor "${user.name}" has completed registration.`;
     } else {
-      title = "User Profile Completed";
-      message = `${user.name || "A user"} has completed their profile.`;
+      adminTitle = "User Profile Completed";
+      adminMessage = `${user.name} has completed their profile.`;
     }
 
     await createAndSendNotification(
       req,
-      title,
-      message,
+      adminTitle,
+      adminMessage,
       {
         action: "user_profile_completed",
         userId: user._id,
         role: user.role,
       },
-      "Admin" // Send to all admins
+      "Admin"       // broadcast to all admins
     );
 
-    // ✅ 5️⃣ Also send live Socket.IO events (optional redundancy)
-    const io = req.app.get("io");
-    const onlineUsers = req.app.get("onlineUsers");
-
-    // Personal real-time alert
-    if (onlineUsers[user._id]) {
-      io.to(onlineUsers[user._id].socketId).emit("notification", {
-        title: "Profile Completed 🎉",
-        message: `Hi ${user.name}, your ${user.role} profile has been completed successfully.`,
-        type: "success",
-      });
-    }
-
-    // Admin real-time alert
-    Object.entries(onlineUsers).forEach(([id, info]) => {
-      if (info.role === "Admin") {
-        io.to(info.socketId).emit("notification", {
-          title,
-          message,
-          type: "info",
-        });
-      }
-    });
-
-    // ✅ 6️⃣ Final Response to Client
+    // ==============================
+    // RESPONSE
+    // ==============================
     res.status(200).json({
       status: "success",
       message: "Profile completed successfully.",
@@ -267,6 +249,7 @@ exports.completeProfile = async (req, res) => {
     });
   }
 };
+
 
 
 

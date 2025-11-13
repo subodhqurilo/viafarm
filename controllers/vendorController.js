@@ -401,7 +401,7 @@ const getVendorProducts = asyncHandler(async (req, res) => {
 const addProduct = asyncHandler(async (req, res) => {
     const {
         name,
-        category,          // can be name OR ObjectId
+        category,
         variety,
         price,
         quantity,
@@ -413,7 +413,7 @@ const addProduct = asyncHandler(async (req, res) => {
 
     const vendorId = req.user._id;
 
-    // 1️⃣ Vendor approval check
+    // 1️⃣ Vendor Approval Check
     const vendor = await User.findById(vendorId);
     if (!vendor || !vendor.isApproved) {
         return res.status(403).json({
@@ -422,7 +422,7 @@ const addProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // 2️⃣ Required fields check
+    // 2️⃣ Required Fields
     if (!name || !category || !variety || !price || !quantity || !unit) {
         return res.status(400).json({
             success: false,
@@ -430,7 +430,7 @@ const addProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // 3️⃣ Numeric validation
+    // 3️⃣ Numeric Validation
     if (isNaN(price) || isNaN(quantity) || price <= 0 || quantity <= 0) {
         return res.status(400).json({
             success: false,
@@ -438,7 +438,7 @@ const addProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // 4️⃣ Unit check for 'pc'
+    // 4️⃣ Unit "pc" Requires weightPerPiece
     if (unit === "pc" && (!weightPerPiece || typeof weightPerPiece !== "string")) {
         return res.status(400).json({
             success: false,
@@ -447,30 +447,24 @@ const addProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // ⭐⭐⭐ 5️⃣ Convert category (name OR id) → ObjectId ⭐⭐⭐
-
+    // ⭐⭐⭐ 5️⃣ Convert category input to ObjectId ⭐⭐⭐
     let categoryId;
-
     if (mongoose.isValidObjectId(category)) {
-        // Already ObjectId
         categoryId = category;
     } else {
-        // Treat as name -> find category by name
         const cat = await Category.findOne({
             name: { $regex: new RegExp(`^${category.trim()}$`, "i") }
         });
-
         if (!cat) {
             return res.status(400).json({
                 success: false,
-                message: `Category "${category}" not found. Please choose a valid category.`,
+                message: `Category "${category}" not found.`,
             });
         }
-
         categoryId = cat._id;
     }
 
-    // 6️⃣ Upload images to Cloudinary
+    // 6️⃣ Upload Images to Cloudinary
     let images = [];
     if (req.files && req.files.length > 0) {
         try {
@@ -484,7 +478,7 @@ const addProduct = asyncHandler(async (req, res) => {
             console.error("Cloudinary upload error:", err);
             return res.status(500).json({
                 success: false,
-                message: "Image upload failed. Please try again.",
+                message: "Image upload failed.",
             });
         }
     } else {
@@ -494,11 +488,11 @@ const addProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // 7️⃣ Create product
+    // 7️⃣ Create Product
     const newProduct = await Product.create({
         name: name.trim(),
         vendor: vendorId,
-        category: categoryId,          // ✔ Correct ObjectId
+        category: categoryId,
         variety: variety.trim(),
         price: Number(price),
         quantity: Number(quantity),
@@ -511,30 +505,35 @@ const addProduct = asyncHandler(async (req, res) => {
         weightPerPiece: unit === "pc" ? weightPerPiece : null,
     });
 
-    // 8️⃣ Notifications
+    // ⭐⭐⭐ 8️⃣ SEND NOTIFICATIONS ⭐⭐⭐
+
+    // ⬤ Buyers → ALL buyers → Push + Bell
+    await createAndSendNotification(
+        req,
+        "🛒 sanjay billa New Product Available!",
+        `Check out the new product "${newProduct.name}".`,
+        { type: "product", productId: newProduct._id },
+        "Buyer" // all buyers
+    );
+
+    // ⬤ Admins → ALL admins → Push + Bell
     await createAndSendNotification(
         req,
         "🆕 New Product Added",
         `${vendor.name} just added a new product "${newProduct.name}".`,
         { type: "product", productId: newProduct._id },
-        "Admin"
+        "Admin" // all admins
     );
 
+    // ⬤ Vendor → ONLY personal vendor → Bell Only (no push)
     await createAndSendNotification(
         req,
         "✅ Product Added Successfully",
         `Your product "${newProduct.name}" is now live in the store.`,
         { type: "product", productId: newProduct._id },
         "Vendor",
-        vendorId
-    );
-
-    await createAndSendNotification(
-        req,
-        "🛒 New Product Available!",
-        `Check out the new product "${newProduct.name}".`,
-        { type: "product", productId: newProduct._id },
-        "Buyer"
+        vendorId,           // personal vendor only
+        { disablePush: true } // ⛔ NO PUSH for vendor
     );
 
     // 9️⃣ Response
@@ -544,6 +543,7 @@ const addProduct = asyncHandler(async (req, res) => {
         data: newProduct,
     });
 });
+
 
 
 
@@ -565,7 +565,7 @@ const updateProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // 3️⃣ Allowed fields
+    // 3️⃣ Allowed fields list
     const allowedFields = [
         "name",
         "category",
@@ -581,17 +581,14 @@ const updateProduct = asyncHandler(async (req, res) => {
 
     const updateFields = {};
 
-    // ⭐⭐⭐ 4️⃣ Category Convert: Name OR ObjectId → ObjectId ⭐⭐⭐
+    // ⭐⭐⭐ 4️⃣ Convert Category Name -> ObjectId ⭐⭐⭐
     if (updates.category !== undefined) {
         const categoryVal = updates.category;
-
         let categoryId;
 
         if (mongoose.isValidObjectId(categoryVal)) {
-            // Already ObjectId
             categoryId = categoryVal;
         } else {
-            // Convert name → category._id
             const cat = await Category.findOne({
                 name: { $regex: new RegExp(`^${categoryVal.trim()}$`, "i") },
             });
@@ -599,7 +596,7 @@ const updateProduct = asyncHandler(async (req, res) => {
             if (!cat) {
                 return res.status(400).json({
                     success: false,
-                    message: `Category "${categoryVal}" not found. Please select a valid category.`,
+                    message: `Category "${categoryVal}" not found.`,
                 });
             }
 
@@ -609,7 +606,7 @@ const updateProduct = asyncHandler(async (req, res) => {
         updateFields.category = categoryId;
     }
 
-    // 5️⃣ Other fields processing
+    // 5️⃣ Process allowed fields
     for (const field of allowedFields) {
         if (updates[field] !== undefined && field !== "category") {
             if (field === "price" || field === "quantity") {
@@ -625,16 +622,15 @@ const updateProduct = asyncHandler(async (req, res) => {
         }
     }
 
-    // 6️⃣ Weight per piece validation
+    // 6️⃣ Validate weightPerPiece when selling "pc"
     const finalUnit = updateFields.unit || product.unit;
-
     if (finalUnit === "pc") {
         const weight = updateFields.weightPerPiece || product.weightPerPiece;
 
         if (!weight || typeof weight !== "string") {
             return res.status(400).json({
                 success: false,
-                message: 'When selling by piece (pc), please specify "weightPerPiece" (e.g., "400g").',
+                message: 'When selling by "pc", you must provide weightPerPiece (e.g., "400g").',
             });
         }
 
@@ -643,10 +639,11 @@ const updateProduct = asyncHandler(async (req, res) => {
         updateFields.weightPerPiece = null;
     }
 
-    // 7️⃣ Image upload handling
+    // 7️⃣ Image Upload
     if (req.files && req.files.length > 0) {
         try {
             const uploadedImages = [];
+
             for (const file of req.files) {
                 const result = await cloudinary.uploader.upload(file.path, {
                     folder: "product-images",
@@ -664,7 +661,7 @@ const updateProduct = asyncHandler(async (req, res) => {
         }
     }
 
-    // Keep old price
+    // old price store
     const oldPrice = product.price;
 
     // 8️⃣ Update product
@@ -674,24 +671,41 @@ const updateProduct = asyncHandler(async (req, res) => {
         { new: true, runValidators: true }
     ).populate("vendor", "name _id");
 
-    // 9️⃣ Notifications
+    // ---------------------------------------------------------
+    // ⭐⭐⭐ 9️⃣ SEND NOTIFICATIONS ⭐⭐⭐
+    // ---------------------------------------------------------
 
-    // Vendor notification
+    // 🔸 PERSONAL VENDOR — ONLY BELL, NO PUSH
     await createAndSendNotification(
         req,
         "✅ Product Updated",
         `Your product "${updatedProduct.name}" was updated successfully.`,
         {
-            type: "product",
+            type: "product_update",
             productId: updatedProduct._id,
             oldPrice,
             newPrice: updatedProduct.price,
         },
         "Vendor",
-        updatedProduct.vendor._id
+        updatedProduct.vendor._id,
+        { disablePush: true } // ⛔ NO PUSH for vendor
     );
 
-    // Buyer notification if price dropped
+    // 🔹 ALL ADMINS — PUSH + BELL
+    await createAndSendNotification(
+        req,
+        "🛍️ Product Updated",
+        `Vendor ${updatedProduct.vendor.name} updated product "${updatedProduct.name}".`,
+        {
+            type: "product_update",
+            productId: updatedProduct._id,
+            oldPrice,
+            newPrice: updatedProduct.price,
+        },
+        "Admin"
+    );
+
+    // 🔸 BUYERS — ONLY if price dropped → PUSH + BELL
     if (
         updateFields.price !== undefined &&
         Number(updateFields.price) < Number(oldPrice)
@@ -699,9 +713,9 @@ const updateProduct = asyncHandler(async (req, res) => {
         await createAndSendNotification(
             req,
             "💰 Price Drop Alert!",
-            `Good news! "${updatedProduct.name}" is now ₹${updateFields.price} (was ₹${oldPrice}).`,
+            `"${updatedProduct.name}" is now ₹${updateFields.price} (was ₹${oldPrice}).`,
             {
-                type: "product",
+                type: "price_drop",
                 productId: updatedProduct._id,
                 oldPrice,
                 newPrice: updateFields.price,
@@ -710,13 +724,15 @@ const updateProduct = asyncHandler(async (req, res) => {
         );
     }
 
-    // 🔟 Final response
-    res.status(200).json({
+    // ---------------------------------------------------------
+
+    return res.status(200).json({
         success: true,
         message: "Product updated successfully.",
         data: updatedProduct,
     });
 });
+
 
 
 
