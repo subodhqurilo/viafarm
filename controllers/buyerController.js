@@ -1,7 +1,7 @@
 // controllers/buyerController.js
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
-const Product = require('../models/Product');
+
 const Cart = require('../models/Cart');
 const Order = require('../models/Order');
 const User = require('../models/User');
@@ -19,6 +19,8 @@ const { addressToCoords, coordsToAddress } = require('../utils/geocode');
 const axios = require('axios');
 const { getDistanceKm } = require("../utils/orderUtils"); // ✅ import Haversine function
 const NotificationSettings = require('../models/NotificationSettings');
+const Category = require("../models/Category");
+const Product = require("../models/Product");   // ✅ Product also imported
 
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
@@ -395,6 +397,71 @@ const getProductDetails = asyncHandler(async (req, res) => {
   });
 });
 
+
+
+
+
+
+const getCategoriesWithProducts = asyncHandler(async (req, res) => {
+  try {
+    const includeInactive = req.query.includeInactive === "true"; // ?includeInactive=true
+    const products = await Product.find(
+      includeInactive ? {} : { status: "In Stock" }
+    ).select("name category price images status");
+
+    const categories = await Category.find({}).sort({ name: 1 });
+
+    // ✅ Normalize (lowercase + remove spaces/symbols)
+    const normalize = (str) => {
+      if (!str) return "";
+      return str
+        .toString()
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z]/g, "")  // remove special chars
+        .replace(/s$/, "");      // remove trailing s (Fruits -> Fruit)
+    };
+
+    // ✅ Match categories with products (loose match allowed)
+    const data = categories.map((cat) => {
+      const catKey = normalize(cat.name);
+
+      const matchedProducts = products.filter((p) => {
+        const prodKey = normalize(p.category);
+        return (
+          catKey === prodKey ||
+          prodKey.includes(catKey) ||
+          catKey.includes(prodKey)
+        );
+      });
+
+      return {
+        _id: cat._id,
+        name: cat.name,
+        image: cat.image,
+        productCount: matchedProducts.length,
+        products: matchedProducts,
+      };
+    });
+
+    const filtered = data.filter((c) => c.products.length > 0);
+
+    res.status(200).json({
+      success: true,
+      totalCategories: filtered.length,
+      data: filtered,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching categories with products:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error while fetching categories and products.",
+      error: error.message,
+    });
+  }
+});
+
+module.exports = { getCategoriesWithProducts };
 
 
 
@@ -4578,7 +4645,7 @@ module.exports = {
     placeOrder,
     getBuyerOrders,
     getWishlist,
-    addToWishlist,
+    addToWishlist,getCategoriesWithProducts,
     removeFromWishlist, searchAllProducts,
     reorder,
     getBuyerProfile,

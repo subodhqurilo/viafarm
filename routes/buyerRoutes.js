@@ -7,7 +7,7 @@ const {
     getBuyerProfile, updateBuyerProfile, updateBuyerLocation, updateBuyerLanguage, getWishlist, addToWishlist, getBuyerOrders, removeFromWishlist, getProductsByVariety ,
     getStaticPageContent, writeReview, getCartItems, addItemToCart, removeItemFromCart, updateCartItemQuantity, placeOrder,updateAddress,deleteAddress,
     reorder, getReviewsForProduct, updateReview, deleteReview, applyCouponToCart,getAllVendors,searchAllProducts,getProductsByVendorId,getProductById,
-    getOrderDetails, startCheckout, getHighlightedCoupon, getPickupLocationDetails, selectPickupSlot,getProductsByName,getPickupLocationDetailsPost,
+    getOrderDetails, startCheckout, getHighlightedCoupon, getPickupLocationDetails, selectPickupSlot,getProductsByName,getPickupLocationDetailsPost,getCategoriesWithProducts,
     verifyPayment, getProductsByCategory, getVendorProfileForBuyer, getProductReviews, getAvailableCouponsForBuyer, getCouponsByProductId,getDonationsReceived,
     addAddress, getFreshAndPopularProducts, getLocalBestProducts, getAllAroundIndiaProducts, getSmartPicks,getVendorsByProductName,donateToAdmin,searchProductsByName,
     getAddresses, setDefaultAddress, getHomePageData, getProductDetails, getFilteredProducts, getVendorsNearYou, searchProducts, generateUpiPaymentUrl,markOrderPaid
@@ -88,6 +88,7 @@ router.post('/reviews/:productId', upload.array('images', 5), writeReview);
 router.put('/reviews/:reviewId', upload.array('images', 5), updateReview); // Removed redundant authMiddleware
 router.delete('/reviews/:reviewId', deleteReview); // Removed redundant authMiddleware
 
+router.get('/with-products', getCategoriesWithProducts);
 
 // --- Address & Pickup ---
 router.get('/addresses', getAddresses);

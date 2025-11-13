@@ -14,10 +14,12 @@ const createAndSendNotification = async (
   userId = null
 ) => {
   try {
-    const io = req.app.get("io");
-    const onlineUsers = req.app.get("onlineUsers");
+    const io = req?.app?.get("io") || global.io;
+    const onlineUsers = req?.app?.get("onlineUsers") || global.onlineUsers || {};
 
-    // ✅ Save Notification in DB
+    if (!title || !message) throw new Error("Title and message are required.");
+
+    // ✅ Save in DB
     const notification = await Notification.create({
       title,
       message,
@@ -26,7 +28,6 @@ const createAndSendNotification = async (
       userId,
     });
 
-    // ✅ Socket data payload
     const payload = {
       id: notification._id,
       title,
@@ -37,35 +38,35 @@ const createAndSendNotification = async (
       createdAt: notification.createdAt,
     };
 
-    // ✅ 1️⃣ Socket.IO (Web / Admin Dashboard)
-    if (userId && onlineUsers[userId]) {
-      // → Send to specific user
-      io.to(onlineUsers[userId].socketId).emit("notification", payload);
-    } else if (userType === "All") {
-      // → Broadcast to all users
-      io.emit("notification", payload);
-    } else {
-      // → Send to specific role (Admin / Vendor / Buyer)
-      for (const [id, info] of Object.entries(onlineUsers)) {
-        if (info.role === userType) {
-          io.to(info.socketId).emit("notification", payload);
+    // ✅ Socket.IO Emit
+    if (io) {
+      if (userId && onlineUsers[userId]) {
+        io.to(onlineUsers[userId].socketId).emit("notification", payload);
+      } else if (userType === "All") {
+        io.emit("notification", payload);
+      } else if (!userId) {
+        for (const [id, info] of Object.entries(onlineUsers)) {
+          if (info.role === userType) {
+            io.to(info.socketId).emit("notification", payload);
+          }
         }
       }
     }
 
-    // ✅ 2️⃣ Expo Push Notifications (Mobile App)
+    // ✅ Expo Push
     let targetUsers = [];
-
     if (userId) {
-      const user = await User.findById(userId);
+      const user = await User.findById(userId).select("expoPushToken");
       if (user) targetUsers = [user];
     } else if (userType === "All") {
-      targetUsers = await User.find({ expoPushToken: { $exists: true } });
+      targetUsers = await User.find({
+        expoPushToken: { $exists: true, $ne: null },
+      }).select("expoPushToken");
     } else {
       targetUsers = await User.find({
         role: userType,
-        expoPushToken: { $exists: true },
-      });
+        expoPushToken: { $exists: true, $ne: null },
+      }).select("expoPushToken");
     }
 
     const messages = targetUsers
@@ -78,43 +79,34 @@ const createAndSendNotification = async (
         data,
       }));
 
-    // ✅ Send Push + Clean invalid tokens
+    const invalidTokens = [];
     if (messages.length > 0) {
-      try {
-        const chunks = expo.chunkPushNotifications(messages);
-
-        for (const chunk of chunks) {
-          const receipts = await expo.sendPushNotificationsAsync(chunk);
-
-          // 🔥 Check for expired or invalid push tokens
-          for (let i = 0; i < receipts.length; i++) {
-            const receipt = receipts[i];
-
-            if (receipt.status === "error") {
-              if (receipt.details?.error === "DeviceNotRegistered") {
-                const invalidToken = messages[i].to;
-
-                // 🗑 Remove expired token from DB
-                await User.updateMany(
-                  { expoPushToken: invalidToken },
-                  { $unset: { expoPushToken: "" } }
-                );
-
-                console.log("🗑 Removed expired Expo token:", invalidToken);
-              }
-            }
+      const chunks = expo.chunkPushNotifications(messages);
+      for (const chunk of chunks) {
+        const receipts = await expo.sendPushNotificationsAsync(chunk);
+        await new Promise((res) => setTimeout(res, 500)); // avoid throttling
+        receipts.forEach((r, i) => {
+          if (r.status === "error" && r.details?.error === "DeviceNotRegistered") {
+            invalidTokens.push(messages[i].to);
           }
-        }
-
-        console.log(`📱 Push sent to ${messages.length} devices.`);
-      } catch (err) {
-        console.error("❌ Expo push send error:", err.message);
+        });
       }
+
+      if (invalidTokens.length > 0) {
+        await User.updateMany(
+          { expoPushToken: { $in: invalidTokens } },
+          { $unset: { expoPushToken: "" } }
+        );
+        console.log("🗑 Removed expired Expo tokens:", invalidTokens.length);
+      }
+
+      console.log(`📱 Push sent to ${messages.length} devices.`);
     }
 
-    return notification;
+    return { notification, pushSent: messages.length };
   } catch (err) {
-    console.error("❌ Notification error:", err.message);
+    console.error("❌ Notification error:", err);
+    throw err;
   }
 };
 

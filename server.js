@@ -1,99 +1,133 @@
-// server.js
-const express = require('express');
-const dotenv = require('dotenv');
-const connectDB = require('./config/db');
-const path = require('path');
-const cors = require('cors');
-const http = require('http');
-const { Server } = require('socket.io');
-const { Expo } = require('expo-server-sdk');
+/// server.js
+const express = require("express");
+const dotenv = require("dotenv");
+const connectDB = require("./config/db");
+const path = require("path");
+const cors = require("cors");
+const http = require("http");
+const { Server } = require("socket.io");
+const { Expo } = require("expo-server-sdk");
+const cookieParser = require("cookie-parser");
 
 dotenv.config();
 connectDB();
 
 const app = express();
-// ✅ View Engine Setup for Password Reset Page
-app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views'));
+app.use(cookieParser());
 
-// ✅ Initialize Expo Push SDK (for React Native app)
-const expo = new Expo();
+// 🔥 Allowed frontend origins
+const allowedOrigins = [
+  "https://viafarm-e3tc.vercel.app",    // your admin vercel build
+  "http://localhost:3000",             // local dev admin
+  "http://192.168.1.5:8081",           // expo LAN
+  "exp://192.168.1.5:8081",
+  process.env.FRONTEND_URL,
+];
 
-// ✅ CORS Setup — for Web & Expo App
-app.use(cors({
-  origin: [
-    "https://viafarm-iy5q.vercel.app",
-    "https://viafarm-e3tc.vercel.app",
-    "http://localhost:3000",   // Web (Admin Panel)
-    "http://192.168.1.5:8081", // Expo Dev (replace IP)
-    "exp://192.168.1.5:8081" ,
-    "process.env.FRONTEND_URL",
-    "https://viafarm-1.onrender.com"
-      // Expo App (replace IP)
-  ],
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  credentials: true
-}));
+// ------------------
+// CORS CONFIG
+// ------------------
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true); // allow mobile app/expo
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("CORS blocked origin: " + origin), false);
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
 app.use(express.json());
-app.use(express.urlencoded({ extended: true })); // add this
+app.use(express.urlencoded({ extended: true }));
 
+// ------------------
+// EJS ENGINE
+// ------------------
+app.set("view engine", "ejs");
+app.set("views", path.join(__dirname, "views"));
 
-// ✅ Create HTTP Server for Socket.IO
+// ------------------
+// EXPO SDK
+// ------------------
+const expo = new Expo();
+
+// ------------------
+// HTTP + SOCKET.IO
+// ------------------
 const server = http.createServer(app);
 
-// ✅ Initialize Socket.IO
 const io = new Server(server, {
   cors: {
-    origin: "*", // during dev, open. In prod, restrict to your domains.
-    methods: ["GET", "POST"]
-  }
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ["GET", "POST"],
+  },
 });
 
-// 🟢 Online Users Memory Store
+// ------------------
+// SOCKET USER TRACKING
+// ------------------
 let onlineUsers = {};
 
-// ✅ Socket.IO Setup
-io.on('connection', (socket) => {
-  // console.log('⚡ User connected:', socket.id);
+io.on("connection", (socket) => {
+  console.log("⚡ User connected:", socket.id);
 
-  // 🧩 When a user registers their connection
-  socket.on('registerUser', ({ userId, role }) => {
+  socket.on("registerUser", ({ userId, role }) => {
     if (userId) {
       onlineUsers[userId] = { socketId: socket.id, role };
-      console.log(`✅ ${role} connected: ${userId}`);
+      console.log(`🔵 ${role} connected: ${userId}`);
     }
   });
 
-  // ❌ When user disconnects
-  socket.on('disconnect', () => {
-    for (const [userId, info] of Object.entries(onlineUsers)) {
+  socket.on("disconnect", () => {
+    for (const [id, info] of Object.entries(onlineUsers)) {
       if (info.socketId === socket.id) {
-        console.log(`❌ ${info.role} disconnected: ${userId}`);
-        delete onlineUsers[userId];
+        console.log(`🔴 ${info.role} disconnected: ${id}`);
+        delete onlineUsers[id];
         break;
       }
     }
   });
 });
 
-// ✅ Attach `io`, `expo`, and `onlineUsers` to app (accessible in controllers)
-app.set('io', io);
-app.set('expo', expo);
-app.set('onlineUsers', onlineUsers);
+// ------------------
+// GLOBAL REFS
+// ------------------
+app.set("io", io);
+app.set("expo", expo);
+app.set("onlineUsers", onlineUsers);
 
-// ✅ Routes
-app.use('/api/auth', require('./routes/authRoutes'));
-app.use('/api/buyer', require('./routes/buyerRoutes'));
-app.use('/api/vendor', require('./routes/vendorRoutes'));
-app.use('/api/admin', require('./routes/adminRoutes'));
-app.use('/api/notifications', require('./routes/notificationRoutes'));
-app.use('/', require('./routes/resetRoutes'));
-app.use('/api', require('./routes/testRoutes'));
+global.io = io;
+global.expo = expo;
+global.onlineUsers = onlineUsers;
 
-// ✅ Default route
-app.get('/', (req, res) => res.send('API running...'));
+// ------------------
+// ROUTES
+// ------------------
+app.use("/api/auth", require("./routes/authRoutes"));
+app.use("/api/buyer", require("./routes/buyerRoutes"));
+app.use("/api/vendor", require("./routes/vendorRoutes"));
+app.use("/api/admin", require("./routes/adminRoutes"));
+app.use("/api/notifications", require("./routes/notificationRoutes"));
+app.use("/", require("./routes/resetRoutes"));
+app.use("/api", require("./routes/testRoutes"));
 
-// ✅ Start Server
+// ------------------
+// DEFAULT
+// ------------------
+app.get("/", (req, res) =>
+  res.send("🚀 ViaFarm API running successfully!")
+);
+
+// ------------------
+// START SERVER
+// ------------------
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});

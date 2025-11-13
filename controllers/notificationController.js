@@ -5,7 +5,7 @@ const { Expo } = require("expo-server-sdk");
 
 const expo = new Expo();
 
-// ✅ Send Notification (Store + Socket + Push)
+// ✅ Send Notification (Personal + Role + All)
 exports.sendNotification = async (req, res) => {
   try {
     const { title, message, receiverId, userType = "All", data = {} } = req.body;
@@ -14,46 +14,66 @@ exports.sendNotification = async (req, res) => {
       return res.status(400).json({ success: false, message: "Title and message are required" });
     }
 
-    // ✅ Save Notification in DB
+    // ✅ Save in DB
     const notification = await Notification.create({
       title,
       message,
       receiverId: receiverId || null,
       userType,
       data,
-      isRead: false
+      isRead: false,
+      createdBy: req.user?._id || null,
     });
 
-    // ✅ Push Notification Payload (App Tap Action ke liye important)
+    // ✅ Socket.IO Real-time Send
+    const io = global.io;
+    const onlineUsers = global.onlineUsers || {};
+
+    if (io) {
+      if (receiverId && onlineUsers[receiverId]) {
+        io.to(onlineUsers[receiverId].socketId).emit("notification", notification);
+      } else if (userType !== "All") {
+        for (const [id, info] of Object.entries(onlineUsers)) {
+          if (info.role === userType) {
+            io.to(info.socketId).emit("notification", notification);
+          }
+        }
+      } else {
+        io.emit("notification", notification);
+      }
+    }
+
+    // ✅ Push Notification Payload
     const pushPayload = {
       notificationId: notification._id,
-      ...data   // e.g: { type:"order", orderId:"..." }
+      ...data
     };
 
-    // ✅ Select Users to Notify
+    // ✅ Select Target Users
     let targetUsers = [];
-
     if (receiverId) {
-      // 🎯 Personal Notification
       const user = await User.findById(receiverId);
       if (user && user.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
-        targetUsers.push(user.expoPushToken);
+        targetUsers = [user.expoPushToken];
       }
     } else if (userType !== "All") {
-      // 👥 Notify All Users of a Role
-      const users = await User.find({ role: userType, expoPushToken: { $exists: true } });
+      const users = await User.find({
+        role: userType,
+        expoPushToken: { $exists: true, $ne: null }
+      });
       targetUsers = users
         .filter(u => Expo.isExpoPushToken(u.expoPushToken))
         .map(u => u.expoPushToken);
     } else {
-      // 🌍 Send to Everyone
-      const allUsers = await User.find({ expoPushToken: { $exists: true } });
+      const allUsers = await User.find({
+        expoPushToken: { $exists: true, $ne: null }
+      });
       targetUsers = allUsers
         .filter(u => Expo.isExpoPushToken(u.expoPushToken))
         .map(u => u.expoPushToken);
     }
 
-    // ✅ Send Expo Push Notifications
+    // ✅ Send Expo Push
     if (targetUsers.length > 0) {
       const messages = targetUsers.map(token => ({
         to: token,
@@ -69,40 +89,41 @@ exports.sendNotification = async (req, res) => {
       }
     }
 
-    // ✅ Real-time Notification (Admin Panel)
-    if (global.io) {
-      global.io.emit("notification", notification);
-    }
-
     res.status(200).json({ success: true, message: "Notification sent successfully", notification });
-
   } catch (error) {
     console.error("Send notification error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-
-// ✅ Get Notifications for logged-in user
+// ✅ Get Notifications (with pagination + unread count)
 exports.getNotifications = async (req, res) => {
   try {
     const userId = req.user._id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
 
-    const notifications = await Notification.find({
+    const filter = {
       $or: [
         { receiverId: userId },
         { userType: req.user.role },
         { userType: "All" }
       ]
-    }).sort({ createdAt: -1 });
+    };
 
-    res.json({ success: true, notifications });
+    const notifications = await Notification.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit);
 
+    const total = await Notification.countDocuments(filter);
+    const unreadCount = await Notification.countDocuments({ ...filter, isRead: false });
+
+    res.json({ success: true, total, unreadCount, page, limit, notifications });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 };
-
 
 // ✅ Mark as Read
 exports.markAsRead = async (req, res) => {
@@ -111,16 +132,16 @@ exports.markAsRead = async (req, res) => {
   res.json({ success: true, notification: updated });
 };
 
-
-// ✅ Delete Single Notification
+// ✅ Delete Single
 exports.deleteNotification = async (req, res) => {
-  await Notification.findOneAndDelete({ _id: req.params.id });
+  await Notification.findOneAndDelete({ _id: req.params.id, receiverId: req.user._id });
   res.json({ success: true, message: "Notification deleted successfully" });
 };
 
-
-// ✅ Delete All Notifications
+// ✅ Delete All (only for current user)
 exports.deleteAllNotifications = async (req, res) => {
-  await Notification.deleteMany({});
-  res.json({ success: true, message: "All notifications cleared" });
+  await Notification.deleteMany({
+    $or: [{ receiverId: req.user._id }, { userType: req.user.role }]
+  });
+  res.json({ success: true, message: "All your notifications cleared" });
 };

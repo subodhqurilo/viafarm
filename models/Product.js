@@ -11,9 +11,11 @@ const productSchema = new mongoose.Schema({
     required: true,
   },
   category: {
-    type: String,
-    required: true,
-  },
+  type: mongoose.Schema.Types.ObjectId,
+  ref: "Category",
+  required: true,
+},
+
   variety: {
     type: String,
     required: true,
