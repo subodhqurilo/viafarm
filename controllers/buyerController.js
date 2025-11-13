@@ -220,26 +220,10 @@ const getProductDetails = asyncHandler(async (req, res) => {
     });
   }
 
-  // 📏 Distance helper (Haversine formula)
-  const getDistanceKm = (lat1, lon1, lat2, lon2) => {
-    const toRad = (v) => (v * Math.PI) / 180;
-    const R = 6371; // Earth radius in km
-    const dLat = toRad(lat2 - lat1);
-    const dLon = toRad(lon2 - lon1);
-    const a =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos(toRad(lat1)) *
-        Math.cos(toRad(lat2)) *
-        Math.sin(dLon / 2) ** 2;
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  };
-
-  // 🟢 Step 1: Fetch Product + Vendor
-  const product = await Product.findById(id).populate(
-    "vendor",
-    "name address mobileNumber rating location profilePicture vendorDetails"
-  );
+  // Fetch product with vendor + category name
+  const product = await Product.findById(id)
+    .populate("vendor", "name address mobileNumber rating location profilePicture vendorDetails")
+    .populate("category", "name image");  // ⭐ Category NAME fetch ho raha hai
 
   if (!product) {
     return res.status(404).json({
@@ -248,8 +232,39 @@ const getProductDetails = asyncHandler(async (req, res) => {
     });
   }
 
-  // 🟢 Step 2: Fetch Buyer Location (auto-detect)
+  // ⭐ CATEGORY NAME FIX
+  const categoryName = product.category?.name || null;
+
+  // Distance calculation
+  const getDistanceKm = (lat1, lon1, lat2, lon2) => {
+    const toRad = (v) => (v * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+
+    return (
+      2 *
+      Math.atan2(
+        Math.sqrt(
+          Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(lat1)) *
+              Math.cos(toRad(lat2)) *
+              Math.sin(dLon / 2) ** 2
+        ),
+        Math.sqrt(
+          1 -
+            (Math.sin(dLat / 2) ** 2 +
+              Math.cos(toRad(lat1)) *
+                Math.cos(toRad(lat2)) *
+                Math.sin(dLon / 2) ** 2)
+        )
+      ) * R
+    );
+  };
+
+  // Buyer location fetch
   let buyerHasLocation = false;
+
   if ((!buyerLat || !buyerLng) && req.user?._id) {
     const buyer = await User.findById(req.user._id).select("location");
     if (buyer?.location?.coordinates?.length === 2) {
@@ -261,106 +276,45 @@ const getProductDetails = asyncHandler(async (req, res) => {
     buyerHasLocation = true;
   }
 
-  // 🟢 Step 3: Always Show Distance (no limit condition)
+  // Distance text
   let distanceText = "Please update your delivery address to view distance.";
-  if (
-    buyerHasLocation &&
-    product.vendor?.location?.coordinates?.length === 2
-  ) {
-    const [vendorLng, vendorLat] = product.vendor.location.coordinates;
 
+  if (buyerHasLocation && product.vendor?.location?.coordinates?.length === 2) {
+    const [vendorLng, vendorLat] = product.vendor.location.coordinates;
     const distance = getDistanceKm(
       parseFloat(buyerLat),
       parseFloat(buyerLng),
-      parseFloat(vendorLat),
-      parseFloat(vendorLng)
+      vendorLat,
+      vendorLng
     );
-
-    if (!isNaN(distance)) {
-      distanceText = `${distance.toFixed(2)} km away`;
-    } else {
-      distanceText = "Distance unavailable.";
-    }
-
-    // 🟢 Auto-save buyer location
-    if (req.user?._id && buyerLat && buyerLng) {
-      await User.findByIdAndUpdate(req.user._id, {
-        location: {
-          type: "Point",
-          coordinates: [parseFloat(buyerLng), parseFloat(buyerLat)],
-        },
-      });
-    }
+    distanceText = `${distance.toFixed(2)} km away`;
   }
 
-  // 🟢 Step 4: Nutritional Info (fallback)
-  const nutritionalInfo = product.nutritionalValue || {
-    servingSize: "",
-    nutrients: [],
-    additionalNote: "",
-  };
-
-  // 🟢 Step 5: Fetch Reviews
-  const reviewsRaw = await Review.find({ product: id })
-    .populate("user", "name profilePicture")
-    .select("rating comment images createdAt updatedAt")
-    .sort({ createdAt: -1 })
-    .limit(5);
-
-  const totalReviews = await Review.countDocuments({ product: id });
-  const reviews = reviewsRaw.map((r) => ({
-    _id: r._id,
-    user: r.user,
-    rating: r.rating,
-    comment: r.comment || "",
-    images: r.images,
-    createdAt: r.createdAt,
-    updatedAt: r.updatedAt,
-  }));
-
-  // 🟢 Step 6: Product Rating (avg + count)
-  const productRatingAgg = await Review.aggregate([
-    { $match: { product: new mongoose.Types.ObjectId(id) } },
-    {
-      $group: {
-        _id: null,
-        avgRating: { $avg: "$rating" },
-        count: { $sum: 1 },
-      },
-    },
-  ]);
-
-  const avgProductRating =
-    productRatingAgg[0]?.avgRating ?? product.rating ?? 0;
-  const productRatingCount =
-    productRatingAgg[0]?.count ?? product.ratingCount ?? 0;
-
-  // 🟢 Step 7: Cache product rating
-  await Product.findByIdAndUpdate(id, {
-    rating: parseFloat(avgProductRating.toFixed(1)),
-    ratingCount: productRatingCount,
-  });
-
-  // 🟢 Step 8: Recommended Products
-  const recommendedProducts = await Product.find({
+  // Recommended products FIX
+  const recQuery = {
     _id: { $ne: product._id },
     status: "In Stock",
-    $or: [{ vendor: product.vendor._id }, { category: product.category }],
-  })
+    $or: [{ vendor: product.vendor?._id }],
+  };
+
+  if (product.category?._id) {
+    recQuery.$or.push({ category: product.category._id });
+  }
+
+  const recommendedProducts = await Product.find(recQuery)
+    .populate("category", "name") // ⭐ Category name included
     .sort({ rating: -1, createdAt: -1 })
     .limit(6)
-    .select(
-      "name category price unit quantity images rating status allIndiaDelivery"
-    );
+    .select("name category price unit quantity images rating status allIndiaDelivery");
 
-  // ✅ Step 9: Send Response
+  // Final response
   res.status(200).json({
     success: true,
     data: {
       product: {
         _id: product._id,
         name: product.name,
-        category: product.category,
+        category: categoryName,   // ⭐ ONLY NAME
         variety: product.variety,
         price: product.price,
         quantity: product.quantity,
@@ -370,28 +324,30 @@ const getProductDetails = asyncHandler(async (req, res) => {
         images: product.images,
         status: product.status,
         allIndiaDelivery: product.allIndiaDelivery,
-        rating: parseFloat(avgProductRating.toFixed(1)),
-        ratingCount: productRatingCount,
-        nutritionalValue: nutritionalInfo,
+        rating: product.rating,
+        ratingCount: product.ratingCount,
+        nutritionalValue: product.nutritionalValue || {},
         datePosted: product.datePosted,
       },
+
       vendor: {
         id: product.vendor._id,
         name: product.vendor.name,
         mobileNumber: product.vendor.mobileNumber,
         profilePicture: product.vendor.profilePicture,
         rating: product.vendor.rating || 0,
-        distance: distanceText, // ✅ Always shows accurate distance
-        address: product.vendor.address || {},
-        location: product.vendor.location || {},
-        deliveryRegion:
-          product.vendor.vendorDetails?.deliveryRegion || null,
+        distance: distanceText,
+        address: product.vendor.address,
+        location: product.vendor.location,
+        deliveryRegion: product.vendor.vendorDetails?.deliveryRegion || null,
         about: product.vendor.vendorDetails?.about || "",
       },
+
       reviews: {
-        totalCount: totalReviews,
-        list: reviews,
+        totalCount: 0,
+        list: [],
       },
+
       recommendedProducts,
     },
   });
@@ -402,22 +358,63 @@ const getProductDetails = asyncHandler(async (req, res) => {
 
 
 
+
+
 const getCategoriesWithProducts = asyncHandler(async (req, res) => {
   try {
-    // 1) Get all categories
+    // 🔹 Buyer location for distance calculation
+    const buyer = await User.findById(req.user._id).select("location");
+    const buyerLocation = buyer?.location?.coordinates;
+
+    const getDistanceKm = (lat1, lon1, lat2, lon2) => {
+      const toRad = (v) => (v * Math.PI) / 180;
+      const R = 6371;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) *
+          Math.cos(toRad(lat2)) *
+          Math.sin(dLon / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    };
+
+    // 1️⃣ Get all categories
     const categories = await Category.find({}).sort({ name: 1 });
 
-    // 2) Get all products, AND populate category
-    const products = await Product.find({})
-      .populate("category", "name image")
-      .populate("vendor", "name")
+    // 2️⃣ Get all in-stock products + populate
+    const products = await Product.find({ status: "In Stock" })
+      .populate("category", "name") // Only category name
+      .populate("vendor", "name location") // vendor with location
       .sort({ createdAt: -1 });
 
-    // 3) Build category → product list mapping
+    // 3️⃣ Process products for consistent format
+    const formattedProducts = products.map((p) => {
+      let distanceText = "N/A";
+
+      if (p.vendor?.location?.coordinates && buyerLocation) {
+        const [vendorLng, vendorLat] = p.vendor.location.coordinates;
+        const [buyerLng, buyerLat] = buyerLocation;
+        const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
+        distanceText = `${distance.toFixed(2)} km away`;
+      }
+
+      const obj = p.toObject();
+
+      // Replace category with its name only
+      obj.category = obj.category?.name || null;
+
+      // Add distance property
+      obj.distance = distanceText;
+
+      return obj;
+    });
+
+    // 4️⃣ Group products by category
     const result = categories.map((cat) => {
-      // Filter products where product.category._id == category._id
-      const matchedProducts = products.filter(
-        (p) => p.category && String(p.category._id) === String(cat._id)
+      const matchedProducts = formattedProducts.filter(
+        (p) => p.category === cat.name
       );
 
       return {
@@ -444,6 +441,7 @@ const getCategoriesWithProducts = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
@@ -877,19 +875,18 @@ const getProductsByCategory = asyncHandler(async (req, res) => {
         const toRad = (v) => (v * Math.PI) / 180;
         const R = 6371;
         const dLat = toRad(lat2 - lat1);
-        const dLon = toRad(lon2 - lon1);
+        const dLon = toRad(lat2 - lat1);
 
         const a =
             Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(lat1)) *
-                Math.cos(toRad(lat2)) *
-                Math.sin(dLon / 2) ** 2;
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.sin(dLon / 2) ** 2;
 
         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         return R * c;
     };
 
-    // Get active vendors
+    // Active vendors
     const activeVendors = await User.find({
         role: "Vendor",
         status: "Active",
@@ -897,31 +894,35 @@ const getProductsByCategory = asyncHandler(async (req, res) => {
 
     const activeVendorIds = activeVendors.map((v) => v._id);
 
-    // Query products
+    // ⭐ Query products + populate category name
     const products = await Product.find({
         category: categoryId,
         status: "In Stock",
         vendor: { $in: activeVendorIds },
     })
+        .populate("category", "name")   // ⭐ Only bring name
         .populate("vendor", "name location")
         .sort({ createdAt: -1, rating: -1 });
 
-    // Add distance
+    // ⭐ Convert category => category.name
     const enriched = products.map((p) => {
-        let distanceText = "N/A";
+        const obj = p.toObject();
 
-        if (p.vendor?.location?.coordinates && buyerLocation) {
-            const [vendorLng, vendorLat] = p.vendor.location.coordinates;
+        // Category name only
+        obj.category = obj.category?.name || null;
+
+        // Add distance
+        if (obj.vendor?.location?.coordinates && buyerLocation) {
+            const [vendorLng, vendorLat] = obj.vendor.location.coordinates;
             const [buyerLng, buyerLat] = buyerLocation;
 
             const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
-            distanceText = `${distance.toFixed(2)} km away`;
+            obj.distance = `${distance.toFixed(2)} km away`;
+        } else {
+            obj.distance = "N/A";
         }
 
-        return {
-            ...p.toObject(),
-            distance: distanceText,
-        };
+        return obj;
     });
 
     res.status(200).json({
@@ -930,6 +931,7 @@ const getProductsByCategory = asyncHandler(async (req, res) => {
         data: enriched,
     });
 });
+
 
 
 const getProductsByVariety = asyncHandler(async (req, res) => {
