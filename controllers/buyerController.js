@@ -402,36 +402,39 @@ const getProductDetails = asyncHandler(async (req, res) => {
 
 
 
+
 const getCategoriesWithProducts = asyncHandler(async (req, res) => {
   try {
-    const includeInactive = req.query.includeInactive === "true"; // ?includeInactive=true
-    const products = await Product.find(
-      includeInactive ? {} : { status: "In Stock" }
-    ).select("name category price images status");
+    const includeInactive = req.query.includeInactive === "true";
+    const products = await Product.find(includeInactive ? {} : { status: "In Stock" })
+      .select("name category price images status");
 
     const categories = await Category.find({}).sort({ name: 1 });
 
-    // ✅ Normalize (lowercase + remove spaces/symbols)
     const normalize = (str) => {
       if (!str) return "";
       return str
         .toString()
         .trim()
         .toLowerCase()
-        .replace(/[^a-z]/g, "")  // remove special chars
-        .replace(/s$/, "");      // remove trailing s (Fruits -> Fruit)
+        .replace(/[^a-z]/g, "")
+        .replace(/s$/, "");
     };
 
-    // ✅ Match categories with products (loose match allowed)
     const data = categories.map((cat) => {
       const catKey = normalize(cat.name);
+      if (!catKey) return { _id: cat._id, name: cat.name, image: cat.image, productCount: 0, products: [] };
 
       const matchedProducts = products.filter((p) => {
         const prodKey = normalize(p.category);
+        // ← IMPORTANT: skip if product has empty/undefined category
+        if (!prodKey) return false;
+
+        // Better, safer matching (no accidental true because of empty strings)
         return (
-          catKey === prodKey ||
-          prodKey.includes(catKey) ||
-          catKey.includes(prodKey)
+          prodKey === catKey ||
+          prodKey.startsWith(catKey) ||
+          catKey.startsWith(prodKey)
         );
       });
 
@@ -462,6 +465,7 @@ const getCategoriesWithProducts = asyncHandler(async (req, res) => {
 });
 
 module.exports = { getCategoriesWithProducts };
+
 
 
 

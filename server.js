@@ -17,7 +17,8 @@ app.use(cookieParser());
 
 // 🔥 Allowed frontend origins
 const allowedOrigins = [
-  "https://viafarm-e3tc.vercel.app",    // your admin vercel build
+  "https://viafarm-e3tc.vercel.app",  
+  "https://viafarm-iy5q.vercel.app",  // your admin vercel build
   "http://localhost:3000",             // local dev admin
   "http://192.168.1.5:8081",           // expo LAN
   "exp://192.168.1.5:8081",
