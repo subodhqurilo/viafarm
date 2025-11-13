@@ -11,10 +11,13 @@ exports.sendNotification = async (req, res) => {
     const { title, message, receiverId, userType = "All", data = {} } = req.body;
 
     if (!title || !message) {
-      return res.status(400).json({ success: false, message: "Title and message are required" });
+      return res.status(400).json({
+        success: false,
+        message: "Title and message are required",
+      });
     }
 
-    // ✅ Save in DB
+    // ✅ Save Notification in DB
     const notification = await Notification.create({
       title,
       message,
@@ -25,7 +28,9 @@ exports.sendNotification = async (req, res) => {
       createdBy: req.user?._id || null,
     });
 
-    // ✅ Socket.IO Real-time Send
+    // ============================
+    // ✅ SOCKET.IO REAL-TIME PUSH
+    // ============================
     const io = global.io;
     const onlineUsers = global.onlineUsers || {};
 
@@ -43,39 +48,54 @@ exports.sendNotification = async (req, res) => {
       }
     }
 
-    // ✅ Push Notification Payload
+    // ============================
+    // ✅ Expo Push Notification
+    // ============================
+
     const pushPayload = {
       notificationId: notification._id,
-      ...data
+      ...data,
     };
 
-    // ✅ Select Target Users
     let targetUsers = [];
+
+    // 🎯 PERSONAL NOTIFICATION
     if (receiverId) {
       const user = await User.findById(receiverId);
-      if (user && user.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
+      if (user?.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
         targetUsers = [user.expoPushToken];
       }
+
+      // 🎯 ROLE BASED
     } else if (userType !== "All") {
       const users = await User.find({
         role: userType,
-        expoPushToken: { $exists: true, $ne: null }
+        expoPushToken: { $exists: true, $ne: null },
       });
+
       targetUsers = users
-        .filter(u => Expo.isExpoPushToken(u.expoPushToken))
-        .map(u => u.expoPushToken);
+        .filter((u) => Expo.isExpoPushToken(u.expoPushToken))
+        .map((u) => u.expoPushToken);
+
+      // 🎯 BROADCAST
     } else {
       const allUsers = await User.find({
-        expoPushToken: { $exists: true, $ne: null }
+        expoPushToken: { $exists: true, $ne: null },
       });
+
       targetUsers = allUsers
-        .filter(u => Expo.isExpoPushToken(u.expoPushToken))
-        .map(u => u.expoPushToken);
+        .filter((u) => Expo.isExpoPushToken(u.expoPushToken))
+        .map((u) => u.expoPushToken);
     }
 
-    // ✅ Send Expo Push
+    // Remove duplicates
+    targetUsers = [...new Set(targetUsers)];
+
+    // ============================
+    // ✅ SEND PUSH NOTIFICATIONS
+    // ============================
     if (targetUsers.length > 0) {
-      const messages = targetUsers.map(token => ({
+      const messages = targetUsers.map((token) => ({
         to: token,
         sound: "default",
         title,
@@ -84,19 +104,30 @@ exports.sendNotification = async (req, res) => {
       }));
 
       const chunks = expo.chunkPushNotifications(messages);
+
       for (const chunk of chunks) {
-        await expo.sendPushNotificationsAsync(chunk);
+        try {
+          await expo.sendPushNotificationsAsync(chunk);
+        } catch (err) {
+          console.error("Expo push error:", err);
+        }
       }
     }
 
-    res.status(200).json({ success: true, message: "Notification sent successfully", notification });
+    return res.status(200).json({
+      success: true,
+      message: "Notification sent successfully",
+      notification,
+    });
   } catch (error) {
     console.error("Send notification error:", error);
-    res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// ✅ Get Notifications (with pagination + unread count)
+// =======================================
+// ✅ Get Notifications (with pagination)
+// =======================================
 exports.getNotifications = async (req, res) => {
   try {
     const userId = req.user._id;
@@ -107,8 +138,8 @@ exports.getNotifications = async (req, res) => {
       $or: [
         { receiverId: userId },
         { userType: req.user.role },
-        { userType: "All" }
-      ]
+        { userType: "All" },
+      ],
     };
 
     const notifications = await Notification.find(filter)
@@ -117,64 +148,74 @@ exports.getNotifications = async (req, res) => {
       .limit(limit);
 
     const total = await Notification.countDocuments(filter);
-    const unreadCount = await Notification.countDocuments({ ...filter, isRead: false });
+    const unreadCount = await Notification.countDocuments({
+      ...filter,
+      isRead: false,
+    });
 
-    res.json({ success: true, total, unreadCount, page, limit, notifications });
+    res.json({
+      success: true,
+      total,
+      unreadCount,
+      page,
+      limit,
+      notifications,
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-// ✅ Mark as Read
+// =======================================
+// ✅ Mark Notification as Read
+// =======================================
 exports.markAsRead = async (req, res) => {
-  const updated = await Notification.findByIdAndUpdate(req.params.id, { isRead: true }, { new: true });
-  if (!updated) return res.status(404).json({ success: false, message: "Notification not found" });
+  const updated = await Notification.findByIdAndUpdate(
+    req.params.id,
+    { isRead: true },
+    { new: true }
+  );
+
+  if (!updated)
+    return res.status(404).json({
+      success: false,
+      message: "Notification not found",
+    });
+
   res.json({ success: true, notification: updated });
 };
 
-// ✅ Delete Single
+// =======================================
+// ✅ Delete Single Notification
+// (supports personal + role + broadcast)
+// =======================================
 exports.deleteNotification = async (req, res) => {
-  try {
-    const id = req.params.id;
+  await Notification.findOneAndDelete({
+    _id: req.params.id,
+    $or: [
+      { receiverId: req.user._id },
+      { userType: req.user.role },
+      { userType: "All" },
+    ],
+  });
 
-    // Validate MongoDB ID
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid notification id",
-      });
-    }
-
-    const deleted = await Notification.findOneAndDelete({
-      _id: id,
-      receiverId: req.user._id,
-    });
-
-    if (!deleted) {
-      return res.status(404).json({
-        success: false,
-        message: "Notification not found or unauthorized",
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Notification deleted successfully",
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server Error",
-      error: error.message,
-    });
-  }
+  res.json({ success: true, message: "Notification deleted successfully" });
 };
 
-// ✅ Delete All (only for current user)
+// =======================================
+// ✅ Delete All Notification for current user
+// =======================================
 exports.deleteAllNotifications = async (req, res) => {
   await Notification.deleteMany({
-    $or: [{ receiverId: req.user._id }, { userType: req.user.role }]
+    $or: [
+      { receiverId: req.user._id },
+      { userType: req.user.role },
+      { userType: "All" },
+    ],
   });
-  res.json({ success: true, message: "All your notifications cleared" });
+
+  res.json({
+    success: true,
+    message: "All your notifications cleared",
+  });
 };

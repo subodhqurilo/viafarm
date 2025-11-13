@@ -1,7 +1,6 @@
 const mongoose = require('mongoose');
 
 const NotificationSettingsSchema = new mongoose.Schema({
-    // Unique identifier for the single settings document
     appId: {
         type: String,
         required: true,
@@ -24,7 +23,6 @@ const NotificationSettingsSchema = new mongoose.Schema({
         type: Boolean,
         default: true
     },
-    // Add other notification types as needed
 }, {
     timestamps: true
 });

@@ -180,92 +180,102 @@ const getAdminProductDetails = asyncHandler(async (req, res) => {
 });
 
 const addOrUpdateNutritionalValue = asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const { servingSize, nutrients, additionalNote } = req.body;
+  const { id } = req.params;
+  const { servingSize, nutrients, additionalNote } = req.body;
 
-    // 1️⃣ Update Product nutritional details
-    const product = await Product.findByIdAndUpdate(
-        id,
-        {
-            nutritionalValue: { servingSize, nutrients, additionalNote },
-        },
-        { new: true, runValidators: true }
-    ).populate("vendor", "name _id expoPushToken");
+  // 1️⃣ Update Product nutritional details
+  const product = await Product.findByIdAndUpdate(
+    id,
+    {
+      nutritionalValue: { servingSize, nutrients, additionalNote },
+    },
+    { new: true, runValidators: true }
+  ).populate("vendor", "name _id expoPushToken");
 
-    if (!product) {
-        return res.status(404).json({
-            success: false,
-            message: "Product not found.",
-        });
-    }
-
-    // 2️⃣ Initialize socket and online users
-    const io = req.app.get("io");
-    const onlineUsers = req.app.get("onlineUsers");
-
-    // 3️⃣ Notification templates
-    const vendorNotification = {
-        title: "Product Updated by Admin 🧾",
-        message: `Admin has updated nutritional information for your product "${product.name}".`,
-        type: "info",
-        receiver: product.vendor._id,
-        sender: req.user._id,
-        role: "Vendor",
-    };
-
-    const adminNotification = {
-        title: "Update Successful ✅",
-        message: `You successfully updated nutritional information for "${product.name}".`,
-        type: "success",
-        receiver: req.user._id,
-        sender: req.user._id,
-        role: "Admin",
-    };
-
-    // 4️⃣ Save notifications in DB
-    await Notification.insertMany([
-        { ...vendorNotification, relatedProduct: product._id },
-        { ...adminNotification, relatedProduct: product._id },
-    ]);
-
-    // 5️⃣ Real-time socket notifications
-    const vendorId = product.vendor?._id?.toString();
-    const adminId = req.user._id.toString();
-
-    // Vendor (web socket)
-    if (vendorId && onlineUsers[vendorId]) {
-        io.to(onlineUsers[vendorId].socketId).emit("notification", vendorNotification);
-    }
-
-    // Admin (web socket)
-    if (onlineUsers[adminId]) {
-        io.to(onlineUsers[adminId].socketId).emit("notification", adminNotification);
-    }
-
-    // 6️⃣ Send Expo Push Notification (for vendor mobile app)
-    if (product.vendor?.expoPushToken && Expo.isExpoPushToken(product.vendor.expoPushToken)) {
-        try {
-            await expo.sendPushNotificationsAsync([
-                {
-                    to: product.vendor.expoPushToken,
-                    sound: "default",
-                    title: vendorNotification.title,
-                    body: vendorNotification.message,
-                    data: { productId: product._id },
-                },
-            ]);
-        } catch (expoError) {
-            console.error("Expo push send error:", expoError);
-        }
-    }
-
-    // 7️⃣ Response
-    res.status(200).json({
-        success: true,
-        message: "Nutritional value updated successfully and notifications sent.",
-        data: product.nutritionalValue,
+  if (!product) {
+    return res.status(404).json({
+      success: false,
+      message: "Product not found.",
     });
+  }
+
+  // 2️⃣ Socket references
+  const io = req.app.get("io");
+  const onlineUsers = req.app.get("onlineUsers") || {};
+
+  // 3️⃣ Build Notification Templates
+  const vendorNotification = {
+    title: "Product Updated by Admin 🧾",
+    message: `Admin updated nutritional info for your product "${product.name}".`,
+    receiverId: product.vendor._id,
+    userType: "Vendor",
+    data: { productId: product._id },
+    createdBy: req.user._id,
+  };
+
+  const adminNotification = {
+    title: "Update Successful ✅",
+    message: `You updated nutritional info for "${product.name}".`,
+    receiverId: req.user._id,
+    userType: "Admin",
+    data: { productId: product._id },
+    createdBy: req.user._id,
+  };
+
+  // 4️⃣ Save notifications in DB
+  const savedNotifications = await Notification.insertMany([
+    vendorNotification,
+    adminNotification,
+  ]);
+
+  const vendorNotifPayload = savedNotifications[0];
+  const adminNotifPayload = savedNotifications[1];
+
+  // 5️⃣ Real-time Socket.IO
+  const vendorId = product.vendor._id.toString();
+  const adminId = req.user._id.toString();
+
+  // Vendor real-time
+  if (onlineUsers[vendorId]) {
+    io.to(onlineUsers[vendorId].socketId).emit("notification", vendorNotifPayload);
+  }
+
+  // Admin real-time
+  if (onlineUsers[adminId]) {
+    io.to(onlineUsers[adminId].socketId).emit("notification", adminNotifPayload);
+  }
+
+  // 6️⃣ Expo Push Notification to Vendor (Mobile)
+  if (product.vendor.expoPushToken && Expo.isExpoPushToken(product.vendor.expoPushToken)) {
+    try {
+      const messages = [
+        {
+          to: product.vendor.expoPushToken,
+          sound: "default",
+          title: vendorNotification.title,
+          body: vendorNotification.message,
+          data: { productId: product._id },
+        },
+      ];
+
+      const chunks = expo.chunkPushNotifications(messages);
+      for (const chunk of chunks) {
+        await expo.sendPushNotificationsAsync(chunk);
+      }
+    } catch (error) {
+      console.error("Expo push send error:", error);
+    }
+  }
+
+  // 7️⃣ Final Response
+  res.status(200).json({
+    success: true,
+    message: "Nutritional value updated and notifications sent.",
+    data: product.nutritionalValue,
+  });
 });
+
+
 
 const deleteProduct = asyncHandler(async (req, res) => {
     const productId = req.params.id;

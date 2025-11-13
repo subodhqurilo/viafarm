@@ -1,26 +1,54 @@
 const express = require('express');
 const router = express.Router();
-const PushToken = require('../models/PushToken'); // ensure model exists
-const { authenticate } = require('../middleware/auth'); // if you have it
-router.post('/', authenticate, async (req, res) => {
-  const { token, platform } = req.body;
-  if (!token) return res.status(400).json({ error: 'token required' });
+const User = require('../models/User');
+const { authMiddleware } = require('../middleware/authMiddleware');
+
+// Save expo push token for logged in user
+router.post('/', authMiddleware, async (req, res) => {
+  const { token } = req.body;
+
+  if (!token) {
+    return res.status(400).json({ success: false, message: 'Token required' });
+  }
+
   try {
-    const doc = await PushToken.findOneAndUpdate(
-      { token },
-      { token, platform, userId: req.user?.id },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
+    // Save token in the user's document
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { expoPushToken: token },
+      { new: true }
     );
-    res.json({ status: 'success', data: doc });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'server error' });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Expo push token saved successfully',
+      expoPushToken: user.expoPushToken
+    });
+
+  } catch (err) {
+    console.error('Save token error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 });
-router.delete('/', authenticate, async (req, res) => {
-  const { token } = req.body;
-  if (!token) return res.status(400).json({ error: 'token required' });
-  await PushToken.deleteOne({ token });
-  res.json({ status: 'success' });
+
+// Remove token when user logs out
+router.delete('/', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { expoPushToken: null },
+      { new: true }
+    );
+
+    res.json({ success: true, message: 'Token removed' });
+  } catch (err) {
+    console.error('Delete token error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
 });
+
 module.exports = router;
