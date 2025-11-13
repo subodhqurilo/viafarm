@@ -1539,26 +1539,43 @@ const addItemToCart = asyncHandler(async (req, res) => {
 const removeItemFromCart = asyncHandler(async (req, res) => {
     const { id } = req.params;
 
-    const cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
+    const cart = await Cart.findOne({ user: req.user._id })
+        .populate('items.product');
+
     if (!cart) {
         return res.status(404).json({ success: false, message: 'Cart not found' });
     }
 
-    // Filter out the product
     const initialLength = cart.items.length;
-    cart.items = cart.items.filter((i) => i.product._id.toString() !== id);
+
+    // 🛡 Remove missing products + remove requested product
+    cart.items = cart.items.filter((item) => {
+        // ❌ If product is null → REMOVE item
+        if (!item.product) return false;
+
+        // ❌ If this is the product to remove → REMOVE
+        return item.product._id.toString() !== id;
+    });
 
     if (cart.items.length === initialLength) {
         return res.status(404).json({ success: false, message: 'Item not found in cart' });
     }
 
-    // Recalculate total
-    cart.totalPrice = cart.items.reduce((t, i) => t + i.price * i.quantity, 0);
+    // 🧮 Recalculate total (all items guaranteed valid now)
+    cart.totalPrice = cart.items.reduce(
+        (total, item) => total + item.price * item.quantity,
+        0
+    );
 
     await cart.save();
 
-    res.json({ success: true, message: 'Item removed from cart', data: cart });
+    res.json({
+        success: true,
+        message: "Item removed from cart",
+        data: cart,
+    });
 });
+
 
 
 const updateCartItemQuantity = asyncHandler(async (req, res) => {
