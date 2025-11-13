@@ -521,51 +521,44 @@ exports.adminSignup = asyncHandler(async (req, res) => {
 
 exports.adminLogin = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
-
   if (!email || !password)
     return res.status(400).json({ success: false, message: 'Email and password are required.' });
-
   const user = await User.findOne({ email });
-
   if (!user)
     return res.status(401).json({ success: false, message: 'Invalid credentials.' });
-
   if (user.role !== 'Admin')
     return res.status(403).json({ success: false, message: 'Access denied. Not an admin.' });
-
-  // Compare password
+  // Compare password using bcrypt
   const isMatch = await bcrypt.compare(password, user.password);
-
   if (!isMatch)
     return res.status(401).json({ success: false, message: 'Invalid password' });
-
   const token = generateToken(user);
-
-  // ⭐ SET COOKIE (MAIN FIX)
-  res.cookie("token", token, {
-    httpOnly: true,
-    secure: true,            // must be true in production (Render uses HTTPS)
-    sameSite: "None",        // allow cross-origin
-    path: "/",
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-  });
-
-  // ⭐ DO NOT send token in JSON
   res.status(200).json({
     success: true,
-    message: "Admin login successful.",
+    message: 'Admin login successful.',
+    token,
     user: {
       id: user._id,
       name: user.name,
       email: user.email,
-      role: user.role,
-    },
+      role: user.role
+    }
   });
 });
 
 
 
-// Replace existing adminrequestPasswordReset with this
+exports.logout = asyncHandler(async (req, res) => {
+  // In a real application, advanced security might involve token blacklisting (using Redis or a similar store)
+  // to instantly invalidate the JWT on the server side. For a standard API, this confirmation is sufficient.
+  res.json({
+    success: true,
+    message: 'Logged out successfully.'
+  });
+});
+
+
+
 
 
 
@@ -693,18 +686,6 @@ exports.adminResetPasswordByOtp = asyncHandler(async (req, res) => {
 
 
 
-exports.logout = asyncHandler(async (req, res) => {
-  res.clearCookie("token", {
-    httpOnly: true,
-    secure: true,
-    sameSite: "None",
-    path: "/",
-  });
 
-  res.status(200).json({
-    success: true,
-    message: "Logged out successfully."
-  });
-});
 
 
