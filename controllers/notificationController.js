@@ -134,8 +134,41 @@ exports.markAsRead = async (req, res) => {
 
 // ✅ Delete Single
 exports.deleteNotification = async (req, res) => {
-  await Notification.findOneAndDelete({ _id: req.params.id, receiverId: req.user._id });
-  res.json({ success: true, message: "Notification deleted successfully" });
+  try {
+    const id = req.params.id;
+
+    // Validate MongoDB ID
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid notification id",
+      });
+    }
+
+    const deleted = await Notification.findOneAndDelete({
+      _id: id,
+      receiverId: req.user._id,
+    });
+
+    if (!deleted) {
+      return res.status(404).json({
+        success: false,
+        message: "Notification not found or unauthorized",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Notification deleted successfully",
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server Error",
+      error: error.message,
+    });
+  }
 };
 
 // ✅ Delete All (only for current user)
