@@ -6,33 +6,33 @@ const path = require("path");
 const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
-const { Expo } = require("expo-server-sdk");
 const cookieParser = require("cookie-parser");
+const { Expo } = require("expo-server-sdk");
 
 dotenv.config();
 connectDB();
 
-
+// EXPRESS APP
 const app = express();
 app.use(cookieParser());
 
-// ✅ View Engine (used for password reset page etc.)
+// View Engine
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
 
-// ✅ Initialize Expo SDK (for mobile push)
+// Expo instance (SINGLE INSTANCE ONLY)
 const expo = new Expo();
 
-// ✅ CORS — Allow frontend + mobile Expo dev client
+// --- CORS ---
 app.use(
   cors({
     origin: [
       "https://viafarm-iy5q.vercel.app",
       "https://viafarm-e3tc.vercel.app",
       "https://viafarm-1.onrender.com",
-      "http://localhost:3000", // Admin Panel (local)
-      "http://192.168.1.5:8081", // Replace with your LAN IP for Expo Dev
-      "exp://192.168.1.5:8081",  // Expo Go dev client
+      "http://localhost:3000",
+      "http://192.168.1.5:8081",
+      "exp://192.168.1.5:8081",
       process.env.FRONTEND_URL,
     ],
     methods: ["GET", "POST", "PUT", "DELETE"],
@@ -43,37 +43,37 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ✅ Create HTTP server
+// HTTP Server
 const server = http.createServer(app);
 
-// ✅ Initialize Socket.IO
+// --- SOCKET.IO ---
 const io = new Server(server, {
   cors: {
-    origin: "*", // ⚠️ in dev allow all, restrict in prod
+    origin: "*",
     methods: ["GET", "POST"],
   },
 });
 
-// 🟢 In-memory online users
-let onlineUsers = {};
+// ===== ONLINE USERS MEMORY STORE =====
+const onlineUsers = {}; // Keep it constant reference
 
-// ✅ Socket.IO setup
+// --- SOCKET EVENTS ---
 io.on("connection", (socket) => {
   console.log("⚡ User connected:", socket.id);
 
-  // 🔹 Register user connection
+  // Register logged in user
   socket.on("registerUser", ({ userId, role }) => {
     if (userId) {
       onlineUsers[userId] = { socketId: socket.id, role };
-      console.log(`✅ ${role} connected: ${userId}`);
+      console.log(`🟢 ${role} connected → ID: ${userId}`);
     }
   });
 
-  // 🔹 Disconnect handling
+  // Clean up disconnected user
   socket.on("disconnect", () => {
     for (const [id, info] of Object.entries(onlineUsers)) {
       if (info.socketId === socket.id) {
-        console.log(`❌ ${info.role} disconnected: ${id}`);
+        console.log(`🔴 Disconnected → ${info.role}: ${id}`);
         delete onlineUsers[id];
         break;
       }
@@ -81,17 +81,17 @@ io.on("connection", (socket) => {
   });
 });
 
-// ✅ Attach Socket.IO and Expo globally (accessible in all controllers)
+// --- MAKE io & expo available to controllers ---
 app.set("io", io);
 app.set("expo", expo);
 app.set("onlineUsers", onlineUsers);
 
-// 🌍 Also make globally available (for utils)
+// GLOBAL ACCESS TOO
 global.io = io;
 global.expo = expo;
 global.onlineUsers = onlineUsers;
 
-// ✅ API Routes
+// ROUTES
 app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/buyer", require("./routes/buyerRoutes"));
 app.use("/api/vendor", require("./routes/vendorRoutes"));
@@ -99,13 +99,12 @@ app.use("/api/admin", require("./routes/adminRoutes"));
 app.use("/api/notifications", require("./routes/notificationRoutes"));
 app.use("/", require("./routes/resetRoutes"));
 app.use("/api", require("./routes/testRoutes"));
-app.use('/api/push-tokens', require('./routes/push'));
+app.use("/api/push", require("./routes/push")); // simplified route path
 
-
-// ✅ Default route
+// DEFAULT
 app.get("/", (req, res) => res.send("🚀 ViaFarm API running successfully!"));
 
-// ✅ Start server
+// START SERVER
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);

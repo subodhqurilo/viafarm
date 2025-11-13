@@ -138,23 +138,42 @@ const getProducts = asyncHandler(async (req, res) => {
         ];
     }
 
-    // 🏷️ Filter by category
+    // 🏷 Filter by category NAME
     if (category) {
-        query.category = { $regex: category, $options: "i" };
+        const cat = await Category.findOne({
+            name: { $regex: category, $options: "i" }
+        });
+
+        if (cat) {
+            query.category = cat._id;
+        }
     }
 
     // 📦 Fetch all matching products
     const products = await Product.find(query)
-        .populate("vendor", "name")
-        .select("name category price unit createdAt")
+        .populate("vendor", "name")              // vendor remains same structure
+        .populate("category", "name")            // populate category NAME
+        .select("name category price unit createdAt vendor")
         .sort({ createdAt: -1 });
+
+    // 🎯 Final Format: SAME structure, ONLY category = name
+    const finalData = products.map((item) => ({
+        _id: item._id,
+        name: item.name,
+        vendor: item.vendor,                    // SAME as before
+        category: item.category?.name || null,  // ONLY NAME
+        price: item.price,
+        unit: item.unit,
+        createdAt: item.createdAt,
+    }));
 
     res.status(200).json({
         success: true,
-        total: products.length,
-        data: products,
+        total: finalData.length,
+        data: finalData,
     });
 });
+
 
 
 const getAdminProductDetails = asyncHandler(async (req, res) => {
@@ -278,90 +297,109 @@ const addOrUpdateNutritionalValue = asyncHandler(async (req, res) => {
 
 
 const deleteProduct = asyncHandler(async (req, res) => {
-    const productId = req.params.id;
+  const productId = req.params.id;
 
-    // 1️⃣ Find product before deleting
-    const product = await Product.findById(productId).populate("vendor", "_id name expoPushToken");
+  // 1️⃣ Fetch product before deleting
+  const product = await Product.findById(productId).populate(
+    "vendor",
+    "_id name expoPushToken"
+  );
 
-    if (!product) {
-        return res.status(404).json({
-            success: false,
-            message: "Product not found.",
-        });
-    }
-
-    // 2️⃣ Delete product
-    await product.deleteOne();
-
-    // 3️⃣ Get io, online users, and Notification model
-    const io = req.app.get("io");
-    const onlineUsers = req.app.get("onlineUsers");
-
-    // 4️⃣ Notify the vendor personally (DB + Socket + Expo)
-    const vendorId = product.vendor?._id?.toString();
-    if (vendorId) {
-        const vendorNotification = {
-            title: "Product Deleted 🗑️",
-            message: `Admin has deleted your product "${product.name}".`,
-            type: "warning",
-            sender: req.user._id,
-            receiver: vendorId,
-            role: "Vendor",
-            relatedProduct: product._id,
-        };
-
-        // Save in DB
-        await Notification.create(vendorNotification);
-
-        // Send real-time notification (Socket)
-        if (onlineUsers[vendorId]) {
-            io.to(onlineUsers[vendorId].socketId).emit("notification", vendorNotification);
-        }
-
-        // Send Expo Push Notification (Mobile App)
-        if (product.vendor.expoPushToken && Expo.isExpoPushToken(product.vendor.expoPushToken)) {
-            try {
-                await expo.sendPushNotificationsAsync([
-                    {
-                        to: product.vendor.expoPushToken,
-                        sound: "default",
-                        title: vendorNotification.title,
-                        body: vendorNotification.message,
-                        data: { productId: product._id },
-                    },
-                ]);
-            } catch (error) {
-                console.error("Expo push error:", error);
-            }
-        }
-    }
-
-    // 5️⃣ Notify the admin (self confirmation)
-    const adminId = req.user._id.toString();
-    const adminNotification = {
-        title: "Product Removed ✅",
-        message: `You successfully deleted the product "${product.name}".`,
-        type: "success",
-        sender: adminId,
-        receiver: adminId,
-        role: "Admin",
-        relatedProduct: product._id,
-    };
-
-    // Save in DB
-    await Notification.create(adminNotification);
-
-    // Send via socket (web)
-    if (onlineUsers[adminId]) {
-        io.to(onlineUsers[adminId].socketId).emit("notification", adminNotification);
-    }
-
-    // 6️⃣ Final API Response
-    res.status(200).json({
-        success: true,
-        message: "Product removed successfully and notifications sent.",
+  if (!product) {
+    return res.status(404).json({
+      success: false,
+      message: "Product not found.",
     });
+  }
+
+  // 2️⃣ Delete product
+  await product.deleteOne();
+
+  // 3️⃣ Get socket and online users
+  const io = req.app.get("io");
+  const onlineUsers = req.app.get("onlineUsers") || {};
+  const expo = req.app.get("expo");
+
+  // ==========================
+  // 🟣 Vendor Notification
+  // ==========================
+  const vendorId = product.vendor._id.toString();
+
+  const vendorNotificationData = {
+    title: "Product Deleted 🗑️",
+    message: `Your product "${product.name}" has been deleted by Admin.`,
+    receiverId: vendorId,
+    userType: "Vendor",
+    data: { productId: product._id },
+    createdBy: req.user._id,
+    isRead: false,
+  };
+
+  // Save in DB
+  const vendorNotif = await Notification.create(vendorNotificationData);
+
+  // Send realtime (Socket)
+  if (onlineUsers[vendorId]) {
+    io.to(onlineUsers[vendorId].socketId).emit("notification", vendorNotif);
+  }
+
+  // Send expo push
+  if (
+    product.vendor.expoPushToken &&
+    Expo.isExpoPushToken(product.vendor.expoPushToken)
+  ) {
+    try {
+      const messages = [
+        {
+          to: product.vendor.expoPushToken,
+          sound: "default",
+          title: vendorNotificationData.title,
+          body: vendorNotificationData.message,
+          data: vendorNotificationData.data,
+        },
+      ];
+
+      const chunks = expo.chunkPushNotifications(messages);
+      for (const chunk of chunks) {
+        await expo.sendPushNotificationsAsync(chunk);
+      }
+    } catch (error) {
+      console.error("Expo push error:", error);
+    }
+  }
+
+  // ==========================
+  // 🔵 Admin Notification
+  // ==========================
+  const adminId = req.user._id.toString();
+
+  const adminNotificationData = {
+    title: "Product Removed Successfully ✅",
+    message: `You deleted the product "${product.name}".`,
+    receiverId: adminId,
+    userType: "Admin",
+    data: { productId: product._id },
+    createdBy: adminId,
+    isRead: false,
+  };
+
+  // Save in DB
+  const adminNotif = await Notification.create(adminNotificationData);
+
+  // Send realtime (socket)
+  if (onlineUsers[adminId]) {
+    io.to(onlineUsers[adminId].socketId).emit("notification", adminNotif);
+  }
+
+  // ==========================
+  // ✔ Final Response
+  // ==========================
+  res.status(200).json({
+    success: true,
+    message: "Product deleted and notifications sent to vendor & admin.",
+  });
 });
+
 
 
 
@@ -449,217 +487,218 @@ const getVendorDetails = asyncHandler(async (req, res) => {
 
 
 const updateVendorStatus = asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const { status } = req.body; // Expected: 'Active', 'Blocked', 'UnBlocked', 'Inactive'
+  const { id } = req.params;
+  const { status } = req.body;
 
-    const validStatuses = ["Active", "Blocked", "UnBlocked", "Inactive"];
-    if (!validStatuses.includes(status)) {
-        return res
-            .status(400)
-            .json({ success: false, message: "Invalid status provided." });
-    }
-
-    // 1️⃣ Update vendor's status
-    const vendor = await User.findOneAndUpdate(
-        { _id: id, role: "Vendor" },
-        { status },
-        { new: true, runValidators: true }
-    ).select("_id name expoPushToken");
-
-    if (!vendor) {
-        return res
-            .status(404)
-            .json({ success: false, message: "Vendor not found." });
-    }
-
-    // 2️⃣ Update all their products based on vendor status
-    if (status === "Blocked" || status === "Inactive") {
-        await Product.updateMany({ vendor: id }, { status: "Inactive" });
-    } else if (status === "Active") {
-        await Product.updateMany(
-            { vendor: id, status: "Inactive" },
-            { status: "In Stock" }
-        );
-    }
-
-    // 3️⃣ Socket and DB Notification setup
-    const io = req.app.get("io");
-    const onlineUsers = req.app.get("onlineUsers");
-
-    // --- Vendor message ---
-    let vendorMessage = "";
-    let vendorType = "info";
-
-    if (status === "Blocked")
-        vendorMessage = "Your account has been blocked by the admin.";
-    else if (status === "UnBlocked")
-        vendorMessage = "Your account has been unblocked by the admin.";
-    else if (status === "Inactive")
-        vendorMessage = "Your account is now inactive.";
-    else if (status === "Active")
-        vendorMessage = "Your account has been activated by the admin.";
-
-    // --- Save vendor notification in DB ---
-    await Notification.create({
-        title: "Account Status Update ⚙️",
-        message: vendorMessage,
-        type: vendorType,
-        sender: req.user._id,
-        receiver: vendor._id,
-        role: "Vendor",
+  const validStatuses = ["Active", "Blocked", "UnBlocked", "Inactive"];
+  if (!validStatuses.includes(status)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid status provided.",
     });
+  }
 
-    // --- Send Socket Notification (Web Real-time) ---
-    if (onlineUsers[vendor._id]) {
-        io.to(onlineUsers[vendor._id].socketId).emit("notification", {
-            title: "Account Status Update ⚙️",
-            message: vendorMessage,
-            type: vendorType,
-        });
-    }
+  // 1️⃣ Update vendor's status
+  const vendor = await User.findOneAndUpdate(
+    { _id: id, role: "Vendor" },
+    { status },
+    { new: true, runValidators: true }
+  ).select("_id name expoPushToken");
 
-    // --- Send Push Notification (Expo App) ---
-    if (vendor.expoPushToken && Expo.isExpoPushToken(vendor.expoPushToken)) {
-        try {
-            await expo.sendPushNotificationsAsync([
-                {
-                    to: vendor.expoPushToken,
-                    sound: "default",
-                    title: "Account Status Update ⚙️",
-                    body: vendorMessage,
-                    data: { status },
-                },
-            ]);
-        } catch (error) {
-            console.error("Expo Push Error:", error);
-        }
-    }
-
-    // --- Admin confirmation notification ---
-    const adminId = req.user._id.toString();
-    const adminMessage = `You updated ${vendor.name || "a vendor"}'s status to "${status}".`;
-
-    await Notification.create({
-        title: "Vendor Status Updated ✅",
-        message: adminMessage,
-        type: "success",
-        sender: adminId,
-        receiver: adminId,
-        role: "Admin",
+  if (!vendor) {
+    return res.status(404).json({
+      success: false,
+      message: "Vendor not found.",
     });
+  }
 
-    if (onlineUsers[adminId]) {
-        io.to(onlineUsers[adminId].socketId).emit("notification", {
-            title: "Vendor Status Updated ✅",
-            message: adminMessage,
-            type: "success",
-        });
-    }
+  // 2️⃣ Update vendor's products
+  if (status === "Blocked" || status === "Inactive") {
+    await Product.updateMany({ vendor: id }, { status: "Inactive" });
+  } else if (status === "Active") {
+    await Product.updateMany(
+      { vendor: id, status: "Inactive" },
+      { status: "In Stock" }
+    );
+  }
 
-    // 4️⃣ Final Response
-    res.status(200).json({
-        success: true,
-        message: `Vendor status updated to ${status}.`,
-        data: {
-            vendorId: vendor._id,
-            status: vendor.status,
+  // 3️⃣ Socket + Expo setup
+  const io = req.app.get("io");
+  const onlineUsers = req.app.get("onlineUsers") || {};
+  const expo = req.app.get("expo");
+
+  // ===============================
+  // 🟣 Vendor Personal Notification
+  // ===============================
+  let vendorMessage = "";
+
+  if (status === "Blocked")
+    vendorMessage = "Your account has been blocked by the admin.";
+  else if (status === "UnBlocked")
+    vendorMessage = "Your account has been unblocked.";
+  else if (status === "Inactive")
+    vendorMessage = "Your account has been set to inactive.";
+  else if (status === "Active")
+    vendorMessage = "Your account has been activated.";
+
+  const vendorNotification = {
+    title: "Account Status Update ⚙️",
+    message: vendorMessage,
+    receiverId: vendor._id,
+    userType: "Vendor",
+    data: { status },
+    createdBy: req.user._id,
+    isRead: false,
+  };
+
+  // Save in DB
+  const savedVendorNotif = await Notification.create(vendorNotification);
+
+  // Socket message
+  if (onlineUsers[vendor._id]) {
+    io.to(onlineUsers[vendor._id].socketId).emit(
+      "notification",
+      savedVendorNotif
+    );
+  }
+
+  // Expo push
+  if (
+    vendor.expoPushToken &&
+    Expo.isExpoPushToken(vendor.expoPushToken)
+  ) {
+    try {
+      const messages = [
+        {
+          to: vendor.expoPushToken,
+          sound: "default",
+          title: vendorNotification.title,
+          body: vendorNotification.message,
+          data: { status },
         },
-    });
+      ];
+
+      const chunks = expo.chunkPushNotifications(messages);
+      for (const chunk of chunks) {
+        await expo.sendPushNotificationsAsync(chunk);
+      }
+    } catch (error) {
+      console.error("Expo Push Error:", error);
+    }
+  }
+
+  // 4️⃣ Final response
+  res.status(200).json({
+    success: true,
+    message: `Vendor status updated to ${status}.`,
+    data: {
+      vendorId: vendor._id,
+      status: vendor.status,
+    },
+  });
 });
+
 
 
 
 
 const deleteVendor = asyncHandler(async (req, res) => {
-    const { id } = req.params;
+  const { id } = req.params;
 
-    // 1️⃣ Soft delete vendor
-    const vendor = await User.findOneAndUpdate(
-        { _id: id, role: "Vendor" },
-        { status: "Deleted" },
-        { new: true }
-    ).select("name _id expoPushToken");
+  // 1️⃣ Soft delete vendor
+  const vendor = await User.findOneAndUpdate(
+    { _id: id, role: "Vendor" },
+    { status: "Deleted" },
+    { new: true }
+  ).select("name _id expoPushToken");
 
-    if (!vendor) {
-        return res
-            .status(404)
-            .json({ success: false, message: "Vendor not found." });
-    }
-
-    // 2️⃣ Mark all their products inactive
-    await Product.updateMany({ vendor: id }, { status: "Inactive" });
-
-    // 3️⃣ Get socket and online users
-    const io = req.app.get("io");
-    const onlineUsers = req.app.get("onlineUsers");
-
-    // 4️⃣ Prepare Notifications
-    const vendorNotification = {
-        title: "Account Deleted 🛑",
-        message:
-            "Your vendor account has been deleted by the admin. All your products are now inactive.",
-        type: "error",
-        sender: req.user._id,
-        receiver: vendor._id,
-        role: "Vendor",
-    };
-
-    const adminNotification = {
-        title: "Vendor Deleted ✅",
-        message: `You have successfully deleted vendor "${vendor.name}".`,
-        type: "success",
-        sender: req.user._id,
-        receiver: req.user._id,
-        role: "Admin",
-    };
-
-    // 5️⃣ Save notifications in DB
-    await Notification.insertMany([vendorNotification, adminNotification]);
-
-    // 6️⃣ Send Web (Socket) Notifications
-    // --- To Vendor ---
-    if (onlineUsers[vendor._id]) {
-        io.to(onlineUsers[vendor._id].socketId).emit("notification", {
-            title: vendorNotification.title,
-            message: vendorNotification.message,
-            type: vendorNotification.type,
-        });
-    }
-
-    // --- To Admin (the one who deleted) ---
-    const adminId = req.user._id.toString();
-    if (onlineUsers[adminId]) {
-        io.to(onlineUsers[adminId].socketId).emit("notification", {
-            title: adminNotification.title,
-            message: adminNotification.message,
-            type: adminNotification.type,
-        });
-    }
-
-    // 7️⃣ Send Mobile Push Notification (Expo)
-    if (vendor.expoPushToken && Expo.isExpoPushToken(vendor.expoPushToken)) {
-        try {
-            await expo.sendPushNotificationsAsync([
-                {
-                    to: vendor.expoPushToken,
-                    sound: "default",
-                    title: vendorNotification.title,
-                    body: vendorNotification.message,
-                    data: { type: "account_deleted" },
-                },
-            ]);
-        } catch (error) {
-            console.error("Expo Push Error:", error);
-        }
-    }
-
-    // 8️⃣ Final Response
-    res.status(200).json({
-        success: true,
-        message:
-            "Vendor account deleted and notifications sent to vendor and admin.",
+  if (!vendor) {
+    return res.status(404).json({
+      success: false,
+      message: "Vendor not found.",
     });
+  }
+
+  // 2️⃣ Mark all vendor products inactive
+  await Product.updateMany({ vendor: id }, { status: "Inactive" });
+
+  // 3️⃣ Get IO and online users
+  const io = req.app.get("io");
+  const onlineUsers = req.app.get("onlineUsers") || {};
+  const expo = req.app.get("expo");
+
+  // ===============================
+  // 🟣 Vendor PERSONAL Notification
+  // ===============================
+  const vendorNotificationData = {
+    title: "Account Deleted 🛑",
+    message:
+      "Your vendor account has been deleted by the admin. All your products are now inactive.",
+    receiverId: vendor._id,
+    userType: "Vendor",
+    createdBy: req.user._id,
+    data: { type: "account_deleted" },
+    isRead: false,
+  };
+
+  const vendorNotif = await Notification.create(vendorNotificationData);
+
+  // Vendor real-time socket
+  if (onlineUsers[vendor._id]) {
+    io.to(onlineUsers[vendor._id].socketId).emit("notification", vendorNotif);
+  }
+
+  // Vendor Expo push
+  if (vendor.expoPushToken && Expo.isExpoPushToken(vendor.expoPushToken)) {
+    try {
+      const messages = [
+        {
+          to: vendor.expoPushToken,
+          sound: "default",
+          title: vendorNotificationData.title,
+          body: vendorNotificationData.message,
+          data: vendorNotificationData.data,
+        },
+      ];
+
+      const chunks = expo.chunkPushNotifications(messages);
+      for (const chunk of chunks) {
+        await expo.sendPushNotificationsAsync(chunk);
+      }
+    } catch (error) {
+      console.error("Expo Push Error:", error);
+    }
+  }
+
+  // ===============================
+  // 🔵 Admin PERSONAL Notification
+  // ===============================
+  const adminId = req.user._id.toString();
+
+  const adminNotificationData = {
+    title: "Vendor Deleted Successfully ✅",
+    message: `You deleted vendor "${vendor.name}".`,
+    receiverId: adminId,
+    userType: "Admin",
+    createdBy: adminId,
+    data: { vendorId: vendor._id },
+    isRead: false,
+  };
+
+  const adminNotif = await Notification.create(adminNotificationData);
+
+  // Admin real-time socket
+  if (onlineUsers[adminId]) {
+    io.to(onlineUsers[adminId].socketId).emit("notification", adminNotif);
+  }
+
+  // 4️⃣ Final Response
+  res.status(200).json({
+    success: true,
+    message: "Vendor deleted. Notifications sent to vendor and admin.",
+  });
 });
+
 
 
 const getBuyerDetails = asyncHandler(async (req, res) => {
@@ -808,31 +847,84 @@ const blockBuyer = asyncHandler(async (req, res) => {
 });
 
 const deleteBuyer = asyncHandler(async (req, res) => {
-    const { id } = req.params;
+  const { id } = req.params;
 
-    // 1. Find the user
-    const user = await User.findById(id);
+  // 1️⃣ Find buyer
+  const buyer = await User.findById(id).select("_id name expoPushToken role");
 
-    if (!user || user.role !== "Buyer") {
-        return res.status(404).json({ success: false, message: "Buyer not found." });
-    }
-
-    // 2. Remove related data
-    await Promise.all([
-        Address.deleteMany({ user: id }),
-        Order.deleteMany({ buyer: id }),
-        Cart.deleteMany({ user: id }),
-        Wishlist.deleteMany({ user: id }),
-    ]);
-
-    // 3. Remove the user
-    await user.deleteOne();
-
-    res.json({
-        success: true,
-        message: "Buyer and related data removed successfully.",
+  if (!buyer || buyer.role !== "Buyer") {
+    return res.status(404).json({
+      success: false,
+      message: "Buyer not found.",
     });
+  }
+
+  // 2️⃣ Delete related buyer data
+  await Promise.all([
+    Address.deleteMany({ user: id }),
+    Order.deleteMany({ buyer: id }),
+    Cart.deleteMany({ user: id }),
+    Wishlist.deleteMany({ user: id }),
+  ]);
+
+  // 3️⃣ Delete buyer account
+  await buyer.deleteOne();
+
+  // 4️⃣ Get socket + expo
+  const io = req.app.get("io");
+  const onlineUsers = req.app.get("onlineUsers") || {};
+  const expo = req.app.get("expo");
+
+  // ================================
+  // 🟣 PERSONAL BUYER NOTIFICATION
+  // ================================
+  const buyerNotificationData = {
+    title: "Account Deleted ❌",
+    message: "Your buyer account has been deleted by the admin.",
+    receiverId: buyer._id,
+    userType: "Buyer",
+    createdBy: req.user._id,
+    data: { deleted: true },
+    isRead: false,
+  };
+
+  // Save in database
+  const savedNotif = await Notification.create(buyerNotificationData);
+
+  // Real-time socket
+  if (onlineUsers[buyer._id]) {
+    io.to(onlineUsers[buyer._id].socketId).emit("notification", savedNotif);
+  }
+
+  // Expo push notification (mobile)
+  if (buyer.expoPushToken && Expo.isExpoPushToken(buyer.expoPushToken)) {
+    try {
+      const messages = [
+        {
+          to: buyer.expoPushToken,
+          sound: "default",
+          title: buyerNotificationData.title,
+          body: buyerNotificationData.message,
+          data: buyerNotificationData.data,
+        },
+      ];
+
+      const chunks = expo.chunkPushNotifications(messages);
+      for (const chunk of chunks) {
+        await expo.sendPushNotificationsAsync(chunk);
+      }
+    } catch (error) {
+      console.error("Expo Push Error:", error);
+    }
+  }
+
+  // 5️⃣ Final Response
+  res.status(200).json({
+    success: true,
+    message: "Buyer and related data deleted. Notification sent.",
+  });
 });
+
 
 const getOrders = asyncHandler(async (req, res) => {
     const { q } = req.query;
