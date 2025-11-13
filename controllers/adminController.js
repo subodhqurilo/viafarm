@@ -180,20 +180,33 @@ const getAdminProductDetails = asyncHandler(async (req, res) => {
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
-        return res.status(400).json({ success: false, message: "Invalid product ID." });
+        return res.status(400).json({
+            success: false,
+            message: "Invalid product ID."
+        });
     }
 
     const product = await Product.findById(id)
-        .populate('vendor', 'name profilePicture address');
+        .populate("vendor", "name profilePicture address")
+        .populate("category", "name");   // ✅ category name only
 
     if (!product) {
-        return res.status(404).json({ success: false, message: "Product not found." });
+        return res.status(404).json({
+            success: false,
+            message: "Product not found."
+        });
     }
+
+    // 🎯 Convert category object → only name
+    const formattedProduct = {
+        ...product.toObject(),
+        category: product.category?.name || null  // ✅ only name
+    };
 
     res.status(200).json({
         success: true,
         data: {
-            product
+            product: formattedProduct
         }
     });
 });
