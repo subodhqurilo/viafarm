@@ -386,7 +386,7 @@ const getVendorProducts = asyncHandler(async (req, res) => {
 const addProduct = asyncHandler(async (req, res) => {
     const {
         name,
-        category,
+        category,          // can be name OR ObjectId
         variety,
         price,
         quantity,
@@ -398,7 +398,7 @@ const addProduct = asyncHandler(async (req, res) => {
 
     const vendorId = req.user._id;
 
-    // 1️⃣ Verify vendor approval
+    // 1️⃣ Vendor approval check
     const vendor = await User.findById(vendorId);
     if (!vendor || !vendor.isApproved) {
         return res.status(403).json({
@@ -407,7 +407,7 @@ const addProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // 2️⃣ Validate required fields
+    // 2️⃣ Required fields check
     if (!name || !category || !variety || !price || !quantity || !unit) {
         return res.status(400).json({
             success: false,
@@ -415,15 +415,15 @@ const addProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // 3️⃣ Validate numeric values
+    // 3️⃣ Numeric validation
     if (isNaN(price) || isNaN(quantity) || price <= 0 || quantity <= 0) {
         return res.status(400).json({
             success: false,
-            message: "Price and Quantity must be positive numeric values.",
+            message: "Price and Quantity must be positive numbers.",
         });
     }
 
-    // 4️⃣ Validate “pc” unit requirement
+    // 4️⃣ Unit check for 'pc'
     if (unit === "pc" && (!weightPerPiece || typeof weightPerPiece !== "string")) {
         return res.status(400).json({
             success: false,
@@ -432,7 +432,30 @@ const addProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // 5️⃣ Upload images to Cloudinary
+    // ⭐⭐⭐ 5️⃣ Convert category (name OR id) → ObjectId ⭐⭐⭐
+
+    let categoryId;
+
+    if (mongoose.isValidObjectId(category)) {
+        // Already ObjectId
+        categoryId = category;
+    } else {
+        // Treat as name -> find category by name
+        const cat = await Category.findOne({
+            name: { $regex: new RegExp(`^${category.trim()}$`, "i") }
+        });
+
+        if (!cat) {
+            return res.status(400).json({
+                success: false,
+                message: `Category "${category}" not found. Please choose a valid category.`,
+            });
+        }
+
+        categoryId = cat._id;
+    }
+
+    // 6️⃣ Upload images to Cloudinary
     let images = [];
     if (req.files && req.files.length > 0) {
         try {
@@ -456,71 +479,57 @@ const addProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // 6️⃣ Create product in database
-    const isAllIndiaDelivery =
-        allIndiaDelivery === "true" || allIndiaDelivery === true;
-
+    // 7️⃣ Create product
     const newProduct = await Product.create({
         name: name.trim(),
         vendor: vendorId,
-        category: category.trim(),
+        category: categoryId,          // ✔ Correct ObjectId
         variety: variety.trim(),
         price: Number(price),
         quantity: Number(quantity),
         unit: unit.trim(),
         description: description?.trim() || "No description provided.",
         images,
-        allIndiaDelivery: isAllIndiaDelivery,
+        allIndiaDelivery:
+            allIndiaDelivery === "true" || allIndiaDelivery === true,
         status: "In Stock",
         weightPerPiece: unit === "pc" ? weightPerPiece : null,
     });
 
-    // 7️⃣ 🔔 Notifications
+    // 8️⃣ Notifications
+    await createAndSendNotification(
+        req,
+        "🆕 New Product Added",
+        `${vendor.name} just added a new product "${newProduct.name}".`,
+        { type: "product", productId: newProduct._id },
+        "Admin"
+    );
 
-    // 👨‍💼 Admin (personal notification)
-await createAndSendNotification(
-  req,
-  "🆕 New Product Added",
-  `${vendor.name} just added a new product "${newProduct.name}".`,
-  {
-    type: "product",
-    productId: newProduct._id,
-  },
-  "Admin" // send to all admins
-);
+    await createAndSendNotification(
+        req,
+        "✅ Product Added Successfully",
+        `Your product "${newProduct.name}" is now live in the store.`,
+        { type: "product", productId: newProduct._id },
+        "Vendor",
+        vendorId
+    );
 
-// 🧑‍🌾 Notify Vendor (personal)
-await createAndSendNotification(
-  req,
-  "✅ Product Added Successfully",
-  `Your product "${newProduct.name}" is now live in the store.`,
-  {
-    type: "product",
-    productId: newProduct._id,
-  },
-  "Vendor",
-  vendorId // send only to this vendor
-);
+    await createAndSendNotification(
+        req,
+        "🛒 New Product Available!",
+        `Check out the new product "${newProduct.name}".`,
+        { type: "product", productId: newProduct._id },
+        "Buyer"
+    );
 
-// 🛍️ Notify All Buyers (broadcast)
-await createAndSendNotification(
-  req,
-  "🛒 New Product Available!",
-  `Check out the new product "${newProduct.name}". Grab it now!`,
-  {
-    type: "product",
-    productId: newProduct._id,
-  },
-  "Buyer" // send to all buyers
-);
-
-    // 8️⃣ Send Response
+    // 9️⃣ Response
     res.status(201).json({
         success: true,
         message: "Product added successfully and notifications sent.",
         data: newProduct,
     });
 });
+
 
 
 const updateProduct = asyncHandler(async (req, res) => {
@@ -535,12 +544,13 @@ const updateProduct = asyncHandler(async (req, res) => {
 
     // 2️⃣ Vendor Authorization
     if (product.vendor.toString() !== req.user._id.toString()) {
-        return res
-            .status(401)
-            .json({ success: false, message: "Not authorized to update this product." });
+        return res.status(401).json({
+            success: false,
+            message: "Not authorized to update this product.",
+        });
     }
 
-    // 3️⃣ Define allowed fields
+    // 3️⃣ Allowed fields
     const allowedFields = [
         "name",
         "category",
@@ -556,9 +566,37 @@ const updateProduct = asyncHandler(async (req, res) => {
 
     const updateFields = {};
 
-    // 4️⃣ Validate and prepare updates
+    // ⭐⭐⭐ 4️⃣ Category Convert: Name OR ObjectId → ObjectId ⭐⭐⭐
+    if (updates.category !== undefined) {
+        const categoryVal = updates.category;
+
+        let categoryId;
+
+        if (mongoose.isValidObjectId(categoryVal)) {
+            // Already ObjectId
+            categoryId = categoryVal;
+        } else {
+            // Convert name → category._id
+            const cat = await Category.findOne({
+                name: { $regex: new RegExp(`^${categoryVal.trim()}$`, "i") },
+            });
+
+            if (!cat) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Category "${categoryVal}" not found. Please select a valid category.`,
+                });
+            }
+
+            categoryId = cat._id;
+        }
+
+        updateFields.category = categoryId;
+    }
+
+    // 5️⃣ Other fields processing
     for (const field of allowedFields) {
-        if (updates[field] !== undefined) {
+        if (updates[field] !== undefined && field !== "category") {
             if (field === "price" || field === "quantity") {
                 updateFields[field] = Number(updates[field]);
             } else if (field === "allIndiaDelivery") {
@@ -572,23 +610,25 @@ const updateProduct = asyncHandler(async (req, res) => {
         }
     }
 
-    // 5️⃣ Validation for “pc” unit
+    // 6️⃣ Weight per piece validation
     const finalUnit = updateFields.unit || product.unit;
+
     if (finalUnit === "pc") {
         const weight = updateFields.weightPerPiece || product.weightPerPiece;
+
         if (!weight || typeof weight !== "string") {
             return res.status(400).json({
                 success: false,
-                message:
-                    'When selling by piece (pc), please specify "weightPerPiece" (e.g., "400g").',
+                message: 'When selling by piece (pc), please specify "weightPerPiece" (e.g., "400g").',
             });
         }
+
         updateFields.weightPerPiece = weight;
     } else {
         updateFields.weightPerPiece = null;
     }
 
-    // 6️⃣ Handle image upload (optional)
+    // 7️⃣ Image upload handling
     if (req.files && req.files.length > 0) {
         try {
             const uploadedImages = [];
@@ -598,9 +638,9 @@ const updateProduct = asyncHandler(async (req, res) => {
                 });
                 uploadedImages.push(result.secure_url);
             }
+
             updateFields.images = uploadedImages;
         } catch (error) {
-            console.error("Cloudinary upload error:", error);
             return res.status(500).json({
                 success: false,
                 message: "Image upload failed.",
@@ -609,63 +649,60 @@ const updateProduct = asyncHandler(async (req, res) => {
         }
     }
 
-    // --- Save old price before updating ---
+    // Keep old price
     const oldPrice = product.price;
 
-    // 7️⃣ Update product in DB
+    // 8️⃣ Update product
     const updatedProduct = await Product.findByIdAndUpdate(
         id,
         { $set: updateFields },
         { new: true, runValidators: true }
     ).populate("vendor", "name _id");
 
-    // 8️⃣ 🔔 Notifications
+    // 9️⃣ Notifications
 
-    // 🧑‍🌾 Vendor (personal)
-// 8️⃣ 🔔 Notifications
+    // Vendor notification
+    await createAndSendNotification(
+        req,
+        "✅ Product Updated",
+        `Your product "${updatedProduct.name}" was updated successfully.`,
+        {
+            type: "product",
+            productId: updatedProduct._id,
+            oldPrice,
+            newPrice: updatedProduct.price,
+        },
+        "Vendor",
+        updatedProduct.vendor._id
+    );
 
-// 🧑‍🌾 Vendor (personal)
-await createAndSendNotification(
-  req,
-  "✅ Product Updated",
-  `Your product "${updatedProduct.name}" was updated successfully.`,
-  {
-    type: "product",
-    productId: updatedProduct._id,
-    oldPrice,
-    newPrice: updatedProduct.price,
-  },
-  "Vendor",
-  updatedProduct.vendor._id
-);
+    // Buyer notification if price dropped
+    if (
+        updateFields.price !== undefined &&
+        Number(updateFields.price) < Number(oldPrice)
+    ) {
+        await createAndSendNotification(
+            req,
+            "💰 Price Drop Alert!",
+            `Good news! "${updatedProduct.name}" is now ₹${updateFields.price} (was ₹${oldPrice}).`,
+            {
+                type: "product",
+                productId: updatedProduct._id,
+                oldPrice,
+                newPrice: updateFields.price,
+            },
+            "Buyer"
+        );
+    }
 
-// 🛒 Buyers (only if price dropped)
-if (
-  updateFields.price !== undefined &&
-  Number(updateFields.price) < Number(oldPrice)
-) {
-  await createAndSendNotification(
-    req,
-    "💰 Price Drop Alert!",
-    `Good news! "${updatedProduct.name}" is now ₹${updateFields.price} (was ₹${oldPrice}). Grab the offer!`,
-    {
-      type: "product",
-      productId: updatedProduct._id,
-      oldPrice,
-      newPrice: updateFields.price,
-    },
-    "Buyer" // send to all buyers
-  );
-}
-
-
-    // ✅ 9️⃣ Final response
+    // 🔟 Final response
     res.status(200).json({
         success: true,
         message: "Product updated successfully.",
         data: updatedProduct,
     });
 });
+
 
 
 

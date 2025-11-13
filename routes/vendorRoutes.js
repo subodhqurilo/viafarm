@@ -14,11 +14,11 @@ router.use(authMiddleware);
 // -------------------------
 // Coupons (Vendor can see all their coupons)
 // -------------------------
-router.get('/coupons', vendorController.getVendorCoupons);              // Get all coupons
-router.get('/coupons/:id', vendorController.getVendorCouponById);       // Get single coupon
-router.post('/coupons/create', vendorController.createCoupon);          // Create coupon
-router.put('/coupons/:id', vendorController.updateVendorCoupon);        // Update coupon
-router.delete('/coupons/:id', vendorController.deleteVendorCoupon);     // Delete coupon
+router.get('/coupons', vendorController.getVendorCoupons);              
+router.get('/coupons/:id', vendorController.getVendorCouponById);       
+router.post('/coupons/create', vendorController.createCoupon);          
+router.put('/coupons/:id', vendorController.updateVendorCoupon);        
+router.delete('/coupons/:id', vendorController.deleteVendorCoupon);     
 
 // -------------------------
 // Product Routes
@@ -29,7 +29,7 @@ router.post('/products/add', upload.array('images', 5), vendorController.addProd
 router.put('/products/:id', upload.array('images', 5), vendorController.updateProduct);
 router.delete('/products/:id', vendorController.deleteProduct);
 router.put('/products/:id/status', vendorController.updateProductStatus);
-router.get("/public/products/:category", vendorController.getVendorProductsByCategory);
+router.get('/public/products/:category', vendorController.getVendorProductsByCategory);
 
 // -------------------------
 // Orders
@@ -37,8 +37,6 @@ router.get("/public/products/:category", vendorController.getVendorProductsByCat
 router.put('/orders/:id/update-status', vendorController.updateOrderStatus);
 
 router.get('/orders', vendorController.getVendorOrders);
-
-
 router.get('/orders/stats', vendorController.getVendorOrderStats);
 router.get('/orders/monthly', vendorController.getMonthlyOrders);
 router.get('/orders/recent', vendorController.getRecentVendorOrders);
@@ -49,7 +47,7 @@ router.get('/orders/today', vendorController.getTodaysOrders);
 // -------------------------
 router.get('/dashboard', vendorController.getDashboardData);
 router.get('/dashboard-analytics', vendorController.getVendorDashboardAnalytics);
-router.get('/recent-products', vendorController.getRecentListings); // Vendor-only recent products
+router.get('/recent-products', vendorController.getRecentListings);
 
 // -------------------------
 // Vendor Profile & Settings
@@ -59,10 +57,11 @@ router.put(
     '/profile',
     upload.fields([
         { name: 'profilePicture', maxCount: 1 },
-        { name: 'farmImages', maxCount: 5 }, // you can change 5 → any number
+        { name: 'farmImages', maxCount: 5 },
     ]),
     vendorController.updateUserProfile
 );
+
 router.put('/update-language', vendorController.updateUserLanguage);
 router.put('/update-location', vendorController.updateLocationDetails);
 router.get('/update-location', vendorController.getVendorLocationDetails);

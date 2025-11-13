@@ -402,41 +402,23 @@ const getProductDetails = asyncHandler(async (req, res) => {
 
 
 
-
 const getCategoriesWithProducts = asyncHandler(async (req, res) => {
   try {
-    const includeInactive = req.query.includeInactive === "true";
-    const products = await Product.find(includeInactive ? {} : { status: "In Stock" })
-      .select("name category price images status");
-
+    // 1) Get all categories
     const categories = await Category.find({}).sort({ name: 1 });
 
-    const normalize = (str) => {
-      if (!str) return "";
-      return str
-        .toString()
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z]/g, "")
-        .replace(/s$/, "");
-    };
+    // 2) Get all products, AND populate category
+    const products = await Product.find({})
+      .populate("category", "name image")
+      .populate("vendor", "name")
+      .sort({ createdAt: -1 });
 
-    const data = categories.map((cat) => {
-      const catKey = normalize(cat.name);
-      if (!catKey) return { _id: cat._id, name: cat.name, image: cat.image, productCount: 0, products: [] };
-
-      const matchedProducts = products.filter((p) => {
-        const prodKey = normalize(p.category);
-        // ← IMPORTANT: skip if product has empty/undefined category
-        if (!prodKey) return false;
-
-        // Better, safer matching (no accidental true because of empty strings)
-        return (
-          prodKey === catKey ||
-          prodKey.startsWith(catKey) ||
-          catKey.startsWith(prodKey)
-        );
-      });
+    // 3) Build category → product list mapping
+    const result = categories.map((cat) => {
+      // Filter products where product.category._id == category._id
+      const matchedProducts = products.filter(
+        (p) => p.category && String(p.category._id) === String(cat._id)
+      );
 
       return {
         _id: cat._id,
@@ -447,13 +429,12 @@ const getCategoriesWithProducts = asyncHandler(async (req, res) => {
       };
     });
 
-    const filtered = data.filter((c) => c.products.length > 0);
-
     res.status(200).json({
       success: true,
-      totalCategories: filtered.length,
-      data: filtered,
+      totalCategories: result.length,
+      data: result,
     });
+
   } catch (error) {
     console.error("❌ Error fetching categories with products:", error);
     res.status(500).json({
@@ -464,7 +445,8 @@ const getCategoriesWithProducts = asyncHandler(async (req, res) => {
   }
 });
 
-module.exports = { getCategoriesWithProducts };
+
+
 
 
 
