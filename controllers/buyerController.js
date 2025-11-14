@@ -1990,7 +1990,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       req,
       "📦 New Order Received",
       `You have received a new order (${newOrder.orderId}).`,
-      { orderId: newOrder._id, totalAmount: newOrder.totalPrice, paymentMethod, orderType: deliveryType },
+      { orderIds: newOrder._id, totalAmount: newOrder.totalPrice, paymentMethod, orderType: deliveryType },
       "Vendor",
       vendorId
     );
@@ -2049,7 +2049,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     req,
     "🛍️ Order Placed Successfully",
     "Your order has been placed successfully!",
-    { orderId: createdOrderIds, totalAmount: grandTotalAmount, paymentMethod, deliveryType },
+    { orderIds: createdOrderIds, totalAmount: grandTotalAmount, paymentMethod, deliveryType },
     "Buyer",
     userId
   );
@@ -2059,7 +2059,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     req,
     "🧾 New Order Placed",
     `A new order has been placed by ${req.user.name || "a buyer"}.`,
-    { orderId: createdOrderIds, totalAmount: grandTotalAmount, paymentMethod, deliveryType },
+    { orderIds: createdOrderIds, totalAmount: grandTotalAmount, paymentMethod, deliveryType },
     "Admin"
   );
 
