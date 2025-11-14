@@ -958,7 +958,7 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
   const updatedOrder = await order.save();
 
   // -----------------------------------------
-  // 🔔📱 Personal Buyer Notification (Bell + Push)
+  // 🔔📱 Buyer Notification (Bell + Push)
   // -----------------------------------------
   await createAndSendNotification(
     req,
@@ -970,11 +970,26 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
       vendorId: order.vendor._id,
       vendorName: order.vendor.name,
     },
-    "Buyer",           // Target group
-    order.buyer._id    // 🎯 Personal buyer
+    "Buyer",
+    order.buyer._id
   );
-  // NOTE:
-  // createAndSendNotification = DB + socket emit + Expo push ✔
+
+  // -----------------------------------------
+  // 🔔📱 Vendor Notification (Bell + Push)
+  // -----------------------------------------
+  await createAndSendNotification(
+    req,
+    "📦 Order Status Updated",
+    `Order (${order.orderId}) status updated to "${status}".`,
+    {
+      orderId: order.orderId,
+      status,
+      buyerId: order.buyer._id,
+      buyerName: order.buyer.name,
+    },
+    "Vendor",
+    order.vendor._id
+  );
 
   // Prepare Response
   const responseOrder = updatedOrder.toObject();
@@ -983,10 +998,11 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
 
   res.status(200).json({
     success: true,
-    message: `Order status updated to "${status}" and buyer notified.`,
+    message: `Order status updated to "${status}" and both buyer & vendor notified.`,
     data: responseOrder,
   });
 });
+
 
 
 

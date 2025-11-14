@@ -1985,17 +1985,32 @@ const placeOrder = asyncHandler(async (req, res) => {
 
     createdOrderIds.push(newOrder._id);
 
-    // ------------------ PERSONAL VENDOR NOTIFICATION ------------------
+    // ------------------ 🔔 PERSONAL VENDOR NOTIFICATION ------------------
     await createAndSendNotification(
       req,
       "📦 New Order Received",
       `You have received a new order (${newOrder.orderId}).`,
-      { orderIds: newOrder._id, totalAmount: newOrder.totalPrice, paymentMethod, orderType: deliveryType },
+      { orderId: newOrder._id, totalAmount: newOrder.totalPrice, paymentMethod, orderType: deliveryType },
       "Vendor",
       vendorId
     );
 
-    // ------------------ UPI PAYMENT GENERATION ------------------
+    // ------------------ 🔔 PERSONAL BUYER NOTIFICATION (Per Vendor Order) ------------------
+    await createAndSendNotification(
+      req,
+      "🛍️ Order Placed",
+      `Your order (${newOrder.orderId}) has been placed successfully.`,
+      {
+        orderId: newOrder._id,
+        vendorId,
+        vendorName: vendor?.name,
+        amount: summary.totalAmount,
+      },
+      "Buyer",
+      userId
+    );
+
+    // ------------------ 💳 UPI PAYMENT QR GENERATION ------------------
     if (isOnlinePayment && vendor?.upiId) {
       const transactionRef = `TXN-${newOrder.orderId.replace("#", "-")}-${Date.now()}`;
       const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=Payment for ${newOrder.orderId}&tr=${transactionRef}&cu=INR`;
@@ -2044,7 +2059,7 @@ const placeOrder = asyncHandler(async (req, res) => {
   // ------------------ 9️⃣ CLEAR CART ------------------
   await Cart.findOneAndUpdate({ user: userId }, { $set: { items: [] } });
 
-  // ------------------ 🔟 BUYER NOTIFICATION ------------------
+  // ------------------ 🔟 BUYER FINAL NOTIFICATION ------------------
   await createAndSendNotification(
     req,
     "🛍️ Order Placed Successfully",
@@ -2054,7 +2069,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     userId
   );
 
-  // ------------------ 1️⃣1️⃣ ADMIN NOTIFICATION BROADCAST ------------------
+  // ------------------ 1️⃣1️⃣ ADMIN NOTIFICATION ------------------
   await createAndSendNotification(
     req,
     "🧾 New Order Placed",
@@ -2077,6 +2092,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     pickupSlot: deliveryType === "Pickup" ? pickupSlot : null,
   });
 });
+
 
 
 
