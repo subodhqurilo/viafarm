@@ -510,7 +510,7 @@ const addProduct = asyncHandler(async (req, res) => {
     // ⬤ Buyers → ALL buyers → Push + Bell
     await createAndSendNotification(
         req,
-        "🛒 sanjay billa New Product Available!",
+        "🛒  New Product Available!",
         `Check out the new product "${newProduct.name}".`,
         { type: "product", productId: newProduct._id },
         "Buyer" // all buyers
@@ -817,8 +817,7 @@ const deleteProduct = asyncHandler(async (req, res) => {
     }
 
     // 2️⃣ Find Product
-    const product = await Product.findById(id);
-
+    const product = await Product.findById(id).populate("vendor", "_id name");
     if (!product) {
         return res.status(404).json({
             success: false,
@@ -826,22 +825,22 @@ const deleteProduct = asyncHandler(async (req, res) => {
         });
     }
 
-    // 3️⃣ Check Authorization
-    if (product.vendor.toString() !== req.user._id.toString()) {
+    // 3️⃣ Authorization
+    if (product.vendor._id.toString() !== req.user._id.toString()) {
         return res.status(403).json({
             success: false,
             message: 'You are not authorized to delete this product.'
         });
     }
 
-    // 4️⃣ (Optional) Delete Product Images from Cloudinary
+    // 4️⃣ Delete Cloudinary Images
     if (product.images && product.images.length > 0) {
         for (const imageUrl of product.images) {
             try {
-                const publicId = imageUrl.split('/').pop().split('.')[0]; // extract Cloudinary public ID
+                const publicId = imageUrl.split('/').pop().split('.')[0];
                 await cloudinary.uploader.destroy(`product-images/${publicId}`);
             } catch (err) {
-                console.error('Cloudinary image deletion failed:', err.message);
+                console.error("❌ Cloudinary deletion failed:", err.message);
             }
         }
     }
@@ -849,12 +848,27 @@ const deleteProduct = asyncHandler(async (req, res) => {
     // 5️⃣ Delete Product from DB
     await Product.findByIdAndDelete(id);
 
-    // 6️⃣ Respond
+    // ⭐⭐⭐ 6️⃣ Send Personal Vendor Notification — ONLY BELL (NO PUSH) ⭐⭐⭐
+    await createAndSendNotification(
+        req,
+        "🗑️ Product Deleted",
+        `Your product "${product.name}" has been deleted successfully.`,
+        {
+            productId: product._id,
+            action: "product_deleted"
+        },
+        "Vendor",
+        product.vendor._id,
+        { disablePush: true }   // ⛔ NO PUSH for vendor
+    );
+
+    // 7️⃣ Response
     res.status(200).json({
         success: true,
         message: 'Product deleted successfully.'
     });
 });
+
 
 
 
