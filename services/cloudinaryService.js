@@ -1,9 +1,10 @@
-const cloudinary = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const multer = require('multer');
-const dotenv = require('dotenv');
+const cloudinary = require("cloudinary").v2;
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
+const multer = require("multer");
 
-dotenv.config();
+require("dotenv").config();
+
+
 
 // 🔹 Cloudinary Config
 cloudinary.config({
@@ -12,34 +13,41 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// 🔹 Storage Setup
+// 🔹 Multer Storage With Cloudinary
 const storage = new CloudinaryStorage({
-  cloudinary,
+  cloudinary: cloudinary,
   params: {
-    folder: 'farm-ecomm-products',
-    allowed_formats: ['jpg', 'png', 'jpeg'],
+    folder: "farm-ecomm-products",
+    allowed_formats: ["jpg", "jpeg", "png"],
+    resource_type: "image",
+    transformation: [{ quality: "auto", fetch_format: "auto" }],
   },
 });
 
-// ✅ Removed size limit
+// 🔹 Multer Upload Middleware
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    const allowed = ['image/jpeg', 'image/png', 'image/jpg'];
+    const allowed = ["image/jpeg", "image/png", "image/jpg"];
     if (!allowed.includes(file.mimetype)) {
-      return cb(new Error('Only .jpg, .jpeg, and .png formats are allowed!'));
+      return cb(new Error("Only .jpg, .jpeg, and .png formats are allowed!"));
     }
     cb(null, true);
   },
 });
 
-// 🔹 Helper functions
-const cloudinaryUpload = (filePath, folder = 'farm-ecomm-products') => {
-  return cloudinary.uploader.upload(filePath, { folder });
+// 🔹 Cloudinary Delete Helper
+const cloudinaryDestroy = async (publicId) => {
+  try {
+    return await cloudinary.uploader.destroy(publicId);
+  } catch (error) {
+    console.error("Cloudinary delete error:", error);
+  }
 };
 
-const cloudinaryDestroy = (publicId) => {
-  return cloudinary.uploader.destroy(publicId);
+// ⚡ Export
+module.exports = {
+  cloudinary,
+  upload,
+  cloudinaryDestroy,
 };
-
-module.exports = { cloudinary, upload, cloudinaryUpload, cloudinaryDestroy };

@@ -1,6 +1,7 @@
 /// server.js
+require("dotenv").config();     // ← MUST BE FIRST LINE, DO NOT MOVE
+
 const express = require("express");
-const dotenv = require("dotenv");
 const connectDB = require("./config/db");
 const path = require("path");
 const cors = require("cors");
@@ -9,7 +10,7 @@ const { Server } = require("socket.io");
 const cookieParser = require("cookie-parser");
 const { Expo } = require("expo-server-sdk");
 
-dotenv.config();
+// CONNECT DATABASE (after .env loaded)
 connectDB();
 
 // EXPRESS APP
@@ -20,7 +21,7 @@ app.use(cookieParser());
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
 
-// Expo instance (SINGLE INSTANCE ONLY)
+// Expo instance (single instance)
 const expo = new Expo();
 
 // --- CORS ---
@@ -48,20 +49,16 @@ const server = http.createServer(app);
 
 // --- SOCKET.IO ---
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
+  cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
 // ===== ONLINE USERS MEMORY STORE =====
-const onlineUsers = {}; // Keep it constant reference
+const onlineUsers = {};
 
 // --- SOCKET EVENTS ---
 io.on("connection", (socket) => {
   console.log("⚡ User connected:", socket.id);
 
-  // Register logged in user
   socket.on("registerUser", ({ userId, role }) => {
     if (userId) {
       onlineUsers[userId] = { socketId: socket.id, role };
@@ -69,7 +66,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Clean up disconnected user
   socket.on("disconnect", () => {
     for (const [id, info] of Object.entries(onlineUsers)) {
       if (info.socketId === socket.id) {
@@ -86,7 +82,7 @@ app.set("io", io);
 app.set("expo", expo);
 app.set("onlineUsers", onlineUsers);
 
-// GLOBAL ACCESS TOO
+// GLOBAL ACCESS
 global.io = io;
 global.expo = expo;
 global.onlineUsers = onlineUsers;
@@ -99,7 +95,11 @@ app.use("/api/admin", require("./routes/adminRoutes"));
 app.use("/api/notifications", require("./routes/notificationRoutes"));
 app.use("/", require("./routes/resetRoutes"));
 app.use("/api", require("./routes/testRoutes"));
-app.use("/api/push", require("./routes/push")); // simplified route path
+app.use("/api/push", require("./routes/push"));
+app.use((err, req, res, next) => {
+  console.error("🔥 GLOBAL ERROR:", err.stack);
+  res.status(500).json({ success: false, message: err.message });
+});
 
 // DEFAULT
 app.get("/", (req, res) => res.send("🚀 ViaFarm API running successfully!"));

@@ -399,150 +399,139 @@ const getVendorProducts = asyncHandler(async (req, res) => {
 
 
 const addProduct = asyncHandler(async (req, res) => {
-    const {
-        name,
-        category,
-        variety,
-        price,
-        quantity,
-        unit,
-        description,
-        weightPerPiece,
-        allIndiaDelivery,
-    } = req.body;
+    console.log("🔵 ADD PRODUCT API HIT");
 
-    const vendorId = req.user._id;
+    try {
+        console.log("🟢 REQ BODY:", req.body);
+        console.log("🟣 REQ FILES:", req.files);
+        console.log("🟡 USER:", req.user);
 
-    // 1️⃣ Vendor Approval Check
-    const vendor = await User.findById(vendorId);
-    if (!vendor || !vendor.isApproved) {
-        return res.status(403).json({
-            success: false,
-            message: "Your account is not approved. You cannot add products yet.",
-        });
-    }
+        const {
+            name, category, variety, price, quantity,
+            unit, description, weightPerPiece, allIndiaDelivery,
+        } = req.body;
 
-    // 2️⃣ Required Fields
-    if (!name || !category || !variety || !price || !quantity || !unit) {
-        return res.status(400).json({
-            success: false,
-            message: "Please fill in all required fields.",
-        });
-    }
+        const vendorId = req.user?._id;
 
-    // 3️⃣ Numeric Validation
-    if (isNaN(price) || isNaN(quantity) || price <= 0 || quantity <= 0) {
-        return res.status(400).json({
-            success: false,
-            message: "Price and Quantity must be positive numbers.",
-        });
-    }
+        if (!vendorId) {
+            console.log("❌ Vendor ID missing");
+            return res.status(401).json({ success: false, message: "Unauthorized" });
+        }
 
-    // 4️⃣ Unit "pc" Requires weightPerPiece
-    if (unit === "pc" && (!weightPerPiece || typeof weightPerPiece !== "string")) {
-        return res.status(400).json({
-            success: false,
-            message:
-                'When selling by piece (pc), please specify weight per piece (e.g., "400g").',
-        });
-    }
+        console.log("📌 Vendor ID:", vendorId);
 
-    // ⭐⭐⭐ 5️⃣ Convert category input to ObjectId ⭐⭐⭐
-    let categoryId;
-    if (mongoose.isValidObjectId(category)) {
-        categoryId = category;
-    } else {
-        const cat = await Category.findOne({
-            name: { $regex: new RegExp(`^${category.trim()}$`, "i") }
-        });
-        if (!cat) {
+        const vendor = await User.findById(vendorId);
+        console.log("📌 Vendor Found:", vendor);
+
+        if (!vendor || !vendor.isApproved) {
+            console.log("❌ Vendor Not Approved");
+            return res.status(403).json({ success: false, message: "Vendor not approved" });
+        }
+
+        if (!name || !category || !variety || !price || !quantity || !unit) {
+            console.log("❌ Missing required fields");
+            return res.status(400).json({ success: false, message: "Missing required fields" });
+        }
+
+        if (isNaN(price) || isNaN(quantity) || price <= 0 || quantity <= 0) {
+            console.log("❌ Invalid numeric fields");
+            return res.status(400).json({ success: false, message: "Invalid price/quantity" });
+        }
+
+        console.log("📌 Category Input:", category);
+
+        let categoryId;
+        if (mongoose.isValidObjectId(category)) {
+            categoryId = category;
+        } else {
+            const cat = await Category.findOne({
+                name: { $regex: new RegExp(`^${category.trim()}$`, "i") }
+            });
+            console.log("📌 Found Category:", cat);
+
+            if (!cat) return res.status(400).json({
+                success: false, message: `Category "${category}" not found`
+            });
+
+            categoryId = cat._id;
+        }
+
+        console.log("📌 Checking Uploaded Images");
+
+        if (!req.files || req.files.length === 0) {
+            console.log("❌ No Images Found");
             return res.status(400).json({
                 success: false,
-                message: `Category "${category}" not found.`,
+                message: "At least one product image is required.",
             });
         }
-        categoryId = cat._id;
-    }
 
-    // 6️⃣ Upload Images to Cloudinary
-    let images = [];
-    if (req.files && req.files.length > 0) {
+        const images = req.files.map(f => {
+            console.log("📌 FILE:", f);
+            return f.path;
+        });
+
+        console.log("📌 Creating Product in DB");
+
+        const newProduct = await Product.create({
+            name: name.trim(),
+            vendor: vendorId,
+            category: categoryId,
+            variety: variety.trim(),
+            price: Number(price),
+            quantity: Number(quantity),
+            unit: unit.trim(),
+            description: description?.trim() || "No description provided.",
+            images,
+            allIndiaDelivery: allIndiaDelivery === "true" || allIndiaDelivery === true,
+            status: "In Stock",
+            weightPerPiece: unit === "pc" ? weightPerPiece : null,
+        });
+
+        console.log("✔ PRODUCT CREATED:", newProduct);
+
+        console.log("📨 Sending Notifications...");
+
         try {
-            for (const file of req.files) {
-                const result = await cloudinary.uploader.upload(file.path, {
-                    folder: "product-images",
-                });
-                images.push(result.secure_url);
-            }
-        } catch (err) {
-            console.error("Cloudinary upload error:", err);
-            return res.status(500).json({
-                success: false,
-                message: "Image upload failed.",
-            });
+            await createAndSendNotification(req, "🛒 New Product Available!",
+                `Check out the new product "${newProduct.name}".`,
+                { type: "product", productId: newProduct._id }, "Buyer"
+            );
+
+            await createAndSendNotification(req, "🆕 New Product Added",
+                `${vendor.name} added a new product "${newProduct.name}".`,
+                { type: "product", productId: newProduct._id }, "Admin"
+            );
+
+            await createAndSendNotification(req, "✅ Product Added Successfully",
+                `Your product "${newProduct.name}" is now live.`,
+                { type: "product", productId: newProduct._id },
+                "Vendor", vendorId, { disablePush: true }
+            );
+        } catch (notifyErr) {
+            console.error("❌ Notification Error:", notifyErr.message);
         }
-    } else {
-        return res.status(400).json({
+
+        console.log("✔ PRODUCT ADD API COMPLETED");
+
+        return res.status(201).json({
+            success: true,
+            message: "Product added successfully.",
+            data: newProduct,
+        });
+
+    } catch (err) {
+        console.error("🔥 CONTROLLER ERROR:", err);
+        console.error("💥 STACK:", err.stack);
+        return res.status(500).json({
             success: false,
-            message: "At least one product image is required.",
+            message: "Internal Server Error",
+            error: err.message
         });
     }
-
-    // 7️⃣ Create Product
-    const newProduct = await Product.create({
-        name: name.trim(),
-        vendor: vendorId,
-        category: categoryId,
-        variety: variety.trim(),
-        price: Number(price),
-        quantity: Number(quantity),
-        unit: unit.trim(),
-        description: description?.trim() || "No description provided.",
-        images,
-        allIndiaDelivery:
-            allIndiaDelivery === "true" || allIndiaDelivery === true,
-        status: "In Stock",
-        weightPerPiece: unit === "pc" ? weightPerPiece : null,
-    });
-
-    // ⭐⭐⭐ 8️⃣ SEND NOTIFICATIONS ⭐⭐⭐
-
-    // ⬤ Buyers → ALL buyers → Push + Bell
-    await createAndSendNotification(
-        req,
-        "🛒  New Product Available!",
-        `Check out the new product "${newProduct.name}".`,
-        { type: "product", productId: newProduct._id },
-        "Buyer" // all buyers
-    );
-
-    // ⬤ Admins → ALL admins → Push + Bell
-    await createAndSendNotification(
-        req,
-        "🆕 New Product Added",
-        `${vendor.name} just added a new product "${newProduct.name}".`,
-        { type: "product", productId: newProduct._id },
-        "Admin" // all admins
-    );
-
-    // ⬤ Vendor → ONLY personal vendor → Bell Only (no push)
-    await createAndSendNotification(
-        req,
-        "✅ Product Added Successfully",
-        `Your product "${newProduct.name}" is now live in the store.`,
-        { type: "product", productId: newProduct._id },
-        "Vendor",
-        vendorId,           // personal vendor only
-        { disablePush: true } // ⛔ NO PUSH for vendor
-    );
-
-    // 9️⃣ Response
-    res.status(201).json({
-        success: true,
-        message: "Product added successfully and notifications sent.",
-        data: newProduct,
-    });
 });
+
+
 
 
 
@@ -1598,7 +1587,8 @@ const deleteVendorCoupon = asyncHandler(async (req, res) => {
 
 
 const getUserProfile = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user.id).select("-password");
+  try {
+    const user = await User.findById(req.user.id).select("-password");
   if (!user) {
     return res.status(404).json({ success: false, message: "User not found." });
   }
@@ -1680,6 +1670,10 @@ const getUserProfile = asyncHandler(async (req, res) => {
 
   // ✅ Final Response
   res.status(200).json({ success: true, user: responseData });
+  } catch (error) {
+    console.log("error",error)
+    return res.json({status:false,error:error})
+  }
 });
 
 
@@ -1687,7 +1681,8 @@ const getUserProfile = asyncHandler(async (req, res) => {
 
 
 const updateUserProfile = asyncHandler(async (req, res) => {
-  console.log("🟢 Received body:", req.body);
+ try {
+     console.log("🟢 Received body:", req.body);
 
   const { name, mobileNumber, upiId, about, status } = req.body;
 
@@ -1830,6 +1825,9 @@ const updateUserProfile = asyncHandler(async (req, res) => {
       status: updatedUser.status,
     },
   });
+ } catch (error) {
+    return res.status(500).json({success:false,error:error})
+ }
 });
 
 
