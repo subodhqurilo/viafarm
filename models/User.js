@@ -46,6 +46,7 @@ const userSchema = new mongoose.Schema(
 
     profilePicture: { type: String },
 
+
     language: { type: String, default: 'English' },
 
     // Forgot password via OTP

@@ -4,7 +4,8 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Category = require('../models/Category');
-const { cloudinaryUpload, cloudinaryDestroy,upload } = require("../services/cloudinaryService");
+
+const { cloudinary, cloudinaryUpload, cloudinaryDestroy } = require("../services/cloudinaryService");
 
 const Coupon = require('../models/Coupon');
 const Address = require('../models/Address');
@@ -400,146 +401,154 @@ const getVendorProducts = asyncHandler(async (req, res) => {
 
 
 const addProduct = asyncHandler(async (req, res) => {
-  console.log("🔵 ADD PRODUCT API HIT");
+    console.log("🔵 ADD PRODUCT API HIT");
 
-  try {
-    console.log("🟢 REQ BODY:", req.body);
-    console.log("🟣 REQ FILES:", req.files);
-    console.log("🟡 USER:", req.user);
-
-    const {
-      name,
-      category,
-      variety,
-      price,
-      quantity,
-      unit,
-      description,
-      weightPerPiece,
-      allIndiaDelivery,
-    } = req.body;
-
-    const vendorId = req.user?._id;
-
-    if (!vendorId) {
-      return res.status(401).json({ success: false, message: "Unauthorized" });
-    }
-
-    const vendor = await User.findById(vendorId);
-    if (!vendor || !vendor.isApproved) {
-      return res.status(403).json({ success: false, message: "Vendor not approved" });
-    }
-
-    if (!name || !category || !variety || !price || !quantity || !unit) {
-      return res.status(400).json({ success: false, message: "Missing required fields" });
-    }
-
-    if (isNaN(price) || isNaN(quantity) || price <= 0 || quantity <= 0) {
-      return res.status(400).json({ success: false, message: "Invalid price/quantity" });
-    }
-
-    // Resolve Category
-    let categoryId;
-    if (mongoose.isValidObjectId(category)) {
-      categoryId = category;
-    } else {
-      const cat = await Category.findOne({
-        name: { $regex: new RegExp(`^${category.trim()}$`, "i") },
-      });
-
-      if (!cat) {
-        return res.status(400).json({
-          success: false,
-          message: `Category "${category}" not found`,
-        });
-      }
-
-      categoryId = cat._id;
-    }
-
-    // Handle Images
-    if (!req.files || req.files.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "At least one product image is required.",
-      });
-    }
-
-    console.log("📌 Uploading Images to Cloudinary...");
-
-    const images = [];
-    for (const file of req.files) {
-      const uploaded = await cloudinaryUpload(file.path, "products");
-      images.push({
-        url: uploaded.secure_url,
-        public_id: uploaded.public_id,
-      });
-    }
-
-    // Create Product
-    const newProduct = await Product.create({
-      name: name.trim(),
-      vendor: vendorId,
-      category: categoryId,
-      variety: variety.trim(),
-      price: Number(price),
-      quantity: Number(quantity),
-      unit: unit.trim(),
-      description: description?.trim() || "No description provided.",
-      images, // now contains Cloudinary URLs
-      allIndiaDelivery: allIndiaDelivery === "true" || allIndiaDelivery === true,
-      status: "In Stock",
-      weightPerPiece: unit === "pc" ? weightPerPiece : null,
-    });
-
-    console.log("✔ PRODUCT CREATED:", newProduct._id);
-
-    // Notifications
     try {
-      await createAndSendNotification(
-        req,
-        "🛒 New Product Available!",
-        `Check out the new product "${newProduct.name}".`,
-        { type: "product", productId: newProduct._id },
-        "Buyer"
-      );
+        const {
+            name, category, variety, price, quantity, unit,
+            description, weightPerPiece, allIndiaDelivery
+        } = req.body;
 
-      await createAndSendNotification(
-        req,
-        "🆕 New Product Added",
-        `${vendor.name} added a new product "${newProduct.name}".`,
-        { type: "product", productId: newProduct._id },
-        "Admin"
-      );
+        const vendorId = req.user?._id;
 
-      await createAndSendNotification(
-        req,
-        "✅ Product Added Successfully",
-        `Your product "${newProduct.name}" is now live.`,
-        { type: "product", productId: newProduct._id },
-        "Vendor",
-        vendorId,
-        { disablePush: true }
-      );
-    } catch (notifyErr) {
-      console.error("❌ Notification Error:", notifyErr.message);
+        if (!vendorId) {
+            return res.status(401).json({ success: false, message: "Unauthorized" });
+        }
+
+        const vendor = await User.findById(vendorId);
+
+        if (!vendor || !vendor.isApproved) {
+            return res.status(403).json({ success: false, message: "Vendor not approved" });
+        }
+
+        if (!name || !category || !variety || !price || !quantity || !unit) {
+            return res.status(400).json({
+                success: false,
+                message: "Missing required fields",
+            });
+        }
+
+        if (isNaN(price) || isNaN(quantity) || price <= 0 || quantity <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid price/quantity",
+            });
+        }
+
+        // -------------------------------------------
+        // 🔥 1. Find Category (by name OR id)
+        // -------------------------------------------
+        let categoryId;
+
+        if (mongoose.isValidObjectId(category)) {
+            categoryId = category;
+        } else {
+            const cat = await Category.findOne({
+                name: { $regex: new RegExp(`^${category.trim()}$`, "i") }
+            });
+
+            if (!cat) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Category "${category}" not found`,
+                });
+            }
+
+            categoryId = cat._id;
+        }
+
+        // -------------------------------------------
+        // 🔥 2. Upload Images to Cloudinary
+        // -------------------------------------------
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "At least one product image is required",
+            });
+        }
+
+        const images = [];  // <-- STRING array required by your schema
+
+        for (const file of req.files) {
+            const uploaded = await cloudinary.uploader.upload(file.path, {
+                folder: "products",
+            });
+
+            // ⭐ Save ONLY url (your schema needs string)
+            images.push(uploaded.secure_url);
+        }
+
+        // -------------------------------------------
+        // 🔥 3. Create Product
+        // -------------------------------------------
+        const newProduct = await Product.create({
+            name: name.trim(),
+            vendor: vendorId,
+            category: categoryId,
+            variety: variety.trim(),
+            price: Number(price),
+            quantity: Number(quantity),
+            unit: unit.trim(),
+            description: description?.trim() || "No description provided.",
+            images,  // <-- now string array
+            allIndiaDelivery: allIndiaDelivery === "true" || allIndiaDelivery === true,
+            status: "In Stock",
+            weightPerPiece: unit === "pc" ? weightPerPiece : null,
+        });
+
+        // -------------------------------------------
+        // 🔥 4. Notifications (Buyer, Admin, Vendor)
+        // -------------------------------------------
+        try {
+            await createAndSendNotification(
+                req,
+                "🛒 New Product Available!",
+                `Check out the new product "${newProduct.name}".`,
+                { type: "product", productId: newProduct._id },
+                "Buyer"
+            );
+
+            await createAndSendNotification(
+                req,
+                "🆕 New Product Added",
+                `${vendor.name} added a new product "${newProduct.name}".`,
+                { type: "product", productId: newProduct._id },
+                "Admin"
+            );
+
+            await createAndSendNotification(
+                req,
+                "✅ Product Added Successfully",
+                `Your product "${newProduct.name}" is now live.`,
+                { type: "product", productId: newProduct._id },
+                "Vendor",
+                vendorId,
+                { disablePush: true }
+            );
+        } catch (notifyErr) {
+            console.error("❌ Notification Error:", notifyErr.message);
+        }
+
+        // -------------------------------------------
+        // 🔥 5. Response
+        // -------------------------------------------
+        return res.status(201).json({
+            success: true,
+            message: "Product added successfully.",
+            data: newProduct,
+        });
+
+    } catch (err) {
+        console.error("🔥 CONTROLLER ERROR:", err);
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error: err.message,
+        });
     }
-
-    return res.status(201).json({
-      success: true,
-      message: "Product added successfully.",
-      data: newProduct,
-    });
-
-  } catch (err) {
-    console.error("🔥 CONTROLLER ERROR:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Internal Server Error",
-      error: err.message,
-    });
-  }
 });
+
+
 
 
 

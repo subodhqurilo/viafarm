@@ -4,7 +4,8 @@ const multer = require('multer');
 
 const { authMiddleware, authorizeRoles } = require('../middleware/authMiddleware');
 const vendorController = require('../controllers/vendorController');
-const { upload, cloudinary } = require('../services/cloudinaryService');
+const { upload, } = require('../services/cloudinaryService');
+const { cloudinary } = require("../services/cloudinaryService");
 
 // -------------------------
 // Protect all vendor routes
