@@ -2950,12 +2950,15 @@ const updateReview = asyncHandler(async (req, res) => {
   const { reviewId } = req.params;
   const { rating, comment } = req.body;
 
+  console.log("🔍 Incoming Review Update For ID:", reviewId);
+
   // 1️⃣ Find review
   let review = await Review.findById(reviewId)
     .populate("product", "name vendor")
     .populate("user", "name");
 
   if (!review) {
+    console.log("❌ Review Not Found");
     return res.status(404).json({
       success: false,
       message: "Review not found",
@@ -2964,6 +2967,7 @@ const updateReview = asyncHandler(async (req, res) => {
 
   // 2️⃣ Authorization
   if (review.user._id.toString() !== req.user._id.toString()) {
+    console.log("⛔ Unauthorized — User mismatch");
     return res.status(403).json({
       success: false,
       message: "Not authorized to edit this review",
@@ -2984,21 +2988,31 @@ const updateReview = asyncHandler(async (req, res) => {
   // 4️⃣ Update comment
   if (comment !== undefined) review.comment = comment;
 
-  // 5️⃣ Replace images — Delete old + Upload new 🔥
+  // 5️⃣ Handle Images — Delete old + Upload new
   if (req.files && req.files.length > 0) {
-    // 🧹 Delete old Cloudinary images
+
+    console.log("🗑 Deleting old review images...");
+
     if (review.images && review.images.length > 0) {
-      for (const oldUrl of review.images) {
+      for (const img of review.images) {
         try {
-          const publicId = oldUrl.split("/").pop().split(".")[0];
+          // supports both string and { url: "" } format
+          const imgUrl = typeof img === "string" ? img : img.url;
+
+          const publicId = imgUrl
+            .split("/")
+            .pop()
+            .split(".")[0];
+
           await cloudinaryDestroy(`product-reviews/${publicId}`);
         } catch (err) {
-          console.error("Old image delete error:", err.message);
+          console.error("❌ Error deleting old image:", err.message);
         }
       }
     }
 
-    // 📤 Upload new images
+    console.log("📤 Uploading new images...");
+
     const newImages = [];
     for (const file of req.files) {
       const uploaded = await cloudinaryUpload(file.path, "product-reviews");
@@ -3008,10 +3022,10 @@ const updateReview = asyncHandler(async (req, res) => {
     review.images = newImages;
   }
 
-  // 6️⃣ Save review
+  // 6️⃣ Save updated review
   await review.save();
 
-  // 7️⃣ Re-populate
+  // 7️⃣ Re-fetch updated review
   const updatedReview = await Review.findById(review._id)
     .populate("user", "name profilePicture")
     .populate("product", "name variety vendor");
@@ -3057,6 +3071,7 @@ const updateReview = asyncHandler(async (req, res) => {
     review: updatedReview,
   });
 });
+
 
 
 

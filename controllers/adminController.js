@@ -2231,37 +2231,58 @@ const deleteAdminProfilePicture = asyncHandler(async (req, res) => {
 
 
 const getNotificationSettings = asyncHandler(async (req, res) => {
-    // Logic to fetch notification settings from a separate settings model or the admin user document
-    res.json({
-        newVendorRegistration: true,
-        newBuyerRegistration: true,
-        newProductRegistration: true,
-        newOrderPlaced: true
+  const user = await User.findById(req.user._id).select("notificationSettings");
+
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: "User not found.",
     });
+  }
+
+  res.json({
+    success: true,
+    notificationSettings: user.notificationSettings,
+  });
 });
 const updateNotificationSettings = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id);
+  const user = await User.findById(req.user._id);
 
-    if (!user) {
-        return res.status(404).json({ success: false, message: 'Admin not found.' });
-    }
-
-    const { newVendorRegistration, newBuyerRegistration, newProductRegistration, newOrderPlaced } = req.body;
-
-    // Update only the provided fields
-    if (newVendorRegistration !== undefined) user.notificationSettings.newVendorRegistration = newVendorRegistration;
-    if (newBuyerRegistration !== undefined) user.notificationSettings.newBuyerRegistration = newBuyerRegistration;
-    if (newProductRegistration !== undefined) user.notificationSettings.newProductRegistration = newProductRegistration;
-    if (newOrderPlaced !== undefined) user.notificationSettings.newOrderPlaced = newOrderPlaced;
-
-    await user.save();
-
-    res.status(200).json({
-        success: true,
-        message: 'Notification settings updated successfully.',
-        notificationSettings: user.notificationSettings
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: "User not found.",
     });
+  }
+
+  const {
+    newVendorRegistration,
+    newBuyerRegistration,
+    newProductRegistration,
+    newOrderPlaced,
+  } = req.body;
+
+  if (newVendorRegistration !== undefined)
+    user.notificationSettings.newVendorRegistration = newVendorRegistration;
+
+  if (newBuyerRegistration !== undefined)
+    user.notificationSettings.newBuyerRegistration = newBuyerRegistration;
+
+  if (newProductRegistration !== undefined)
+    user.notificationSettings.newProductRegistration = newProductRegistration;
+
+  if (newOrderPlaced !== undefined)
+    user.notificationSettings.newOrderPlaced = newOrderPlaced;
+
+  await user.save();
+
+  res.status(200).json({
+    success: true,
+    message: "Notification settings updated successfully.",
+    notificationSettings: user.notificationSettings,
+  });
 });
+
 
 const getCustomerSupportDetails = asyncHandler(async (req, res) => {
     // Find the single settings document, creating it if it doesn't exist (upsert)
