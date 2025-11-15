@@ -90,6 +90,7 @@ router.delete('/reviews/:reviewId', deleteReview); // Removed redundant authMidd
 
 router.get('/with-products', getCategoriesWithProducts);
 
+
 // --- Address & Pickup ---
 router.get('/addresses', getAddresses);
 router.post('/addresses', addAddress);
