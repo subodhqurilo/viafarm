@@ -589,32 +589,29 @@ const updateProduct = asyncHandler(async (req, res) => {
 
   const updateFields = {};
 
-  // 4️⃣ Convert Category Name → ObjectId
-  if (updates.category !== undefined) {
-    const categoryVal = updates.category;
+  // 4️⃣ Convert Category Name → ID
+  if (updates.category) {
     let categoryId;
 
-    if (mongoose.isValidObjectId(categoryVal)) {
-      categoryId = categoryVal;
+    if (mongoose.isValidObjectId(updates.category)) {
+      categoryId = updates.category;
     } else {
       const cat = await Category.findOne({
-        name: { $regex: new RegExp(`^${categoryVal.trim()}$`, "i") },
+        name: { $regex: new RegExp(`^${updates.category.trim()}$`, "i") },
       });
-
       if (!cat) {
         return res.status(400).json({
           success: false,
-          message: `Category "${categoryVal}" not found.`,
+          message: `Category "${updates.category}" not found.`,
         });
       }
-
       categoryId = cat._id;
     }
 
     updateFields.category = categoryId;
   }
 
-  // 5️⃣ Process allowed fields
+  // 5️⃣ Process remaining allowed fields
   for (const field of allowedFields) {
     if (updates[field] !== undefined && field !== "category") {
       if (field === "price" || field === "quantity") {
@@ -622,10 +619,11 @@ const updateProduct = asyncHandler(async (req, res) => {
       } else if (field === "allIndiaDelivery") {
         updateFields[field] =
           updates[field] === true || updates[field] === "true";
-      } else if (typeof updates[field] === "string") {
-        updateFields[field] = updates[field].trim();
       } else {
-        updateFields[field] = updates[field];
+        updateFields[field] =
+          typeof updates[field] === "string"
+            ? updates[field].trim()
+            : updates[field];
       }
     }
   }
@@ -634,11 +632,10 @@ const updateProduct = asyncHandler(async (req, res) => {
   const finalUnit = updateFields.unit || product.unit;
   if (finalUnit === "pc") {
     const weight = updateFields.weightPerPiece || product.weightPerPiece;
-    if (!weight || typeof weight !== "string") {
+    if (!weight) {
       return res.status(400).json({
         success: false,
-        message:
-          'When selling by "pc", you must provide weightPerPiece (e.g., "400g").',
+        message: 'When selling by "pc", weightPerPiece is required.',
       });
     }
     updateFields.weightPerPiece = weight;
@@ -646,33 +643,31 @@ const updateProduct = asyncHandler(async (req, res) => {
     updateFields.weightPerPiece = null;
   }
 
-  // 7️⃣ IMAGE UPLOAD — DELETE OLD → UPLOAD NEW (🔥 FIXED)
+  // 7️⃣ IMAGE UPLOAD (Fixed for images: [String])
   if (req.files && req.files.length > 0) {
     try {
-      // 🗑 Delete OLD images
+      // 🗑 Delete OLD images (based on URL)
       if (product.images && product.images.length > 0) {
-        for (const img of product.images) {
-          if (img.public_id) {
-            await cloudinaryDestroy(img.public_id);
-          }
+        for (const imgUrl of product.images) {
+          const publicId = imgUrl
+            .split("/")
+            .pop()
+            .split(".")[0];
+          await cloudinary.uploader.destroy(`products/${publicId}`);
         }
       }
 
       // 📤 Upload NEW images
-      const newImages = [];
+      const uploadedImages = [];
       for (const file of req.files) {
-        const uploaded = await cloudinaryUpload(
-          file.path,
-          "product-images"
-        );
-
-        newImages.push({
-          url: uploaded.secure_url,
-          public_id: uploaded.public_id,
+        const uploaded = await cloudinary.uploader.upload(file.path, {
+          folder: "products",
         });
+
+        uploadedImages.push(uploaded.secure_url); // ⬅ only URL saved
       }
 
-      updateFields.images = newImages;
+      updateFields.images = uploadedImages;
     } catch (err) {
       return res.status(500).json({
         success: false,
@@ -682,7 +677,7 @@ const updateProduct = asyncHandler(async (req, res) => {
     }
   }
 
-  // Store old price
+  // Old price
   const oldPrice = product.price;
 
   // 8️⃣ Update DB
@@ -692,9 +687,9 @@ const updateProduct = asyncHandler(async (req, res) => {
     { new: true, runValidators: true }
   ).populate("vendor", "name _id");
 
-  // 9️⃣ NOTIFICATIONS
+  // 9️⃣ Notifications
 
-  // Vendor personal bell
+  // Vendor bell only
   await createAndSendNotification(
     req,
     "✅ Product Updated",
@@ -710,7 +705,6 @@ const updateProduct = asyncHandler(async (req, res) => {
     { disablePush: true }
   );
 
-  // Admins push + bell
   await createAndSendNotification(
     req,
     "🛍️ Product Updated",
@@ -724,7 +718,6 @@ const updateProduct = asyncHandler(async (req, res) => {
     "Admin"
   );
 
-  // Buyers → only on price drop
   if (
     updateFields.price !== undefined &&
     Number(updateFields.price) < Number(oldPrice)
@@ -749,6 +742,7 @@ const updateProduct = asyncHandler(async (req, res) => {
     data: updatedProduct,
   });
 });
+
 
 
 
@@ -836,6 +830,7 @@ const deleteProduct = asyncHandler(async (req, res) => {
 
   // 2️⃣ Find Product
   const product = await Product.findById(id).populate("vendor", "_id name");
+
   if (!product) {
     return res.status(404).json({
       success: false,
@@ -843,7 +838,7 @@ const deleteProduct = asyncHandler(async (req, res) => {
     });
   }
 
-  // 3️⃣ Vendor Authorization
+  // 3️⃣ Authorization
   if (product.vendor._id.toString() !== req.user._id.toString()) {
     return res.status(403).json({
       success: false,
@@ -851,23 +846,28 @@ const deleteProduct = asyncHandler(async (req, res) => {
     });
   }
 
-  // 4️⃣ Delete Cloudinary Images (🔥 fixed)
+  // 4️⃣ Delete Cloudinary Images (✔ Fixed for [String] schema)
   if (product.images && product.images.length > 0) {
-    for (const img of product.images) {
+    for (const imageUrl of product.images) {
       try {
-        if (img.public_id) {
-          await cloudinaryDestroy(img.public_id); // ✔ Correct helper
-        }
+        // Extract public_id from URL
+        const publicId = imageUrl
+          .split("/")
+          .pop()
+          .split(".")[0];
+
+        await cloudinaryDestroy(`products/${publicId}`);
+
       } catch (err) {
         console.error("❌ Cloudinary deletion failed:", err.message);
       }
     }
   }
 
-  // 5️⃣ Delete product from DB
+  // 5️⃣ Delete Product from DB
   await product.deleteOne();
 
-  // ⭐⭐⭐ 6️⃣ Personal Vendor Bell Notification
+  // 6️⃣ Vendor Notification (Bell Only)
   await createAndSendNotification(
     req,
     "🗑️ Product Deleted",
@@ -878,7 +878,7 @@ const deleteProduct = asyncHandler(async (req, res) => {
     },
     "Vendor",
     product.vendor._id,
-    { disablePush: true } // no push for vendor
+    { disablePush: true }
   );
 
   // 7️⃣ Response
@@ -887,6 +887,7 @@ const deleteProduct = asyncHandler(async (req, res) => {
     message: "Product deleted successfully.",
   });
 });
+
 
 
 
@@ -1756,22 +1757,25 @@ const updateUserProfile = asyncHandler(async (req, res) => {
       }
     }
 
-    // 3️⃣ PROFILE IMAGE UPLOAD (DELETE OLD → SET NEW)
+    // --------------------------------------------------
+    // 3️⃣ PROFILE IMAGE UPDATE
+    // --------------------------------------------------
     if (req.files?.profileImage && req.files.profileImage[0]) {
       try {
-        // Delete old image
+        // Delete old image (string URL)
         if (user.profileImage) {
           const publicId = user.profileImage.split("/").pop().split(".")[0];
           await cloudinaryDestroy(`profile-images/${publicId}`);
         }
 
-        // Upload new image
+        // Upload new
         const uploaded = await cloudinaryUpload(
           req.files.profileImage[0].path,
           "profile-images"
         );
 
         user.profileImage = uploaded.secure_url;
+
       } catch (err) {
         console.error("Profile image error:", err);
         return res.status(500).json({
@@ -1781,24 +1785,35 @@ const updateUserProfile = asyncHandler(async (req, res) => {
       }
     }
 
-    // 4️⃣ FARM IMAGES — DELETE OLD → ADD NEW (Correct Format)
+    // --------------------------------------------------
+    // 4️⃣ FARM IMAGES (delete old → upload new)
+    // --------------------------------------------------
     if (req.files?.farmImages && req.files.farmImages.length > 0) {
       try {
         user.vendorDetails = user.vendorDetails || {};
 
-        // Delete old farm images
+        // 🗑 Delete old farm images — support both string[] and object[]
         if (user.vendorDetails.farmImages?.length) {
           for (const img of user.vendorDetails.farmImages) {
-            if (img.public_id) {
-              await cloudinaryDestroy(img.public_id);
+            let publicId;
+
+            if (typeof img === "string") {
+              publicId = img.split("/").pop().split(".")[0];
+            } else if (img.public_id) {
+              publicId = img.public_id;
+            }
+
+            if (publicId) {
+              await cloudinaryDestroy(`farm-images/${publicId}`);
             }
           }
         }
 
-        // Upload new farm images
+        // Upload new images
         const uploadedImages = [];
         for (const file of req.files.farmImages) {
           const uploaded = await cloudinaryUpload(file.path, "farm-images");
+
           uploadedImages.push({
             url: uploaded.secure_url,
             public_id: uploaded.public_id,
@@ -1806,6 +1821,7 @@ const updateUserProfile = asyncHandler(async (req, res) => {
         }
 
         user.vendorDetails.farmImages = uploadedImages;
+
       } catch (err) {
         console.error("Farm upload error:", err);
         return res.status(500).json({
@@ -1820,13 +1836,13 @@ const updateUserProfile = asyncHandler(async (req, res) => {
     if (mobileNumber) user.mobileNumber = mobileNumber;
     if (upiId) user.upiId = upiId;
 
-    // 6️⃣ About (Vendor Only)
+    // 6️⃣ About
     if (about) {
       user.vendorDetails = user.vendorDetails || {};
       user.vendorDetails.about = about;
     }
 
-    // 7️⃣ Address
+    // 7️⃣ Address JSON
     if (req.body.address) {
       try {
         user.address =
@@ -1853,7 +1869,7 @@ const updateUserProfile = asyncHandler(async (req, res) => {
       user.status = status;
     }
 
-    // 9️⃣ Save
+    // 9️⃣ Save User
     const updatedUser = await user.save();
 
     // 🔟 Vendor Notification
@@ -1872,7 +1888,7 @@ const updateUserProfile = asyncHandler(async (req, res) => {
       );
     }
 
-    // 11️⃣ Response
+    // ✅ RESPONSE
     return res.status(200).json({
       success: true,
       message: "Profile updated successfully",
@@ -1888,10 +1904,12 @@ const updateUserProfile = asyncHandler(async (req, res) => {
         status: updatedUser.status,
       },
     });
+
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
 });
+
 
 
 
