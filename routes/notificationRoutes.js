@@ -91,27 +91,68 @@ router.put("/save-push-token", authMiddleware, async (req, res) => {
 // ✅ Test push route (Admin only)
 router.post("/test-push", authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== "Admin") {
-      return res.status(403).json({ success: false, message: "Admins only" });
+    const { title, message, userId } = req.body;
+
+    console.log("\n==============================");
+    console.log("🔥 TEST PUSH NOTIFICATION API HIT");
+    console.log("👤 Sender:", req.user._id);
+    console.log("🎯 Target User:", userId);
+    console.log("==============================\n");
+
+    const targetUser = await User.findById(userId).select("expoPushToken");
+
+    if (!targetUser) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
     }
 
-    const { title, message, userType = "Buyer", userId = null } = req.body;
+    if (!targetUser.expoPushToken) {
+      return res.status(400).json({
+        success: false,
+        message: "User does not have an Expo push token saved",
+      });
+    }
 
-    await createAndSendNotification(
-      req,
-      title || "Test Notification ✅",
-      message || "This is a test push notification!",
-      { from: "Postman" },
-      userType,
-      userId
-    );
+    // Direct SEND via Expo SDK
+    const messages = [
+      {
+        to: targetUser.expoPushToken,
+        sound: "default",
+        title: title || "🚀 Test Notification",
+        body: message || "Your push notification system is working perfectly!",
+        data: {
+          test: true,
+          sentAt: new Date(),
+        },
+      },
+    ];
 
-    console.log(`🔔 Test push sent: ${userType} ${userId ? "-> " + userId : "(broadcast)"}`);
-    res.json({ success: true, message: "Test push sent successfully!" });
+    console.log("📲 Sending Notification To:", targetUser.expoPushToken);
+
+    // Expo SDK logic
+    const expo = req.app.get("expo") || global.expo;
+    const chunks = expo.chunkPushNotifications(messages);
+
+    for (const chunk of chunks) {
+      const tickets = await expo.sendPushNotificationsAsync(chunk);
+      console.log("🎟 Expo Ticket Response:", tickets);
+    }
+
+    return res.json({
+      success: true,
+      message: "Test push sent successfully!",
+    });
   } catch (error) {
-    console.error("❌ Push test error:", error);
-    res.status(500).json({ success: false, message: "Failed to send test push.", error: error.message });
+    console.error("🔥 TEST PUSH ERROR:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to send test push",
+      error: error.message,
+    });
   }
 });
+
 
 module.exports = router;

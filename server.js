@@ -87,6 +87,10 @@ global.io = io;
 global.expo = expo;
 global.onlineUsers = onlineUsers;
 
+
+
+
+
 // ROUTES
 app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/buyer", require("./routes/buyerRoutes"));
