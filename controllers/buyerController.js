@@ -8,7 +8,8 @@ const User = require('../models/User');
 const Wishlist = require('../models/Wishlist');
 const Address = require('../models/Address');
 const Review = require('../models/Review');
-const { upload, cloudinary } = require('../services/cloudinaryService');
+const { cloudinaryUpload, cloudinaryDestroy,upload } = require("../services/cloudinaryService");
+
 const Coupon = require('../models/Coupon');
 const { calculateOrderSummary, getDeliveryCharge } = require('../utils/orderUtils');
 const Donation = require('../models/Donation');
@@ -28,7 +29,31 @@ const { Expo } = require("expo-server-sdk");
 const expo = new Expo();
 
 
- 
+ async function geocodeAddress({ houseNumber, street, locality, city, district, state, pinCode }) {
+  try {
+    const fullAddress = [houseNumber, street, locality, city, district, state, pinCode]
+      .filter(Boolean)
+      .join(", ");
+
+    if (!fullAddress) return null;
+
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(fullAddress)}&format=json&limit=1`;
+
+    const { data } = await axios.get(url, {
+      headers: { "User-Agent": "ViaFarm/1.0 (viafarm.app)" },
+    });
+
+    if (data.length > 0) {
+      const lat = parseFloat(data[0].lat);
+      const lon = parseFloat(data[0].lon);
+      if (!isNaN(lat) && !isNaN(lon)) return [lon, lat];
+    }
+    return null;
+  } catch (err) {
+    console.warn("⚠️ Geocoding failed:", err.message);
+    return null;
+  }
+}
 // --- Helper: Calculate distance between two coordinates (in km) ---
 function calculateDistanceKm(lat1, lon1, lat2, lon2) {
   const toRad = (v) => (v * Math.PI) / 180;
@@ -2728,18 +2753,30 @@ const writeReview = asyncHandler(async (req, res) => {
     });
   }
 
-  // 4️⃣ Upload Review Images
+  // 4️⃣ Prevent Duplicate Review
+  const existing = await Review.findOne({
+    product: productId,
+    user: req.user._id,
+    order: orderId,
+  });
+
+  if (existing) {
+    return res.status(400).json({
+      success: false,
+      message: "You have already reviewed this product for this order.",
+    });
+  }
+
+  // 5️⃣ Upload Review Images
   const images = [];
   if (req.files && req.files.length > 0) {
     for (const file of req.files) {
-      const result = await cloudinary.uploader.upload(file.path, {
-        folder: "product-reviews",
-      });
-      images.push(result.secure_url);
+      const uploaded = await cloudinaryUpload(file.path, "product-reviews");
+      images.push(uploaded.secure_url);
     }
   }
 
-  // 5️⃣ Create Review
+  // 6️⃣ Create Review
   const review = await Review.create({
     product: productId,
     user: req.user._id,
@@ -2750,14 +2787,14 @@ const writeReview = asyncHandler(async (req, res) => {
     orderItem: `${orderId}-${productId}`,
   });
 
-  // 6️⃣ Populate Review for Response
+  // 7️⃣ Populate Review for Response
   const populatedReview = await Review.findById(review._id)
     .populate("user", "name")
     .populate("product", "name variety vendor");
 
-  // 7️⃣ Notifications -----------------------
+  // 8️⃣ Notifications
 
-  // 🔸 Buyer Notification (personal)
+  // Buyer notification
   await createAndSendNotification(
     req,
     "⭐ Review Submitted",
@@ -2772,7 +2809,7 @@ const writeReview = asyncHandler(async (req, res) => {
     req.user._id
   );
 
-  // 🔸 Vendor Notification (personal)
+  // Vendor notification
   if (populatedReview.product.vendor) {
     await createAndSendNotification(
       req,
@@ -2789,13 +2826,14 @@ const writeReview = asyncHandler(async (req, res) => {
     );
   }
 
-  // 8️⃣ Final Response
+  // 9️⃣ Final Response
   res.status(201).json({
     success: true,
     message: "Review submitted successfully.",
     review: populatedReview,
   });
 });
+
 
 
 
@@ -2909,157 +2947,188 @@ const getReviewsForProduct = asyncHandler(async (req, res) => {
 
 
 const updateReview = asyncHandler(async (req, res) => {
-    const { reviewId } = req.params;
-    const { rating, comment } = req.body;
+  const { reviewId } = req.params;
+  const { rating, comment } = req.body;
 
-    // 1️⃣ Find review
-    let review = await Review.findById(reviewId)
-        .populate("product", "name vendor")
-        .populate("user", "name");
+  // 1️⃣ Find review
+  let review = await Review.findById(reviewId)
+    .populate("product", "name vendor")
+    .populate("user", "name");
 
-    if (!review) {
-        return res.status(404).json({ success: false, message: "Review not found" });
-    }
-
-    // 2️⃣ Authorization check
-    if (review.user._id.toString() !== req.user._id.toString()) {
-        return res.status(403).json({ success: false, message: "Not authorized to edit this review" });
-    }
-
-    // 3️⃣ Update fields
-    if (rating) {
-        if (rating < 1 || rating > 5) {
-            return res.status(400).json({
-                success: false,
-                message: "Rating must be between 1 and 5",
-            });
-        }
-        review.rating = rating;
-    }
-
-    if (comment !== undefined) review.comment = comment;
-
-    // 4️⃣ Replace images if new ones uploaded
-    if (req.files && req.files.length > 0) {
-        const images = [];
-        for (const file of req.files) {
-            const result = await cloudinary.uploader.upload(file.path, { folder: "product-reviews" });
-            images.push(result.secure_url);
-        }
-        review.images = images;
-    }
-
-    // 5️⃣ Save updated review
-    await review.save();
-
-    // 6️⃣ Re-fetch with populated fields for better response
-    const updatedReview = await Review.findById(review._id)
-        .populate("user", "name profilePicture")
-        .populate("product", "name variety vendor");
-
-    // 7️⃣ Send Notifications
-    const product = updatedReview.product;
-
-    // 🔹 Buyer Notification (personal)
-    await createAndSendNotification(
-        req,
-        "✏️ Review Updated",
-        `Your review for "${product.name}" has been updated successfully.`,
-        {
-            reviewId: updatedReview._id,
-            productId: product._id,
-            rating: updatedReview.rating,
-            comment: updatedReview.comment,
-        },
-        "Buyer",
-        req.user._id // personal buyer
-    );
-
-    // 🔹 Vendor Notification (personal)
-    if (product.vendor) {
-        await createAndSendNotification(
-            req,
-            "🔄 Product Review Updated",
-            `${req.user.name || "A buyer"} updated their review on your product "${product.name}".`,
-            {
-                reviewId: updatedReview._id,
-                productId: product._id,
-                rating: updatedReview.rating,
-                comment: updatedReview.comment,
-            },
-            "Vendor",
-            product.vendor.toString() // personal vendor
-        );
-    }
-
-    // ✅ 8️⃣ Response
-    res.status(200).json({
-        success: true,
-        message: "Review updated successfully and notifications sent.",
-        review: updatedReview,
+  if (!review) {
+    return res.status(404).json({
+      success: false,
+      message: "Review not found",
     });
+  }
+
+  // 2️⃣ Authorization
+  if (review.user._id.toString() !== req.user._id.toString()) {
+    return res.status(403).json({
+      success: false,
+      message: "Not authorized to edit this review",
+    });
+  }
+
+  // 3️⃣ Update rating
+  if (rating) {
+    if (rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: "Rating must be between 1 and 5",
+      });
+    }
+    review.rating = rating;
+  }
+
+  // 4️⃣ Update comment
+  if (comment !== undefined) review.comment = comment;
+
+  // 5️⃣ Replace images — Delete old + Upload new 🔥
+  if (req.files && req.files.length > 0) {
+    // 🧹 Delete old Cloudinary images
+    if (review.images && review.images.length > 0) {
+      for (const oldUrl of review.images) {
+        try {
+          const publicId = oldUrl.split("/").pop().split(".")[0];
+          await cloudinaryDestroy(`product-reviews/${publicId}`);
+        } catch (err) {
+          console.error("Old image delete error:", err.message);
+        }
+      }
+    }
+
+    // 📤 Upload new images
+    const newImages = [];
+    for (const file of req.files) {
+      const uploaded = await cloudinaryUpload(file.path, "product-reviews");
+      newImages.push(uploaded.secure_url);
+    }
+
+    review.images = newImages;
+  }
+
+  // 6️⃣ Save review
+  await review.save();
+
+  // 7️⃣ Re-populate
+  const updatedReview = await Review.findById(review._id)
+    .populate("user", "name profilePicture")
+    .populate("product", "name variety vendor");
+
+  const product = updatedReview.product;
+
+  // 8️⃣ Buyer Notification
+  await createAndSendNotification(
+    req,
+    "✏️ Review Updated",
+    `Your review for "${product.name}" has been updated successfully.`,
+    {
+      reviewId: updatedReview._id,
+      productId: product._id,
+      rating: updatedReview.rating,
+      comment: updatedReview.comment,
+    },
+    "Buyer",
+    req.user._id
+  );
+
+  // 9️⃣ Vendor Notification
+  if (product.vendor) {
+    await createAndSendNotification(
+      req,
+      "🔄 Product Review Updated",
+      `${req.user.name || "A buyer"} updated their review on your product "${product.name}".`,
+      {
+        reviewId: updatedReview._id,
+        productId: product._id,
+        rating: updatedReview.rating,
+        comment: updatedReview.comment,
+      },
+      "Vendor",
+      product.vendor.toString()
+    );
+  }
+
+  // 🔟 Response
+  res.status(200).json({
+    success: true,
+    message: "Review updated successfully.",
+    review: updatedReview,
+  });
 });
+
 
 
 
 
 const deleteReview = asyncHandler(async (req, res) => {
-    const { reviewId } = req.params;
+  const { reviewId } = req.params;
 
-    // 1️⃣ Find review
-    const review = await Review.findById(reviewId).populate("product", "name _id");
-    if (!review) {
-        return res.status(404).json({ success: false, message: "Review not found" });
-    }
-
-    // 2️⃣ Authorization
-    if (review.user.toString() !== req.user._id.toString()) {
-        return res.status(403).json({ success: false, message: "Not authorized to delete this review" });
-    }
-
-    // 3️⃣ Delete cloudinary images
-    if (review.images?.length) {
-        for (const imgUrl of review.images) {
-            try {
-                const publicId = imgUrl.split("/").slice(-1)[0].split(".")[0];
-                await cloudinary.uploader.destroy(`product-reviews/${publicId}`);
-            } catch (error) {
-                console.error("Cloudinary delete error:", error.message);
-            }
-        }
-    }
-
-    // 4️⃣ Delete review
-    await review.deleteOne();
-
-    // 5️⃣ 🔔 Send ONLY Bell Notification (No Push)
-    const notification = await Notification.create({
-        title: "🗑️ Review Deleted",
-        message: `Your review for "${review.product?.name || "a product"}" has been deleted successfully.`,
-        data: {
-            reviewId,
-            productId: review.product?._id,
-        },
-        userType: "Buyer",
-        receiverId: req.user._id,
-        isRead: false
+  // 1️⃣ Find review
+  const review = await Review.findById(reviewId).populate(
+    "product",
+    "name _id"
+  );
+  if (!review) {
+    return res.status(404).json({
+      success: false,
+      message: "Review not found",
     });
+  }
 
-    // 🔌 Real-time socket alert
-    const io = req.app.get("io");
-    const onlineUsers = req.app.get("onlineUsers");
-
-    if (onlineUsers[req.user._id]) {
-        io.to(onlineUsers[req.user._id].socketId).emit("notification", notification);
-    }
-
-    // 6️⃣ Response
-    res.status(200).json({
-        success: true,
-        message: "Review deleted successfully.",
-        reviewId,
+  // 2️⃣ Authorization
+  if (review.user.toString() !== req.user._id.toString()) {
+    return res.status(403).json({
+      success: false,
+      message: "Not authorized to delete this review",
     });
+  }
+
+  // 3️⃣ Delete Cloudinary Images (SAFE)
+  if (review.images && review.images.length > 0) {
+    for (const imgUrl of review.images) {
+      try {
+        const publicId = imgUrl.split("/").pop().split(".")[0];
+        await cloudinaryDestroy(`product-reviews/${publicId}`); // 🔥 Correct helper
+      } catch (err) {
+        console.error("Cloudinary delete error:", err.message);
+      }
+    }
+  }
+
+  // 4️⃣ Delete review from DB
+  await review.deleteOne();
+
+  // 5️⃣ Create notification (only bell, no push)
+  const notification = await Notification.create({
+    title: "🗑️ Review Deleted",
+    message: `Your review for "${review.product?.name || "a product"}" has been deleted successfully.`,
+    data: {
+      reviewId,
+      productId: review.product?._id,
+    },
+    userType: "Buyer",
+    receiverId: req.user._id,
+    isRead: false,
+  });
+
+  // 6️⃣ Send real-time bell notification
+  const io = req.app.get("io");
+  const onlineUsers = req.app.get("onlineUsers");
+
+  if (onlineUsers && onlineUsers[req.user._id]) {
+    io.to(onlineUsers[req.user._id].socketId).emit("notification", notification);
+  }
+
+  // 7️⃣ Response
+  res.status(200).json({
+    success: true,
+    message: "Review deleted successfully.",
+    reviewId,
+  });
 });
+
 
 
 
@@ -3094,37 +3163,55 @@ const updateBuyerProfile = asyncHandler(async (req, res) => {
   // 1️⃣ Find Buyer
   const user = await User.findById(req.user.id);
   if (!user || user.role !== "Buyer") {
-    return res.status(404).json({ success: false, message: "Buyer not found." });
+    return res.status(404).json({
+      success: false,
+      message: "Buyer not found.",
+    });
   }
 
-  // 2️⃣ Prevent duplicate mobile numbers
+  // 2️⃣ Prevent duplicate mobile number
   if (req.body.mobileNumber && req.body.mobileNumber !== user.mobileNumber) {
-    const existingUser = await User.findOne({ mobileNumber: req.body.mobileNumber });
+    const existingUser = await User.findOne({
+      mobileNumber: req.body.mobileNumber,
+    });
+
     if (existingUser) {
-      return res.status(400).json({ success: false, message: "Mobile number already in use." });
+      return res.status(400).json({
+        success: false,
+        message: "Mobile number already in use.",
+      });
     }
+
     user.mobileNumber = req.body.mobileNumber;
   }
 
-  // 3️⃣ Handle profile image upload (Cloudinary)
+  // 3️⃣ Handle profile image update (Cloudinary)
   if (req.file) {
     try {
-      const result = await cloudinary.uploader.upload(req.file.path, {
-        folder: "profile-images",
-        resource_type: "image",
-      });
-      user.profilePicture = result.secure_url;
+      // 🗑️ Delete old profile image (if exists)
+      if (user.profilePicture) {
+        const oldPublicId = user.profilePicture.split("/").pop().split(".")[0];
+        await cloudinaryDestroy(`profile-images/${oldPublicId}`);
+      }
+
+      // 📤 Upload new image using helper
+      const uploaded = await cloudinaryUpload(req.file.path, "profile-images");
+      user.profilePicture = uploaded.secure_url;
+
     } catch (error) {
       console.error("⚠️ Cloudinary upload error:", error);
-      return res.status(500).json({ success: false, message: "Profile image upload failed." });
+      return res.status(500).json({
+        success: false,
+        message: "Profile image upload failed.",
+      });
     }
   }
 
-  // 4️⃣ Update basic details
+  // 4️⃣ Update basic data
   if (req.body.name) user.name = req.body.name;
 
-  // 5️⃣ Update address (if provided)
-  if (req.body.pinCode || req.body.city) {
+  // 5️⃣ Update address
+  if (req.body.pinCode || req.body.city || req.body.locality || req.body.houseNumber) {
     user.address = {
       pinCode: req.body.pinCode || user.address?.pinCode,
       houseNumber: req.body.houseNumber || user.address?.houseNumber,
@@ -3134,16 +3221,16 @@ const updateBuyerProfile = asyncHandler(async (req, res) => {
     };
   }
 
-  // 6️⃣ Save updated Buyer
+  // 6️⃣ Save buyer
   const updatedUser = await user.save();
 
-  // 7️⃣ 🔔 Create bell-only notification (DB + Socket) — NO PUSH
+  // 7️⃣ Notification (BELLS only)
   const io = req.app.get("io");
   const onlineUsers = req.app.get("onlineUsers") || {};
 
   const notif = await Notification.create({
     title: "👤 Profile Updated",
-    message: "Your profile information has been successfully updated.",
+    message: "Your profile information has been updated successfully.",
     data: {
       userId: updatedUser._id,
       name: updatedUser.name,
@@ -3156,12 +3243,11 @@ const updateBuyerProfile = asyncHandler(async (req, res) => {
     isRead: false,
   });
 
-  // realtime socket emit (bell)
   if (onlineUsers[updatedUser._id]) {
     io.to(onlineUsers[updatedUser._id].socketId).emit("notification", notif);
   }
 
-  // 8️⃣ ✅ Send Response
+  // 8️⃣ Final Response
   res.status(200).json({
     success: true,
     message: "Profile updated successfully.",
@@ -3174,6 +3260,7 @@ const updateBuyerProfile = asyncHandler(async (req, res) => {
     },
   });
 });
+
 
 
 

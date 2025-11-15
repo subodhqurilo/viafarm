@@ -7,7 +7,7 @@ const Coupon = require('../models/Coupon');
 const Category = require('../models/Category');
 const Cart = require("../models/Cart");
 const Wishlist = require("../models/Wishlist");
-const { cloudinary, cloudinaryUpload, cloudinaryDestroy, upload } = require('../services/cloudinaryService');
+
 const mongoose = require('mongoose');
 const NotificationSettings = require('../models/NotificationSettings');
 const CustomerSupport = require('../models/CustomerSupport');
@@ -15,6 +15,7 @@ const StaticPage = require('../models/StaticPage');
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { addressToCoords, coordsToAddress } = require('../utils/geocode');
 const axios = require('axios');
+const { cloudinaryUpload, cloudinaryDestroy,upload } = require("../services/cloudinaryService");
 
 const Notification = require('../models/Notification');
 const { Expo } = require("expo-server-sdk");
@@ -325,10 +326,19 @@ const deleteProduct = asyncHandler(async (req, res) => {
     });
   }
 
-  // 2️⃣ Delete product
+  // 2️⃣ Delete product images from Cloudinary
+  if (product.images && product.images.length > 0) {
+    for (const img of product.images) {
+      if (img.public_id) {
+        await cloudinaryDestroy(img.public_id); // 🔥 USE YOUR SERVICE
+      }
+    }
+  }
+
+  // 3️⃣ Delete product document
   await product.deleteOne();
 
-  // 3️⃣ Get socket and online users
+  // 4️⃣ Get socket and online users
   const io = req.app.get("io");
   const onlineUsers = req.app.get("onlineUsers") || {};
   const expo = req.app.get("expo");
@@ -348,15 +358,12 @@ const deleteProduct = asyncHandler(async (req, res) => {
     isRead: false,
   };
 
-  // Save in DB
   const vendorNotif = await Notification.create(vendorNotificationData);
 
-  // Send realtime (Socket)
   if (onlineUsers[vendorId]) {
     io.to(onlineUsers[vendorId].socketId).emit("notification", vendorNotif);
   }
 
-  // Send expo push
   if (
     product.vendor.expoPushToken &&
     Expo.isExpoPushToken(product.vendor.expoPushToken)
@@ -396,10 +403,8 @@ const deleteProduct = asyncHandler(async (req, res) => {
     isRead: false,
   };
 
-  // Save in DB
   const adminNotif = await Notification.create(adminNotificationData);
 
-  // Send realtime (socket)
   if (onlineUsers[adminId]) {
     io.to(onlineUsers[adminId].socketId).emit("notification", adminNotif);
   }
@@ -409,9 +414,10 @@ const deleteProduct = asyncHandler(async (req, res) => {
   // ==========================
   res.status(200).json({
     success: true,
-    message: "Product deleted and notifications sent to vendor & admin.",
+    message: "Product deleted successfully along with Cloudinary images. Notifications sent.",
   });
 });
+
 
 
 
@@ -632,21 +638,35 @@ const deleteVendor = asyncHandler(async (req, res) => {
     });
   }
 
-  // 2️⃣ Mark all vendor products inactive
-  await Product.updateMany({ vendor: id }, { status: "Inactive" });
+  // 2️⃣ Fetch all vendor products
+  const products = await Product.find({ vendor: id });
 
-  // 3️⃣ Get IO and online users
+  // 3️⃣ Delete Cloudinary images of all products
+  for (const p of products) {
+    if (p.images && p.images.length > 0) {
+      for (const img of p.images) {
+        if (img.public_id) {
+          await cloudinaryDestroy(img.public_id);   // 🔥 Your service usage
+        }
+      }
+    }
+  }
+
+  // 4️⃣ Delete all vendor products permanently
+  await Product.deleteMany({ vendor: id });
+
+  // 5️⃣ Get socket + expo
   const io = req.app.get("io");
   const onlineUsers = req.app.get("onlineUsers") || {};
   const expo = req.app.get("expo");
 
-  // ===============================
-  // 🟣 Vendor PERSONAL Notification
-  // ===============================
+  // ============================
+  // 🟣 Vendor Notification
+  // ============================
   const vendorNotificationData = {
     title: "Account Deleted 🛑",
     message:
-      "Your vendor account has been deleted by the admin. All your products are now inactive.",
+      "Your vendor account has been deleted by the admin. All your products are removed.",
     receiverId: vendor._id,
     userType: "Vendor",
     createdBy: req.user._id,
@@ -656,12 +676,10 @@ const deleteVendor = asyncHandler(async (req, res) => {
 
   const vendorNotif = await Notification.create(vendorNotificationData);
 
-  // Vendor real-time socket
   if (onlineUsers[vendor._id]) {
     io.to(onlineUsers[vendor._id].socketId).emit("notification", vendorNotif);
   }
 
-  // Vendor Expo push
   if (vendor.expoPushToken && Expo.isExpoPushToken(vendor.expoPushToken)) {
     try {
       const messages = [
@@ -683,9 +701,9 @@ const deleteVendor = asyncHandler(async (req, res) => {
     }
   }
 
-  // ===============================
-  // 🔵 Admin PERSONAL Notification
-  // ===============================
+  // ============================
+  // 🔵 Admin Notification
+  // ============================
   const adminId = req.user._id.toString();
 
   const adminNotificationData = {
@@ -700,17 +718,19 @@ const deleteVendor = asyncHandler(async (req, res) => {
 
   const adminNotif = await Notification.create(adminNotificationData);
 
-  // Admin real-time socket
   if (onlineUsers[adminId]) {
     io.to(onlineUsers[adminId].socketId).emit("notification", adminNotif);
   }
 
-  // 4️⃣ Final Response
+  // ============================
+  // ✔ Final Response
+  // ============================
   res.status(200).json({
     success: true,
-    message: "Vendor deleted. Notifications sent to vendor and admin.",
+    message: "Vendor deleted, products removed, Cloudinary cleaned, notifications sent.",
   });
 });
+
 
 
 
@@ -863,7 +883,7 @@ const deleteBuyer = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
   // 1️⃣ Find buyer
-  const buyer = await User.findById(id).select("_id name expoPushToken role");
+  const buyer = await User.findById(id).select("_id name expoPushToken role profilePicture");
 
   if (!buyer || buyer.role !== "Buyer") {
     return res.status(404).json({
@@ -872,7 +892,13 @@ const deleteBuyer = asyncHandler(async (req, res) => {
     });
   }
 
-  // 2️⃣ Delete related buyer data
+  // 2️⃣ Delete buyer profile picture from Cloudinary
+  if (buyer.profilePicture) {
+    const publicId = buyer.profilePicture.split("/").pop().split(".")[0];
+    await cloudinaryDestroy(publicId);
+  }
+
+  // 3️⃣ Delete related buyer data
   await Promise.all([
     Address.deleteMany({ user: id }),
     Order.deleteMany({ buyer: id }),
@@ -880,10 +906,10 @@ const deleteBuyer = asyncHandler(async (req, res) => {
     Wishlist.deleteMany({ user: id }),
   ]);
 
-  // 3️⃣ Delete buyer account
+  // 4️⃣ Delete buyer account
   await buyer.deleteOne();
 
-  // 4️⃣ Get socket + expo
+  // 5️⃣ Notify system (socket + expo)
   const io = req.app.get("io");
   const onlineUsers = req.app.get("onlineUsers") || {};
   const expo = req.app.get("expo");
@@ -901,7 +927,6 @@ const deleteBuyer = asyncHandler(async (req, res) => {
     isRead: false,
   };
 
-  // Save in database
   const savedNotif = await Notification.create(buyerNotificationData);
 
   // Real-time socket
@@ -909,7 +934,7 @@ const deleteBuyer = asyncHandler(async (req, res) => {
     io.to(onlineUsers[buyer._id].socketId).emit("notification", savedNotif);
   }
 
-  // Expo push notification (mobile)
+  // Expo push
   if (buyer.expoPushToken && Expo.isExpoPushToken(buyer.expoPushToken)) {
     try {
       const messages = [
@@ -931,12 +956,34 @@ const deleteBuyer = asyncHandler(async (req, res) => {
     }
   }
 
-  // 5️⃣ Final Response
+  // ================================
+  // 🔵 OPTIONAL: Admin self-notification
+  // ================================
+  const adminId = req.user._id.toString();
+
+  await Notification.create({
+    title: "Buyer Deleted Successfully",
+    message: `You deleted buyer "${buyer.name}".`,
+    receiverId: adminId,
+    userType: "Admin",
+    createdBy: adminId,
+    data: { buyerId: buyer._id },
+    isRead: false,
+  });
+
+  if (onlineUsers[adminId]) {
+    io.to(onlineUsers[adminId].socketId).emit("notification", savedNotif);
+  }
+
+  // ================================
+  // ✔ Final Response
+  // ================================
   res.status(200).json({
     success: true,
-    message: "Buyer and related data deleted. Notification sent.",
+    message: "Buyer deleted, Cloudinary cleaned, data removed, notification sent.",
   });
 });
+
 
 
 const getOrders = asyncHandler(async (req, res) => {
@@ -1055,14 +1102,152 @@ const getOrderDetail = asyncHandler(async (req, res) => {
 
 
 const deleteOrder = asyncHandler(async (req, res) => {
-    const order = await Order.findById(req.params.id);
-    if (order) {
-        await order.remove();
-        res.json({ message: 'Order removed' });
-    } else {
-        res.status(404).json({ message: 'Order not found' });
+  const { id } = req.params;
+
+  // 1️⃣ Find order
+  const order = await Order.findById(id)
+    .populate("buyer", "name expoPushToken _id")
+    .populate("vendor", "name expoPushToken _id");
+
+  if (!order) {
+    return res.status(404).json({ success: false, message: "Order not found" });
+  }
+
+  // 2️⃣ Delete Cloudinary images (if order items contain images)
+  if (order.products && order.products.length > 0) {
+    for (const item of order.products) {
+      if (item.image && item.image.public_id) {
+        await cloudinaryDestroy(item.image.public_id);
+      }
     }
+  }
+
+  // 3️⃣ Delete order from DB
+  await order.deleteOne();
+
+  // 4️⃣ Notifications (Socket + Expo)
+  const io = req.app.get("io");
+  const onlineUsers = req.app.get("onlineUsers") || {};
+  const expo = req.app.get("expo");
+
+  // ==========================
+  // 🔵 Notify Buyer
+  // ==========================
+  const buyerNotification = {
+    title: "Order Deleted ❌",
+    message: `Your order ${order.orderId} has been removed by admin.`,
+    receiverId: order.buyer._id,
+    userType: "Buyer",
+    createdBy: req.user._id,
+    data: { orderId: order.orderId },
+    isRead: false,
+  };
+
+  const savedBuyerNotif = await Notification.create(buyerNotification);
+
+  // Socket to buyer
+  if (onlineUsers[order.buyer._id]) {
+    io.to(onlineUsers[order.buyer._id].socketId).emit("notification", savedBuyerNotif);
+  }
+
+  // Expo push to buyer
+  if (
+    order.buyer.expoPushToken &&
+    Expo.isExpoPushToken(order.buyer.expoPushToken)
+  ) {
+    try {
+      const messages = [
+        {
+          to: order.buyer.expoPushToken,
+          sound: "default",
+          title: buyerNotification.title,
+          body: buyerNotification.message,
+          data: buyerNotification.data,
+        },
+      ];
+
+      const chunks = expo.chunkPushNotifications(messages);
+      for (const chunk of chunks) {
+        await expo.sendPushNotificationsAsync(chunk);
+      }
+    } catch (err) {
+      console.error("Expo Push Error:", err);
+    }
+  }
+
+  // ==========================
+  // 🟣 Notify Vendor
+  // ==========================
+  if (order.vendor) {
+    const vendorNotification = {
+      title: "Order Removed ❌",
+      message: `Order ${order.orderId} for your product was deleted by admin.`,
+      receiverId: order.vendor._id,
+      userType: "Vendor",
+      createdBy: req.user._id,
+      data: { orderId: order.orderId },
+      isRead: false,
+    };
+
+    const savedVendorNotif = await Notification.create(vendorNotification);
+
+    if (onlineUsers[order.vendor._id]) {
+      io.to(onlineUsers[order.vendor._id].socketId).emit("notification", savedVendorNotif);
+    }
+
+    if (
+      order.vendor.expoPushToken &&
+      Expo.isExpoPushToken(order.vendor.expoPushToken)
+    ) {
+      try {
+        const messages = [
+          {
+            to: order.vendor.expoPushToken,
+            sound: "default",
+            title: vendorNotification.title,
+            body: vendorNotification.message,
+            data: vendorNotification.data,
+          },
+        ];
+
+        const chunks = expo.chunkPushNotifications(messages);
+        for (const chunk of chunks) {
+          await expo.sendPushNotificationsAsync(chunk);
+        }
+      } catch (err) {
+        console.error("Expo Push Error:", err);
+      }
+    }
+  }
+
+  // ==========================
+  // 🟤 Admin self-notification
+  // ==========================
+  const adminId = req.user._id.toString();
+
+  const adminNotif = await Notification.create({
+    title: "Order Deleted Successfully",
+    message: `You deleted order ${order.orderId}.`,
+    receiverId: adminId,
+    userType: "Admin",
+    createdBy: adminId,
+    data: { orderId: order.orderId },
+    isRead: false,
+  });
+
+  if (onlineUsers[adminId]) {
+    io.to(onlineUsers[adminId].socketId).emit("notification", adminNotif);
+  }
+
+  // ==========================
+  // ✔ Final Response
+  // ==========================
+  res.status(200).json({
+    success: true,
+    message: "Order deleted, Cloudinary cleaned, notifications sent.",
+  });
 });
+
 
 
 const getBanners = asyncHandler(async (req, res) => {
@@ -1101,75 +1286,90 @@ const getBannersByPlacement = asyncHandler(async (req, res) => {
 
 
 const createBanner = asyncHandler(async (req, res) => {
-    // 1️⃣ Check if files are uploaded
-
-    if (!req.files || req.files.length === 0) {
-        res.status(400);
-        throw new Error('At least one image file is required');
-    }
-
-    const { title, link, placement, status } = req.body;
-
-    // Optional: Validate placement and status
-    const validPlacements = [
-        'HomePageSlider',
-        'HomePageBottomPromo',
-        'CategoryTop',
-        'SearchPageAd',
-        'CheckoutPromo'
-    ];
-    const validStatus = ['Active', 'Inactive'];
-
-    const finalPlacement = validPlacements.includes(placement) ? placement : 'HomePageSlider';
-    const finalStatus = validStatus.includes(status) ? status : 'Active';
-
-    // 2️⃣ Map each uploaded file to a banner object
-    const bannersData = req.files.map(file => ({
-        imageUrl: file.path,      // Cloudinary or local path
-        public_id: file.filename || file.public_id || '', // Cloudinary public_id if available
-        title: title || 'Promotional Banner',
-        link: link || '#',
-        placement: finalPlacement,
-        status: finalStatus
-    }));
-
-    // 3️⃣ Insert multiple banners at once
-    const banners = await Banner.insertMany(bannersData);
-
-    // 4️⃣ Respond with created banners
-    res.status(201).json({
-        success: true,
-        message: `${banners.length} banner(s) created successfully`,
-        banners
+  // 1️⃣ Check if files were uploaded
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: "At least one image is required",
     });
+  }
+
+  const { title, link, placement, status } = req.body;
+
+  const validPlacements = [
+    "HomePageSlider",
+    "HomePageBottomPromo",
+    "CategoryTop",
+    "SearchPageAd",
+    "CheckoutPromo",
+  ];
+
+  const validStatus = ["Active", "Inactive"];
+
+  const finalPlacement = validPlacements.includes(placement)
+    ? placement
+    : "HomePageSlider";
+
+  const finalStatus = validStatus.includes(status) ? status : "Active";
+
+  // 2️⃣ Upload all images to Cloudinary
+  const bannerImages = [];
+  for (const file of req.files) {
+    const uploaded = await cloudinaryUpload(file.path, "banners"); // ✔ CLOUDINARY UPLOAD FIX
+    bannerImages.push({
+      imageUrl: uploaded.secure_url,
+      public_id: uploaded.public_id,
+      title: title || "Promotional Banner",
+      link: link || "#",
+      placement: finalPlacement,
+      status: finalStatus,
+    });
+  }
+
+  // 3️⃣ Insert into DB
+  const banners = await Banner.insertMany(bannerImages);
+
+  // 4️⃣ Response
+  res.status(201).json({
+    success: true,
+    message: `${banners.length} banner(s) created successfully`,
+    banners,
+  });
 });
+
 
 const deleteBanner = asyncHandler(async (req, res) => {
-    const banner = await Banner.findById(req.params.id);
+  const bannerId = req.params.id;
 
-    if (!banner) {
-        return res.status(404).json({ success: false, message: 'Banner not found' });
-    }
-
-    // Delete image from Cloudinary if public_id exists
-    if (banner.public_id) {
-        try {
-            await cloudinary.uploader.destroy(banner.public_id);
-        } catch (err) {
-            console.error('Cloudinary deletion error:', err);
-            // Continue even if Cloudinary deletion fails
-        }
-    }
-
-    // ✅ Delete the banner from database
-    await Banner.findByIdAndDelete(req.params.id);
-
-    res.status(200).json({
-        success: true,
-        message: 'Banner deleted successfully',
-        bannerId: req.params.id
+  // 1️⃣ Find banner
+  const banner = await Banner.findById(bannerId);
+  if (!banner) {
+    return res.status(404).json({
+      success: false,
+      message: "Banner not found",
     });
+  }
+
+  // 2️⃣ Delete Cloudinary image (safe)
+  if (banner.public_id) {
+    try {
+      await cloudinaryDestroy(banner.public_id);   // 🔥 Correct service method
+    } catch (err) {
+      console.error("❌ Cloudinary deletion error:", err);
+      // Continue even if Cloudinary delete fails
+    }
+  }
+
+  // 3️⃣ Delete banner from DB
+  await Banner.findByIdAndDelete(bannerId);
+
+  res.status(200).json({
+    success: true,
+    message: "Banner deleted successfully",
+    bannerId,
+  });
 });
+
 
 
 const getCategories = asyncHandler(async (req, res) => {
@@ -1179,154 +1379,143 @@ const getCategories = asyncHandler(async (req, res) => {
 
 
 const createCategory = asyncHandler(async (req, res) => {
-    const { name } = req.body;
+  const { name } = req.body;
 
-    // 1️⃣ Validate image
-    if (!req.file) {
-        res.status(400);
-        throw new Error("Please provide an image for the category");
-    }
-
-    // 2️⃣ Upload to Cloudinary
-    const result = await cloudinaryUpload(req.file.path, "categories");
-
-    // 3️⃣ Create Category
-    const category = await Category.create({
-        name,
-        image: {
-            url: result.secure_url,
-            public_id: result.public_id,
-        },
+  if (!req.file) {
+    return res.status(400).json({
+      success: false,
+      message: "Please provide an image for the category",
     });
+  }
 
-    // 4️⃣ Get IO and online users
-    const io = req.app.get("io");
-    const onlineUsers = req.app.get("onlineUsers") || {};
-    const expo = req.app.get("expo");
-
-    const title = "🆕 New Category Added";
-    const message = `Category "${name}" has been created successfully.`;
-
-    // 5️⃣ Get all admins
-    const admins = await User.find({ role: "Admin" }).select("_id expoPushToken");
-
-    // ===============================
-    // 🟣 CREATE NOTIFICATIONS FOR ADMINS
-    // ===============================
-    const notificationsPayload = admins.map((admin) => ({
-        title,
-        message,
-        receiverId: admin._id,
-        userType: "Admin",
-        createdBy: req.user._id,
-        data: { 
-            categoryId: category._id, 
-            type: "category_created" 
-        },
-        isRead: false,
-    }));
-
-    const savedNotifs = await Notification.insertMany(notificationsPayload);
-
-    // ===============================
-    // 🔵 SOCKET — REALTIME FOR ADMINS
-    // ===============================
-    admins.forEach((admin) => {
-        const adminId = admin._id.toString();
-
-        if (onlineUsers[adminId]) {
-            const notif = savedNotifs.find((n) => n.receiverId.toString() === adminId);
-            io.to(onlineUsers[adminId].socketId).emit("notification", notif);
-        }
+  if (!name || !name.trim()) {
+    return res.status(400).json({
+      success: false,
+      message: "Category name is required",
     });
+  }
 
-    // ===============================
-    // 📱 EXPO PUSH FOR ADMINS
-    // ===============================
-    const pushMessages = admins
-        .filter((admin) => admin.expoPushToken && Expo.isExpoPushToken(admin.expoPushToken))
-        .map((admin) => ({
-            to: admin.expoPushToken,
-            sound: "default",
-            title,
-            body: message,
-            data: {
-                type: "category_created",
-                categoryId: category._id,
-            },
-        }));
-
-    if (pushMessages.length > 0) {
-        const chunks = expo.chunkPushNotifications(pushMessages);
-        for (const chunk of chunks) {
-            await expo.sendPushNotificationsAsync(chunk);
-        }
-    }
-
-    // 6️⃣ Response
-    res.status(201).json({
-        success: true,
-        message: "Category created and notifications sent to all admins.",
-        data: category,
+  // 1️⃣ Check duplicate
+  const exists = await Category.findOne({ name: name.trim() });
+  if (exists) {
+    return res.status(400).json({
+      success: false,
+      message: "Category name already exists",
     });
+  }
+
+  // 2️⃣ Upload image
+  const uploaded = await cloudinaryUpload(req.file.path, "Categories");
+
+  // 3️⃣ Create Category
+  const category = await Category.create({
+    name: name.trim(),
+    image: {
+      url: uploaded.secure_url,
+      public_id: uploaded.public_id,
+    },
+  });
+
+  res.status(201).json({
+    success: true,
+    message: "Category created successfully",
+    data: category,
+  });
 });
-
-
 
 const updateCategory = asyncHandler(async (req, res) => {
-    const { id } = req.params;
+  const { id } = req.params;
+  const { name } = req.body;
 
-    // 🔹 Find the category
-    const category = await Category.findById(id);
-    if (!category) {
-        return res.status(404).json({ success: false, message: 'Category not found' });
-    }
-
-    // 🔹 Update name only if provided
-    if (req.body.name) {
-        category.name = req.body.name;
-    }
-
-    // 🔹 If image is uploaded, replace the old one
-    if (req.file) {
-        // Delete old image if it exists
-        if (category.image && category.image.public_id) {
-            await cloudinaryDestroy(category.image.public_id);
-        }
-
-        // Upload new image
-        const result = await cloudinaryUpload(req.file.path, 'categories');
-        category.image = {
-            url: result.secure_url,
-            public_id: result.public_id
-        };
-    }
-
-    // 🔹 Save changes (works even if only one field changed)
-    const updatedCategory = await category.save();
-
-    res.status(200).json({
-        success: true,
-        message: 'Category updated successfully',
-        data: updatedCategory
+  const category = await Category.findById(id);
+  if (!category) {
+    return res.status(404).json({
+      success: false,
+      message: "Category not found",
     });
+  }
+
+  // 1️⃣ Handle name update
+  if (name && name.trim()) {
+    const exists = await Category.findOne({
+      _id: { $ne: id },
+      name: name.trim(),
+    });
+
+    if (exists) {
+      return res.status(400).json({
+        success: false,
+        message: "Category name already exists",
+      });
+    }
+
+    category.name = name.trim();
+  }
+
+  // 2️⃣ Handle image update
+  if (req.file) {
+    if (category.image?.public_id) {
+      await cloudinaryDestroy(category.image.public_id); // delete old image
+    }
+
+    const uploaded = await cloudinaryUpload(req.file.path, "Categories");
+    category.image = {
+      url: uploaded.secure_url,
+      public_id: uploaded.public_id,
+    };
+  }
+
+  // 3️⃣ Save category
+  const updated = await category.save();
+
+  res.json({
+    success: true,
+    message: "Category updated successfully",
+    data: updated,
+  });
 });
+
+
+
+
+
+
 
 
 const deleteCategory = asyncHandler(async (req, res) => {
-    const category = await Category.findById(req.params.id);
+  const { id } = req.params;
 
-    if (!category) {
-        return res.status(404).json({ success: false, message: "Category not found." });
-    }
+  // 1️⃣ Find category
+  const category = await Category.findById(id);
 
-    await category.deleteOne(); // <-- Updated here
-
-    res.status(200).json({
-        success: true,
-        message: "Category deleted successfully.",
+  if (!category) {
+    return res.status(404).json({
+      success: false,
+      message: "Category not found.",
     });
+  }
+
+  // 2️⃣ Delete image from Cloudinary (if exists)
+  if (category.image && category.image.public_id) {
+    try {
+      await cloudinaryDestroy(category.image.public_id);
+    } catch (err) {
+      console.error("Cloudinary delete failed:", err);
+      // Continue even if deletion fails
+    }
+  }
+
+  // 3️⃣ Delete category from database
+  await category.deleteOne();
+
+  // 4️⃣ Response
+  res.status(200).json({
+    success: true,
+    message: "Category deleted successfully.",
+    deletedCategoryId: id,
+  });
 });
+
 
 const getCategoryById = asyncHandler(async (req, res) => {
     const category = await Category.findById(req.params.id);
@@ -1748,24 +1937,30 @@ const updateAdminProfile = asyncHandler(async (req, res) => {
     return res.status(404).json({ success: false, message: "Admin not found." });
   }
 
-  // Extract fields
   const { name, email, upiId } = req.body;
 
-  // --- Update Name ---
+  // ---------------------------
+  // 🔹 Update Name
+  // ---------------------------
   if (name) user.name = name;
 
-  // --- Update Email ---
+  // ---------------------------
+  // 🔹 Update Email
+  // ---------------------------
   if (email) {
     const existingUser = await User.findOne({ email });
     if (existingUser && existingUser._id.toString() !== req.user.id) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Email already exists." });
+      return res.status(400).json({
+        success: false,
+        message: "Email already exists.",
+      });
     }
     user.email = email;
   }
 
-  // --- Update UPI ID ---
+  // ---------------------------
+  // 🔹 Update UPI ID
+  // ---------------------------
   if (upiId) {
     const upiPattern = /^[\w.\-_]{2,}@[a-zA-Z]{2,}$/;
     if (!upiPattern.test(upiId)) {
@@ -1777,19 +1972,23 @@ const updateAdminProfile = asyncHandler(async (req, res) => {
     user.upiId = upiId;
   }
 
-  // --- Update Profile Picture ---
+  // ---------------------------
+  // 🔹 Profile Image Update
+  // ---------------------------
   if (req.file) {
     try {
+      // Delete old image
       if (user.profilePicture) {
         const oldPublicId = user.profilePicture.split("/").pop().split(".")[0];
-        await cloudinary.uploader.destroy(`admin-profiles/${oldPublicId}`);
+        await cloudinaryDestroy(`admin-profiles/${oldPublicId}`);
       }
 
-      const result = await cloudinary.uploader.upload(req.file.path, {
-        folder: "admin-profiles",
-      });
-      user.profilePicture = result.secure_url;
+      // Upload new image using service
+      const uploaded = await cloudinaryUpload(req.file.path, "admin-profiles");
+      user.profilePicture = uploaded.secure_url;
+
     } catch (error) {
+      console.error("Profile picture upload failed:", error);
       return res.status(500).json({
         success: false,
         message: "Profile picture upload failed.",
@@ -1799,9 +1998,9 @@ const updateAdminProfile = asyncHandler(async (req, res) => {
 
   await user.save();
 
-  // ===============================
-  // 🔵 PERSONAL ADMIN NOTIFICATION
-  // ===============================
+  // ---------------------------
+  // 🔵 Create Personal Notification
+  // ---------------------------
   const io = req.app.get("io");
   const onlineUsers = req.app.get("onlineUsers") || {};
   const expo = req.app.get("expo");
@@ -1821,15 +2020,14 @@ const updateAdminProfile = asyncHandler(async (req, res) => {
     isRead: false,
   };
 
-  // Save in DB
   const savedNotif = await Notification.create(notificationData);
 
-  // Socket real-time send
+  // 🔹 Send socket notification
   if (onlineUsers[adminId]) {
     io.to(onlineUsers[adminId].socketId).emit("notification", savedNotif);
   }
 
-  // Expo push (if admin has token)
+  // 🔹 Send Expo push
   if (user.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
     try {
       const messages = [
@@ -1851,9 +2049,9 @@ const updateAdminProfile = asyncHandler(async (req, res) => {
     }
   }
 
-  // ==================================
+  // ---------------------------
   // FINAL RESPONSE
-  // ==================================
+  // ---------------------------
   res.status(200).json({
     success: true,
     message: "Profile updated successfully.",
@@ -1865,6 +2063,7 @@ const updateAdminProfile = asyncHandler(async (req, res) => {
     },
   });
 });
+
 
 
 
@@ -1979,28 +2178,38 @@ const changeAdminPassword = asyncHandler(async (req, res) => {
 
 
 const deleteAdminProfilePicture = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id);
+  const user = await User.findById(req.user.id);
 
-    if (!user || !user.profilePicture) {
-        return res.status(404).json({ success: false, message: 'Admin or profile picture not found.' });
-    }
-
-    try {
-        const publicId = user.profilePicture.split('/').pop().split('.')[0];
-        await cloudinary.uploader.destroy(`admin-profiles/${publicId}`);
-    } catch (error) {
-        console.error('Cloudinary deletion failed:', error);
-    }
-
-    user.profilePicture = '';
-    await user.save();
-
-    res.status(200).json({
-        success: true,
-        message: 'Profile picture deleted successfully.',
-        data: { profilePicture: null },
+  if (!user || !user.profilePicture) {
+    return res.status(404).json({
+      success: false,
+      message: "Admin or profile picture not found.",
     });
+  }
+
+  try {
+    // Extract public_id correctly
+    const oldPublicId = user.profilePicture.split("/").pop().split(".")[0];
+
+    // Use cloudinaryDestroy helper
+    await cloudinaryDestroy(`admin-profiles/${oldPublicId}`);
+
+  } catch (error) {
+    console.error("Cloudinary deletion failed:", error);
+    // continue even if cloudinary delete fails
+  }
+
+  // Remove image from DB
+  user.profilePicture = "";
+  await user.save();
+
+  res.status(200).json({
+    success: true,
+    message: "Profile picture deleted successfully.",
+    data: { profilePicture: null },
+  });
 });
+
 
 const getNotificationSettings = asyncHandler(async (req, res) => {
     // Logic to fetch notification settings from a separate settings model or the admin user document
