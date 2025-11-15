@@ -95,7 +95,7 @@ app.use("/api/admin", require("./routes/adminRoutes"));
 app.use("/api/notifications", require("./routes/notificationRoutes"));
 app.use("/", require("./routes/resetRoutes"));
 app.use("/api", require("./routes/testRoutes"));
-app.use("/api/push", require("./routes/push"));
+// app.use("/api/push", require("./routes/push"));
 app.use((err, req, res, next) => {
   console.error("🔥 GLOBAL ERROR:", err.stack);
   res.status(500).json({ success: false, message: err.message });

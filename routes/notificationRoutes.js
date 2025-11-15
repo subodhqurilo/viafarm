@@ -30,22 +30,63 @@ router.delete("/:id", authMiddleware, deleteNotification);
 // ✅ Save Expo Push Token
 router.put("/save-push-token", authMiddleware, async (req, res) => {
   try {
-    const { expoPushToken } = req.body;
-    if (!expoPushToken) return res.status(400).json({ success: false, message: "Expo push token missing" });
+    console.log("\n==============================");
+    console.log("📨 SAVE EXPO PUSH TOKEN API HIT");
+    console.log("👤 Logged-in User:", req.user?._id);
+    console.log("📥 Incoming Body:", req.body);
+    console.log("==============================\n");
 
-    // 🧠 Remove old association if token reused
-    const existingUser = await User.findOne({ expoPushToken });
-    if (existingUser && existingUser._id.toString() !== req.user._id.toString()) {
-      await User.updateOne({ _id: existingUser._id }, { $unset: { expoPushToken: "" } });
+    const { expoPushToken } = req.body;
+
+    if (!expoPushToken) {
+      console.log("❌ No expoPushToken received!");
+      return res.status(400).json({
+        success: false,
+        message: "Expo push token missing",
+      });
     }
 
-    const user = await User.findByIdAndUpdate(req.user._id, { expoPushToken }, { new: true });
-    res.json({ success: true, message: "Expo push token saved", token: user.expoPushToken });
+    // 🔍 Check if token already assigned to another user
+    const existingUser = await User.findOne({ expoPushToken });
+
+    if (
+      existingUser &&
+      existingUser._id.toString() !== req.user._id.toString()
+    ) {
+      console.log(
+        `⚠️ Token already assigned to another user (${existingUser._id}). Removing from old user...`
+      );
+
+      await User.updateOne(
+        { _id: existingUser._id },
+        { $unset: { expoPushToken: "" } }
+      );
+    }
+
+    // 💾 Save the token
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { expoPushToken },
+      { new: true }
+    );
+
+    console.log("✅ Token saved to user:", user._id);
+    console.log("📲 Saved token:", user.expoPushToken);
+
+    res.json({
+      success: true,
+      message: "Expo push token saved",
+      token: user.expoPushToken,
+    });
   } catch (error) {
-    console.error("Expo token save error:", error);
-    res.status(500).json({ success: false, message: "Failed to save expo push token" });
+    console.error("❌ Expo token save error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to save expo push token",
+    });
   }
 });
+
 
 // ✅ Test push route (Admin only)
 router.post("/test-push", authMiddleware, async (req, res) => {

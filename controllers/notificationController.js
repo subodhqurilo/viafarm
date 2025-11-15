@@ -2,126 +2,27 @@
 const Notification = require("../models/Notification");
 const User = require("../models/User");
 const { Expo } = require("expo-server-sdk");
+const { createAndSendNotification } = require("../utils/notificationUtils");
 
 const expo = new Expo();
 
 // ✅ Send Notification (Personal + Role + All)
 exports.sendNotification = async (req, res) => {
   try {
-    const { title, message, receiverId, userType = "All", data = {} } = req.body;
+    const { title, message, receiverId, userType, data } = req.body;
 
-    if (!title || !message) {
-      return res.status(400).json({
-        success: false,
-        message: "Title and message are required",
-      });
-    }
-
-    // ✅ Save Notification in DB
-    const notification = await Notification.create({
+    const result = await createAndSendNotification(
+      req,
       title,
       message,
-      receiverId: receiverId || null,
-      userType,
       data,
-      isRead: false,
-      createdBy: req.user?._id || null,
-    });
+      userType,
+      receiverId
+    );
 
-    // ============================
-    // ✅ SOCKET.IO REAL-TIME PUSH
-    // ============================
-    const io = global.io;
-    const onlineUsers = global.onlineUsers || {};
-
-    if (io) {
-      if (receiverId && onlineUsers[receiverId]) {
-        io.to(onlineUsers[receiverId].socketId).emit("notification", notification);
-      } else if (userType !== "All") {
-        for (const [id, info] of Object.entries(onlineUsers)) {
-          if (info.role === userType) {
-            io.to(info.socketId).emit("notification", notification);
-          }
-        }
-      } else {
-        io.emit("notification", notification);
-      }
-    }
-
-    // ============================
-    // ✅ Expo Push Notification
-    // ============================
-
-    const pushPayload = {
-      notificationId: notification._id,
-      ...data,
-    };
-
-    let targetUsers = [];
-
-    // 🎯 PERSONAL NOTIFICATION
-    if (receiverId) {
-      const user = await User.findById(receiverId);
-      if (user?.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
-        targetUsers = [user.expoPushToken];
-      }
-
-      // 🎯 ROLE BASED
-    } else if (userType !== "All") {
-      const users = await User.find({
-        role: userType,
-        expoPushToken: { $exists: true, $ne: null },
-      });
-
-      targetUsers = users
-        .filter((u) => Expo.isExpoPushToken(u.expoPushToken))
-        .map((u) => u.expoPushToken);
-
-      // 🎯 BROADCAST
-    } else {
-      const allUsers = await User.find({
-        expoPushToken: { $exists: true, $ne: null },
-      });
-
-      targetUsers = allUsers
-        .filter((u) => Expo.isExpoPushToken(u.expoPushToken))
-        .map((u) => u.expoPushToken);
-    }
-
-    // Remove duplicates
-    targetUsers = [...new Set(targetUsers)];
-
-    // ============================
-    // ✅ SEND PUSH NOTIFICATIONS
-    // ============================
-    if (targetUsers.length > 0) {
-      const messages = targetUsers.map((token) => ({
-        to: token,
-        sound: "default",
-        title,
-        body: message,
-        data: pushPayload,
-      }));
-
-      const chunks = expo.chunkPushNotifications(messages);
-
-      for (const chunk of chunks) {
-        try {
-          await expo.sendPushNotificationsAsync(chunk);
-        } catch (err) {
-          console.error("Expo push error:", err);
-        }
-      }
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: "Notification sent successfully",
-      notification,
-    });
-  } catch (error) {
-    console.error("Send notification error:", error);
-    return res.status(500).json({ success: false, message: error.message });
+    res.json({ success: true, notification: result.notification });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 };
 
