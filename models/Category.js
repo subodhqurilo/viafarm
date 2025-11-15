@@ -7,14 +7,8 @@ const CategorySchema = new mongoose.Schema({
     unique: true,
   },
   image: {
-    url: {
-      type: String,
-      required: false,
-    },
-    public_id: {
-      type: String,
-      required: false,
-    }
+    type: String,   // ← Only URL stored
+    required: true,
   }
 }, { timestamps: true });
 

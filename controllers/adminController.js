@@ -1373,9 +1373,20 @@ const deleteBanner = asyncHandler(async (req, res) => {
 
 
 const getCategories = asyncHandler(async (req, res) => {
-    const categories = await Category.find({}).sort({ name: 1 }); // optional: sort alphabetically
-    res.json(categories);
+  const categories = await Category.find({}, { name: 1, image: 1 }).sort({ name: 1 });
+
+  res.json({
+    success: true,
+    categories,
+  });
 });
+
+
+
+
+
+
+
 
 
 const createCategory = asyncHandler(async (req, res) => {
@@ -1395,7 +1406,7 @@ const createCategory = asyncHandler(async (req, res) => {
     });
   }
 
-  // 1️⃣ Check duplicate
+  // Check duplicate
   const exists = await Category.findOne({ name: name.trim() });
   if (exists) {
     return res.status(400).json({
@@ -1404,16 +1415,13 @@ const createCategory = asyncHandler(async (req, res) => {
     });
   }
 
-  // 2️⃣ Upload image
+  // Upload image
   const uploaded = await cloudinaryUpload(req.file.path, "Categories");
 
-  // 3️⃣ Create Category
+  // Save URL only
   const category = await Category.create({
     name: name.trim(),
-    image: {
-      url: uploaded.secure_url,
-      public_id: uploaded.public_id,
-    },
+    image: uploaded.secure_url,
   });
 
   res.status(201).json({
@@ -1422,6 +1430,9 @@ const createCategory = asyncHandler(async (req, res) => {
     data: category,
   });
 });
+
+
+
 
 const updateCategory = asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -1435,12 +1446,9 @@ const updateCategory = asyncHandler(async (req, res) => {
     });
   }
 
-  // 1️⃣ Handle name update
+  // Update name
   if (name && name.trim()) {
-    const exists = await Category.findOne({
-      _id: { $ne: id },
-      name: name.trim(),
-    });
+    const exists = await Category.findOne({ _id: { $ne: id }, name: name.trim() });
 
     if (exists) {
       return res.status(400).json({
@@ -1452,20 +1460,12 @@ const updateCategory = asyncHandler(async (req, res) => {
     category.name = name.trim();
   }
 
-  // 2️⃣ Handle image update
+  // Update image
   if (req.file) {
-    if (category.image?.public_id) {
-      await cloudinaryDestroy(category.image.public_id); // delete old image
-    }
-
     const uploaded = await cloudinaryUpload(req.file.path, "Categories");
-    category.image = {
-      url: uploaded.secure_url,
-      public_id: uploaded.public_id,
-    };
+    category.image = uploaded.secure_url; // only URL stored
   }
 
-  // 3️⃣ Save category
   const updated = await category.save();
 
   res.json({
@@ -1474,6 +1474,9 @@ const updateCategory = asyncHandler(async (req, res) => {
     data: updated,
   });
 });
+
+
+
 
 
 
@@ -1496,19 +1499,23 @@ const deleteCategory = asyncHandler(async (req, res) => {
   }
 
   // 2️⃣ Delete image from Cloudinary (if exists)
-  if (category.image && category.image.public_id) {
+  if (category.image) {
     try {
-      await cloudinaryDestroy(category.image.public_id);
+      // extract public_id from URL
+      const segments = category.image.split("/");
+      const fileName = segments.pop(); // xxx.png
+      const publicId = fileName.split(".")[0]; // remove extension
+
+      await cloudinaryDestroy(`Categories/${publicId}`);
     } catch (err) {
-      console.error("Cloudinary delete failed:", err);
-      // Continue even if deletion fails
+      console.error("❌ Cloudinary delete failed:", err);
+      // continue even if deletion fails
     }
   }
 
-  // 3️⃣ Delete category from database
+  // 3️⃣ Delete category from DB
   await category.deleteOne();
 
-  // 4️⃣ Response
   res.status(200).json({
     success: true,
     message: "Category deleted successfully.",
@@ -1517,15 +1524,27 @@ const deleteCategory = asyncHandler(async (req, res) => {
 });
 
 
+
 const getCategoryById = asyncHandler(async (req, res) => {
-    const category = await Category.findById(req.params.id);
+  const category = await Category.findById(req.params.id);
 
-    if (!category) {
-        return res.status(404).json({ success: false, message: 'Category not found' });
-    }
+  if (!category) {
+    return res.status(404).json({
+      success: false,
+      message: "Category not found",
+    });
+  }
 
-    res.status(200).json({ success: true, category });
+  res.status(200).json({
+    success: true,
+    category: {
+      _id: category._id,
+      name: category.name,
+      image: category.image, // URL only
+    },
+  });
 });
+
 
 
 const createCoupon = asyncHandler(async (req, res) => {
