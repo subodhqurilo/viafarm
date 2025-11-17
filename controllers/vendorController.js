@@ -302,7 +302,7 @@ const getMonthlyOrders = asyncHandler(async (req, res) => {
 
 
 const getRecentListings = asyncHandler(async (req, res) => {
-    const vendorId = req.user._id; // only this vendor's products
+    const vendorId = req.user._id;
     const { category, search } = req.query;
 
     let filter = {
@@ -322,6 +322,8 @@ const getRecentListings = asyncHandler(async (req, res) => {
     }
 
     const products = await Product.find(filter)
+        .populate("vendor", "name profilePicture")             // ⭐ Vendor details
+        .populate("category", "name image")                   // ⭐ Category details
         .sort({ datePosted: -1 })
         .limit(20);
 
@@ -331,6 +333,7 @@ const getRecentListings = asyncHandler(async (req, res) => {
         products,
     });
 });
+
 
 
 const getRecentVendorOrders = asyncHandler(async (req, res) => {
