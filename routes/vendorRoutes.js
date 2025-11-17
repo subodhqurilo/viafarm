@@ -57,7 +57,7 @@ router.get('/profile', vendorController.getUserProfile);
 router.put(
     '/profile',
     upload.fields([
-        { name: 'profilePicture', maxCount: 1 },
+        { name: 'profileImage', maxCount: 1 },
         { name: 'farmImages', maxCount: 5 },
     ]),
     vendorController.updateUserProfile

@@ -1,6 +1,7 @@
 // controllers/buyerController.js
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
+const Variety = require('../models/Variety');
 
 const Cart = require('../models/Cart');
 const Order = require('../models/Order');
