@@ -38,6 +38,7 @@ router.get('/manage-app/:pageName', adminController.getStaticPageContent);
 // User Notification Settings (New Routes)
 router.get('/settings/user-notifications', adminController.getuserNotificationSettings);
 router.put('/settings/user-notifications', adminController.updateuserNotificationSettings);
+router.get("/variety", adminController.getAllVarieties);
 
 // -------------------------
 // Admin-only routes
@@ -104,5 +105,12 @@ router.delete('/settings/profile-picture', adminController.deleteAdminProfilePic
 router.post('/settings/change-password', adminController.changeAdminPassword);
 router.get('/settings/notifications', adminController.getNotificationSettings);
 router.put('/settings/notifications', adminController.updateNotificationSettings);
+
+
+router.post("/variety", adminController.createVariety);
+router.put("/variety/:id", adminController.updateVariety);
+router.delete("/variety/:id", adminController.deleteVariety);
+
+router.get("/variety/category/:categoryName", adminController.getVarietiesByCategory);
 
 module.exports = router;

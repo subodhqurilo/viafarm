@@ -3,7 +3,6 @@ const Notification = require("../models/Notification");
 const User = require("../models/User");
 const { Expo } = require("expo-server-sdk");
 
-
 const expo = new Expo();
 
 /**
@@ -12,6 +11,7 @@ const expo = new Expo();
  *  ✔ Personal notifications (receiverId)
  *  ✔ Role-based notifications (userType)
  *  ✔ Broadcast (All)
+ *  ✔ Follows user notification settings 🔥
  */
 const createAndSendNotification = async (
   req,
@@ -26,13 +26,37 @@ const createAndSendNotification = async (
       throw new Error("Title and message are required.");
     }
 
-    // SOCKET.IO References
     const io = req?.app?.get("io") || global.io;
     const onlineUsers = req?.app?.get("onlineUsers") || global.onlineUsers || {};
 
-    // ========================
+    // ================================================================
+    // 🔍 PERSONAL NOTIFICATION — FIRST CHECK USER SETTINGS
+    // ================================================================
+    if (receiverId) {
+      const targetUser = await User.findById(receiverId).select(
+        "notificationSettings role"
+      );
+
+      if (targetUser) {
+        const s = targetUser.notificationSettings;
+        let allowed = true;
+
+        if (userType === "Buyer" && !s.newBuyerRegistration) allowed = false;
+        if (userType === "Vendor" && !s.newVendorRegistration) allowed = false;
+        if (userType === "Admin" && !s.newProductRegistration) allowed = false;
+
+        if (data?.orderId && !s.newOrderPlaced) allowed = false;
+
+        if (!allowed) {
+          console.log("🚫 Notification blocked by settings:", receiverId);
+          return { notification: null, pushSent: 0 };
+        }
+      }
+    }
+
+    // ================================================================
     // ✅ SAVE NOTIFICATION IN DB
-    // ========================
+    // ================================================================
     const notification = await Notification.create({
       title,
       message,
@@ -53,19 +77,14 @@ const createAndSendNotification = async (
       createdAt: notification.createdAt,
     };
 
-    // ========================
-    // ✅ SOCKET.IO NOTIFICATION
-    // ========================
+    // ================================================================
+    // ✅ SEND REAL-TIME VIA SOCKET.IO
+    // ================================================================
     if (io) {
-      // Send to specific user if personal
       if (receiverId && onlineUsers[receiverId]) {
         io.to(onlineUsers[receiverId].socketId).emit("notification", payload);
-
-        // Send to all for broadcast
       } else if (userType === "All") {
         io.emit("notification", payload);
-
-        // Send to same userType
       } else if (!receiverId) {
         for (const [id, info] of Object.entries(onlineUsers)) {
           if (info.role === userType) {
@@ -75,31 +94,44 @@ const createAndSendNotification = async (
       }
     }
 
-    // ========================
-    // ✅ SELECT TARGET USERS FOR PUSH
-    // ========================
+    // ================================================================
+    // 🔥 COLLECT TARGET USERS FOR PUSH NOTIFICATION
+    // ================================================================
     let users = [];
 
-    // Personal
     if (receiverId) {
-      const user = await User.findById(receiverId).select("expoPushToken");
-      if (user) users = [user];
-
-      // Broadcast
+      users = await User.find({ _id: receiverId }).select(
+        "expoPushToken notificationSettings role"
+      );
     } else if (userType === "All") {
       users = await User.find({
-        expoPushToken: { $exists: true, $ne: null },
-      }).select("expoPushToken");
-
-      // Role Based
+        expoPushToken: { $exists: true, $ne: null }
+      }).select("expoPushToken notificationSettings role");
     } else {
       users = await User.find({
         role: userType,
-        expoPushToken: { $exists: true, $ne: null },
-      }).select("expoPushToken");
+        expoPushToken: { $exists: true, $ne: null }
+      }).select("expoPushToken notificationSettings role");
     }
 
-    // Remove invalid/empty tokens & duplicates
+    // ================================================================
+    // 🔍 FILTER USERS BASED ON THEIR NOTIFICATION SETTINGS
+    // ================================================================
+    users = users.filter((u) => {
+      const s = u.notificationSettings;
+
+      if (userType === "Buyer" && !s.newBuyerRegistration) return false;
+      if (userType === "Vendor" && !s.newVendorRegistration) return false;
+      if (userType === "Admin" && !s.newProductRegistration) return false;
+
+      if (data?.orderId && !s.newOrderPlaced) return false;
+
+      return true;
+    });
+
+    // ================================================================
+    // 🎯 CLEAN TOKEN LIST
+    // ================================================================
     const tokens = [
       ...new Set(
         users
@@ -108,9 +140,9 @@ const createAndSendNotification = async (
       ),
     ];
 
-    // ========================
-    // ✅ BUILD PUSH MESSAGE PAYLOAD
-    // ========================
+    // ================================================================
+    // 🎁 BUILD PUSH PAYLOAD
+    // ================================================================
     const messages = tokens.map((token) => ({
       to: token,
       sound: "default",
@@ -124,17 +156,15 @@ const createAndSendNotification = async (
 
     let invalidTokens = [];
 
-    // ========================
-    // ✅ SEND PUSH NOTIFICATIONS
-    // ========================
+    // ================================================================
+    // 🚀 SEND PUSH NOTIFICATIONS
+    // ================================================================
     if (messages.length > 0) {
       const chunks = expo.chunkPushNotifications(messages);
 
       for (const chunk of chunks) {
         try {
           const receipts = await expo.sendPushNotificationsAsync(chunk);
-
-          // Expo throttling safety
           await new Promise((res) => setTimeout(res, 300));
 
           receipts.forEach((r, index) => {
@@ -147,16 +177,13 @@ const createAndSendNotification = async (
         }
       }
 
-      // ========================
-      // ❌ REMOVE INVALID TOKENS
-      // ========================
       if (invalidTokens.length > 0) {
         await User.updateMany(
           { expoPushToken: { $in: invalidTokens } },
           { $unset: { expoPushToken: "" } }
         );
 
-        console.log("🗑 Removed expired Expo tokens:", invalidTokens);
+        console.log("🗑 Removed invalid Expo tokens:", invalidTokens);
       }
 
       console.log(`📱 Push sent to ${messages.length} devices.`);

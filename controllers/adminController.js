@@ -7,6 +7,7 @@ const Coupon = require('../models/Coupon');
 const Category = require('../models/Category');
 const Cart = require("../models/Cart");
 const Wishlist = require("../models/Wishlist");
+const Variety = require('../models/Variety');
 
 const mongoose = require('mongoose');
 const NotificationSettings = require('../models/NotificationSettings');
@@ -1545,6 +1546,190 @@ const getCategoryById = asyncHandler(async (req, res) => {
   });
 });
 
+const createVariety = asyncHandler(async (req, res) => {
+  const { name, category } = req.body;
+
+  if (!name || !name.trim()) {
+    return res.status(400).json({
+      success: false,
+      message: "Variety name is required",
+    });
+  }
+
+  if (!category || !category.trim()) {
+    return res.status(400).json({
+      success: false,
+      message: "Category name is required",
+    });
+  }
+
+  // 🔎 Find category by NAME instead of ID
+  const categoryDoc = await Category.findOne({ name: category.trim() });
+
+  if (!categoryDoc) {
+    return res.status(404).json({
+      success: false,
+      message: "Category not found with this name",
+    });
+  }
+
+  // Check duplicate
+  const exists = await Variety.findOne({
+    name: name.trim(),
+    category: categoryDoc._id,
+  });
+
+  if (exists) {
+    return res.status(400).json({
+      success: false,
+      message: "Variety already exists under this category",
+    });
+  }
+
+  const variety = await Variety.create({
+    name: name.trim(),
+    category: categoryDoc._id, // ID stored internally
+  });
+
+  res.status(201).json({
+    success: true,
+    message: "Variety created successfully",
+    data: variety,
+  });
+});
+
+
+const updateVariety = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { name, category } = req.body;
+
+  const variety = await Variety.findById(id);
+  if (!variety) {
+    return res.status(404).json({
+      success: false,
+      message: "Variety not found",
+    });
+  }
+
+  let categoryId = variety.category; // default old category ID
+
+  // 🟡 If category name is sent → convert name → category ID
+  if (category && category.trim()) {
+    const categoryDoc = await Category.findOne({ name: category.trim() });
+
+    if (!categoryDoc) {
+      return res.status(404).json({
+        success: false,
+        message: "Category not found with this name",
+      });
+    }
+
+    categoryId = categoryDoc._id;
+  }
+
+  const updatedName = name?.trim() || variety.name;
+
+  // 🔵 Duplicate check (name + categoryId)
+  const duplicate = await Variety.findOne({
+    _id: { $ne: id },
+    name: updatedName,
+    category: categoryId,
+  });
+
+  if (duplicate) {
+    return res.status(400).json({
+      success: false,
+      message: "Another variety already exists with same name in this category",
+    });
+  }
+
+  // 🟢 Update fields
+  variety.name = updatedName;
+  variety.category = categoryId;
+
+  const updated = await variety.save();
+
+  res.json({
+    success: true,
+    message: "Variety updated successfully",
+    data: updated,
+  });
+});
+
+
+
+const deleteVariety = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const variety = await Variety.findById(id);
+  if (!variety) {
+    return res.status(404).json({
+      success: false,
+      message: "Variety not found",
+    });
+  }
+
+  // ❗ Optional: Block delete if products use this variety
+  // const productExists = await Product.findOne({ variety: id });
+  // if (productExists) {
+  //   return res.status(400).json({
+  //     success: false,
+  //     message: "Cannot delete variety because products exist under this variety",
+  //   });
+  // }
+
+  await variety.deleteOne();
+
+  res.json({
+    success: true,
+    message: "Variety deleted successfully",
+    deletedVarietyId: id,
+  });
+});
+
+
+const getAllVarieties = asyncHandler(async (req, res) => {
+  const varieties = await Variety.find()
+    .populate("category", "name image")  // get category name + image
+    .sort({ name: 1 });
+
+  res.json({
+    success: true,
+    varieties,
+  });
+});
+
+
+const getVarietiesByCategory = asyncHandler(async (req, res) => {
+  const { categoryName } = req.params;
+
+  if (!categoryName || !categoryName.trim()) {
+    return res.status(400).json({
+      success: false,
+      message: "Category name is required",
+    });
+  }
+
+  // 1️⃣ Find category by NAME instead of ID
+  const category = await Category.findOne({ name: categoryName.trim() });
+
+  if (!category) {
+    return res.status(404).json({
+      success: false,
+      message: "Category not found with this name",
+    });
+  }
+
+  // 2️⃣ Find varieties under this category ID
+  const varieties = await Variety.find({ category: category._id })
+    .sort({ name: 1 });
+
+  res.json({
+    success: true,
+    category: category.name,
+    varieties,
+  });
+});
 
 
 const createCoupon = asyncHandler(async (req, res) => {
@@ -2781,6 +2966,6 @@ module.exports = {
     postPageContent,
     reportIssue,
     getRecentActivity,
-    getuserNotificationSettings, getBannersByPlacement,
+    getuserNotificationSettings, getBannersByPlacement,createVariety,updateVariety,deleteVariety,getAllVarieties,getVarietiesByCategory,
     updateuserNotificationSettings, getCustomerSupportDetails, updateCustomerSupportDetails, updateStaticPageContent
 };
