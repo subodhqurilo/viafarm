@@ -1647,14 +1647,12 @@ const getUserProfile = asyncHandler(async (req, res) => {
 
     const vendorDetails = user.vendorDetails || {};
 
-    // -------------------------------------------
     // BASE RESPONSE
-    // -------------------------------------------
     const responseData = {
       id: user._id,
       name: user.name,
       mobileNumber: user.mobileNumber,
-      profileImage: user.profilePicture,  // <-- FIXED
+      profilePicture: user.profilePicture,   // ✅ FIXED
       role: user.role,
       upiId: user.upiId,
       address: user.address,
@@ -1664,9 +1662,7 @@ const getUserProfile = asyncHandler(async (req, res) => {
       farmImages: vendorDetails.farmImages || []
     };
 
-    // -------------------------------------------
     // VENDOR DATA (RATING + REVIEWS)
-    // -------------------------------------------
     if (user.role === "Vendor") {
       responseData.totalOrders = vendorDetails.totalOrders || 0;
       responseData.deliveryRegion = vendorDetails.deliveryRegion || 5;
@@ -1678,7 +1674,6 @@ const getUserProfile = asyncHandler(async (req, res) => {
         responseData.rating = 5;
         responseData.totalReviews = 0;
         responseData.reviews = { count: 0, list: [] };
-
         return res.status(200).json({ success: true, user: responseData });
       }
 
@@ -1697,9 +1692,7 @@ const getUserProfile = asyncHandler(async (req, res) => {
         updatedAt: r.updatedAt,
       }));
 
-      const reviewCount = await Review.countDocuments({
-        product: { $in: productIds },
-      });
+      const reviewCount = await Review.countDocuments({ product: { $in: productIds } });
 
       const ratingAgg = await Review.aggregate([
         { $match: { product: { $in: productIds } } },
@@ -1708,35 +1701,21 @@ const getUserProfile = asyncHandler(async (req, res) => {
 
       let avgRating = ratingAgg[0]?.avgRating || 0;
       let finalRating = parseFloat(avgRating.toFixed(1));
-
-      if (!finalRating || isNaN(finalRating)) {
-        finalRating = 5;
-      }
+      if (!finalRating || isNaN(finalRating)) finalRating = 5;
 
       await User.findByIdAndUpdate(user._id, { rating: finalRating });
 
       responseData.rating = finalRating;
       responseData.totalReviews = reviewCount;
-      responseData.reviews = {
-        count: reviewCount,
-        list: reviews,
-      };
+      responseData.reviews = { count: reviewCount, list: reviews };
     }
 
-    // -------------------------------------------
     // BUYER DATA
-    // -------------------------------------------
     if (user.role === "Buyer") {
       responseData.totalOrdersAsBuyer = user.totalOrdersAsBuyer || 0;
     }
 
-    // -------------------------------------------
-    // FINAL RESPONSE
-    // -------------------------------------------
-    return res.status(200).json({
-      success: true,
-      user: responseData,
-    });
+    return res.status(200).json({ success: true, user: responseData });
 
   } catch (error) {
     console.log("❌ Get Profile Error:", error);
@@ -1756,6 +1735,7 @@ const getUserProfile = asyncHandler(async (req, res) => {
 
 
 
+
 const updateUserProfile = asyncHandler(async (req, res) => {
   console.log("🟦 UPDATE PROFILE API HIT");
   console.log("📥 Body:", req.body);
@@ -1764,174 +1744,87 @@ const updateUserProfile = asyncHandler(async (req, res) => {
   try {
     const { name, mobileNumber, upiId, about, status } = req.body;
 
-    // -------------------------------------------
-    // 1️⃣ FIND USER
-    // -------------------------------------------
     const user = await User.findById(req.user._id);
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found.",
-      });
+      return res.status(404).json({ success: false, message: "User not found." });
     }
 
-    // -------------------------------------------
-    // 2️⃣ MOBILE VALIDATION
-    // -------------------------------------------
     if (mobileNumber && !/^\d{10}$/.test(mobileNumber)) {
-      return res.status(400).json({
-        success: false,
-        message: "Mobile number must be 10 digits.",
-      });
+      return res.status(400).json({ success: false, message: "Mobile number must be 10 digits." });
     }
 
-    // DUPLICATE MOBILE CHECK
     if (mobileNumber && mobileNumber !== user.mobileNumber) {
       const exists = await User.findOne({ mobileNumber });
-      if (exists) {
-        return res.status(400).json({
-          success: false,
-          message: "Mobile number already registered.",
-        });
-      }
+      if (exists) return res.status(400).json({ success: false, message: "Mobile number already registered." });
     }
 
-    // --------------------------------------------------
-    // 3️⃣ PROFILE IMAGE UPLOAD  (profilePicture in Schema)
-    // --------------------------------------------------
+    // PROFILE PICTURE UPLOAD
     if (req.files?.profilePicture?.[0]) {
-      console.log("🟧 Updating profile image...");
-
       try {
-        // Delete old
         if (user.profilePicture) {
           const publicId = user.profilePicture.split("/").pop().split(".")[0];
           await cloudinaryDestroy(`profile-images/${publicId}`);
         }
 
-        // Upload new
         const uploaded = await cloudinaryUpload(
           req.files.profilePicture[0].path,
           "profile-images"
         );
 
-        user.profilePicture = uploaded.secure_url; // <-- FIXED
+        user.profilePicture = uploaded.secure_url;  // ✅ FIXED
       } catch (err) {
-        console.error("❌ Profile image upload error:", err);
-        return res.status(500).json({
-          success: false,
-          message: "Profile image upload failed",
-        });
+        return res.status(500).json({ success: false, message: "Profile image upload failed" });
       }
     }
 
-    // --------------------------------------------------
-    // 4️⃣ FARM IMAGES (STRING ARRAY ONLY)
-    // --------------------------------------------------
+    // FARM IMAGES
     if (req.files?.farmImages?.length > 0) {
-      console.log("🟧 Updating farm images...");
+      user.vendorDetails = user.vendorDetails || {};
 
-      try {
-        user.vendorDetails = user.vendorDetails || {};
-
-        // Delete old images
-        if (Array.isArray(user.vendorDetails.farmImages)) {
-          for (const imgUrl of user.vendorDetails.farmImages) {
-            if (typeof imgUrl === "string") {
-              const publicId = imgUrl.split("/").pop().split(".")[0];
-              await cloudinaryDestroy(`farm-images/${publicId}`);
-            }
-          }
+      if (Array.isArray(user.vendorDetails.farmImages)) {
+        for (const imgUrl of user.vendorDetails.farmImages) {
+          const publicId = imgUrl.split("/").pop().split(".")[0];
+          await cloudinaryDestroy(`farm-images/${publicId}`);
         }
-
-        // Upload new (save only URLs)
-        const uploadedUrls = [];
-        for (const file of req.files.farmImages) {
-          const uploaded = await cloudinaryUpload(file.path, "farm-images");
-          uploadedUrls.push(uploaded.secure_url);
-        }
-
-        user.vendorDetails.farmImages = uploadedUrls;
-      } catch (err) {
-        console.error("❌ Farm upload error:", err);
-        return res.status(500).json({
-          success: false,
-          message: "Farm images upload failed",
-        });
       }
+
+      const urls = [];
+      for (const file of req.files.farmImages) {
+        const up = await cloudinaryUpload(file.path, "farm-images");
+        urls.push(up.secure_url);
+      }
+
+      user.vendorDetails.farmImages = urls;
     }
 
-    // -------------------------------------------
-    // 5️⃣ BASIC FIELDS UPDATE
-    // -------------------------------------------
     if (name) user.name = name;
     if (mobileNumber) user.mobileNumber = mobileNumber;
     if (upiId) user.upiId = upiId;
 
-    // -------------------------------------------
-    // 6️⃣ ABOUT
-    // -------------------------------------------
     if (about) {
       user.vendorDetails = user.vendorDetails || {};
       user.vendorDetails.about = about;
     }
 
-    // -------------------------------------------
-    // 7️⃣ ADDRESS JSON
-    // -------------------------------------------
     if (req.body.address) {
       try {
-        user.address =
-          typeof req.body.address === "string"
-            ? JSON.parse(req.body.address)
-            : req.body.address;
+        user.address = typeof req.body.address === "string"
+          ? JSON.parse(req.body.address)
+          : req.body.address;
       } catch {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid address JSON format.",
-        });
+        return res.status(400).json({ success: false, message: "Invalid address JSON format" });
       }
     }
 
-    // -------------------------------------------
-    // 8️⃣ STATUS
-    // -------------------------------------------
     if (status) {
-      const valid = ["Active", "Inactive"];
-      if (!valid.includes(status)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid status value.",
-        });
+      if (!["Active", "Inactive"].includes(status)) {
+        return res.status(400).json({ success: false, message: "Invalid status" });
       }
       user.status = status;
     }
 
-    // -------------------------------------------
-    // 9️⃣ SAVE USER
-    // -------------------------------------------
     const updatedUser = await user.save();
 
-    // -------------------------------------------
-    // 🔟 SEND VENDOR NOTIFICATION
-    // -------------------------------------------
-    if (updatedUser.role === "Vendor") {
-      await createAndSendNotification(
-        req,
-        "Profile Updated Successfully",
-        `Hello ${updatedUser.name}, your vendor profile has been updated successfully.`,
-        {
-          userId: updatedUser._id,
-          mobileNumber: updatedUser.mobileNumber,
-        },
-        "Vendor",
-        updatedUser._id
-      );
-    }
-
-    // -------------------------------------------
-    // ✅ RESPONSE
-    // -------------------------------------------
     return res.status(200).json({
       success: true,
       message: "Profile updated successfully",
@@ -1940,7 +1833,7 @@ const updateUserProfile = asyncHandler(async (req, res) => {
         name: updatedUser.name,
         mobileNumber: updatedUser.mobileNumber,
         upiId: updatedUser.upiId,
-        profileImage: updatedUser.profilePicture, // <-- FIXED
+        profilePicture: updatedUser.profilePicture,  // ✅ FIXED
         farmImages: updatedUser.vendorDetails?.farmImages || [],
         address: updatedUser.address,
         about: updatedUser.vendorDetails?.about || "",
@@ -1949,14 +1842,10 @@ const updateUserProfile = asyncHandler(async (req, res) => {
     });
 
   } catch (error) {
-    console.error("❌ Update profile error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
+    return res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 });
+
 
 
 
