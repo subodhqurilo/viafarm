@@ -2056,6 +2056,7 @@ const placeOrder = asyncHandler(async (req, res) => {
         qrCode,
         transactionRef,
         qrExpiry,
+        comments
       });
 
       setTimeout(async () => {
@@ -2115,6 +2116,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     totalDiscount: totalDiscount.toFixed(2),
     paymentMethod,
     payments,
+    comments,
     pickupSlot: deliveryType === "Pickup" ? pickupSlot : null,
   });
 });
