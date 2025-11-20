@@ -159,8 +159,9 @@ exports.completeProfile = async (req, res) => {
   const { mobileNumber, name, password, role } = req.body;
 
   try {
-    // 1️⃣ Find verified user
+    // 1️⃣ Verify user by mobileNumber only
     const user = await User.findOne({ mobileNumber, isVerified: true });
+
     if (!user) {
       return res.status(400).json({
         status: "error",
@@ -168,21 +169,20 @@ exports.completeProfile = async (req, res) => {
       });
     }
 
-    // 2️⃣ Update profile info
+    // 2️⃣ Update profile fields
     user.name = name;
     user.role = role;
 
     if (password) {
-      user.password = password; // auto-hashed by model
+      user.password = password; // auto-hashed by model hooks
     }
 
     await user.save();
 
-    const token = generateToken(user);
+    // ❌ NO TOKEN REQUIRED — as per your request
+    // const token = generateToken(user);
 
-    // ==============================
-    // 🟢 PERSONAL USER NOTIFICATION
-    // ==============================
+    // 3️⃣ Send Notification to User
     await createAndSendNotification(
       req,
       "Profile Completed 🎉",
@@ -192,24 +192,21 @@ exports.completeProfile = async (req, res) => {
         userId: user._id,
         role: user.role,
       },
-      user.role,    // userType (Buyer/Vendor)
-      user._id      // personal user
+      user.role,
+      user._id
     );
 
-    // ==============================
-    // 🟡 ADMIN NOTIFICATION (Broadcast)
-    // ==============================
-    let adminTitle, adminMessage;
+    // 4️⃣ Send Notification to Admin(s)
+    let adminTitle = "User Profile Completed";
+    let adminMessage = `${user.name} has completed their profile.`;
 
     if (user.role === "Buyer") {
       adminTitle = "New Buyer Registered 🛍️";
       adminMessage = `Buyer "${user.name}" has completed registration.`;
-    } else if (user.role === "Vendor") {
+    } 
+    else if (user.role === "Vendor") {
       adminTitle = "New Vendor Registered 🏪";
       adminMessage = `Vendor "${user.name}" has completed registration.`;
-    } else {
-      adminTitle = "User Profile Completed";
-      adminMessage = `${user.name} has completed their profile.`;
     }
 
     await createAndSendNotification(
@@ -221,17 +218,14 @@ exports.completeProfile = async (req, res) => {
         userId: user._id,
         role: user.role,
       },
-      "Admin"       // broadcast to all admins
+      "Admin"
     );
 
-    // ==============================
-    // RESPONSE
-    // ==============================
+    // RESPONSE WITHOUT TOKEN
     res.status(200).json({
       status: "success",
       message: "Profile completed successfully.",
       data: {
-        token,
         user: {
           id: user._id,
           name: user.name,
@@ -240,6 +234,7 @@ exports.completeProfile = async (req, res) => {
         },
       },
     });
+
   } catch (err) {
     console.error("❌ completeProfile error:", err);
     res.status(500).json({
@@ -249,6 +244,7 @@ exports.completeProfile = async (req, res) => {
     });
   }
 };
+
 
 
 

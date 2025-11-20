@@ -46,7 +46,7 @@ router.get('/reset-password/:token', (req, res) => {
 });
 
 // Secure Routes
-router.post('/complete-profile', authMiddleware, completeProfile);
+router.post('/complete-profile',  completeProfile);
 router.post('/logout', authMiddleware, logout);
 
 module.exports = router;
