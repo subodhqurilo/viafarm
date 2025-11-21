@@ -5,6 +5,8 @@ const Order = require('../models/Order');
 const User = require('../models/User');
 const Category = require('../models/Category');
 const Variety = require('../models/Variety');
+    
+  // ⭐ Review model (if needed)
 
 const { cloudinary, cloudinaryUpload, cloudinaryDestroy } = require("../services/cloudinaryService");
 
@@ -383,14 +385,36 @@ const getTodaysOrders = asyncHandler(async (req, res) => {
 const getVendorProducts = asyncHandler(async (req, res) => {
     const vendorId = req.user._id;
 
-    // 1️⃣ Populate category to get name
+    // 1️⃣ Populate category name + all reviews & reviewer name
     const products = await Product.find({ vendor: vendorId })
-        .populate("category", "name");
+        .populate("category", "name")
+        .populate({
+            path: "reviews",
+            populate: {
+                path: "user",
+                select: "name"    // reviewer name
+            }
+        });
 
-    // 2️⃣ Convert category => category.name
+    // 2️⃣ Format: category => category.name & keep reviews
     const cleanProducts = products.map(p => {
         const obj = p.toObject();
-        obj.category = obj.category?.name || null;   // ⭐ Only category name
+
+        // category name only
+        obj.category = obj.category?.name || null;
+
+        // format reviews (optional cleanup)
+        obj.reviews = obj.reviews?.map(r => ({
+            _id: r._id,
+            rating: r.rating,
+            comment: r.comment,
+            user: {
+                _id: r.user?._id,
+                name: r.user?.name
+            },
+            createdAt: r.createdAt
+        })) || [];
+
         return obj;
     });
 
@@ -400,6 +424,7 @@ const getVendorProducts = asyncHandler(async (req, res) => {
         data: cleanProducts
     });
 });
+
 
 
 

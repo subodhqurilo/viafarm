@@ -11,10 +11,10 @@ const productSchema = new mongoose.Schema({
     required: true,
   },
   category: {
-  type: mongoose.Schema.Types.ObjectId,
-  ref: "Category",
-  required: true,
-},
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Category",
+    required: true,
+  },
 
   variety: {
     type: String,
@@ -33,6 +33,7 @@ const productSchema = new mongoose.Schema({
     required: true,
   },
   description: String,
+
   nutritionalValue: {
     servingSize: String,
     nutrients: [{
@@ -51,24 +52,37 @@ const productSchema = new mongoose.Schema({
     type: String,
     required: true,
   }],
+
   status: {
     type: String,
     enum: ['In Stock', 'Out of Stock'],
     default: 'In Stock',
   },
+
   allIndiaDelivery: {
     type: Boolean,
     default: false,
   },
+
   datePosted: {
     type: Date,
     default: Date.now,
   },
-  rating: { type: Number, default: 5 },       // Average rating
+
+  rating: { type: Number, default: 5 }, // Average rating
   ratingCount: { type: Number, default: 0 },
+
+  // ⭐ ADD THIS ⭐
+  reviews: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Review",
+    }
+  ],
+
 }, { timestamps: true });
 
-// --- ADD THIS: TEXT INDEX ---
+// --- TEXT INDEX ---
 productSchema.index({ name: 'text', category: 'text', description: 'text' });
 
 module.exports = mongoose.model('Product', productSchema);
