@@ -382,52 +382,51 @@ const getTodaysOrders = asyncHandler(async (req, res) => {
 });
 
 
- const getVendorProducts = asyncHandler(async (req, res) => {
+const getVendorProducts = asyncHandler(async (req, res) => {
     const vendorId = req.user._id;
 
-    // 1️⃣ Fetch Products + Category + Reviews + Reviewer Name
+    // 1️⃣ Products with category + reviews + reviewer info
     const products = await Product.find({ vendor: vendorId })
         .populate("category", "name")
         .populate({
             path: "reviews",
+            select: "rating comment images createdAt user",
             populate: {
                 path: "user",
                 select: "name profilePicture"
             }
         });
 
-    // 2️⃣ Format: category => category.name & clean reviews
     const cleanProducts = products.map(p => {
         const obj = p.toObject();
 
-        // Convert category object → name only
         obj.category = obj.category?.name || null;
 
-        // Format reviews properly
-        obj.reviews = (obj.reviews || []).map(r => ({
+        obj.reviews = obj.reviews?.map(r => ({
             _id: r._id,
             rating: r.rating,
             comment: r.comment,
+            images: r.images || [],
             createdAt: r.createdAt,
             user: r.user
                 ? {
-                      _id: r.user._id,
-                      name: r.user.name,
-                      profilePicture: r.user.profilePicture || null
+                    _id: r.user._id,
+                    name: r.user.name,
+                    profilePicture: r.user.profilePicture || null
                   }
                 : null
-        }));
+        })) || [];
 
         return obj;
     });
 
-    // 3️⃣ Send Response
     res.json({
         success: true,
         count: cleanProducts.length,
         data: cleanProducts
     });
 });
+
 
 
 

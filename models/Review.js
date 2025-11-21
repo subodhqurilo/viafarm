@@ -5,7 +5,7 @@ const reviewSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
   order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', required: true },
-  orderItem: { type: String, required: true, unique: true },
+  orderItem: { type: String, required: true },   // ❗ UNIQUE REMOVED
   rating: { type: Number, required: true, min: 1, max: 5 },
   comment: String,
   images: [String],
@@ -14,7 +14,6 @@ const reviewSchema = new mongoose.Schema({
 // ⭐ After a review is saved — add to Product.reviews
 reviewSchema.post('save', async function () {
   try {
-    // Add review ID to product
     await Product.findByIdAndUpdate(
       this.product,
       { $addToSet: { reviews: this._id } }

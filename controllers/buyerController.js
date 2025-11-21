@@ -2720,6 +2720,23 @@ const removeFromWishlist = asyncHandler(async (req, res) => {
 
 
 
+// ⭐ Add this function ABOVE writeReview
+const calculateNewRating = async (productId, newRating) => {
+  const product = await Product.findById(productId);
+
+  if (!product) return newRating;
+
+  // total old rating sum
+  const oldTotal = product.rating * product.ratingCount;
+
+  // new total
+  const newTotal = oldTotal + newRating;
+
+  // return average
+  return newTotal / (product.ratingCount + 1);
+};
+
+
 const writeReview = asyncHandler(async (req, res) => {
   const { productId } = req.params;
   const { rating, comment, orderId } = req.body;
@@ -2756,19 +2773,19 @@ const writeReview = asyncHandler(async (req, res) => {
     });
   }
 
-  // 4️⃣ Prevent Duplicate Review
-  const existing = await Review.findOne({
-    product: productId,
-    user: req.user._id,
-    order: orderId,
-  });
+  // ❌❌ 4️⃣ Duplicate checking REMOVED (Multiple reviews allowed)
+  // const existing = await Review.findOne({
+  //   product: productId,
+  //   user: req.user._id,
+  //   order: orderId,
+  // });
 
-  if (existing) {
-    return res.status(400).json({
-      success: false,
-      message: "You have already reviewed this product for this order.",
-    });
-  }
+  // if (existing) {
+  //   return res.status(400).json({
+  //     success: false,
+  //     message: "You have already reviewed this product for this order.",
+  //   });
+  // }
 
   // 5️⃣ Upload Review Images
   const images = [];
@@ -2787,7 +2804,7 @@ const writeReview = asyncHandler(async (req, res) => {
     comment,
     images,
     order: orderId,
-    orderItem: `${orderId}-${productId}`,
+    orderItem: `${orderId}-${productId}-${Date.now()}`, // ⭐ Unique to allow multiple reviews
   });
 
   // 7️⃣ Populate Review for Response
@@ -2795,17 +2812,16 @@ const writeReview = asyncHandler(async (req, res) => {
     .populate("user", "name profilePicture")
     .populate("product", "name variety vendor");
 
-  // ⭐⭐⭐ 7.5️⃣ PUSH REVIEW INTO PRODUCT ⭐⭐⭐
+  // ⭐⭐⭐ 7.5️⃣ PUSH REVIEW INTO PRODUCT + UPDATE RATING ⭐⭐⭐
+  const newRatingValue = await calculateNewRating(productId, rating);
+
   await Product.findByIdAndUpdate(
     productId,
     {
       $push: { reviews: review._id },
       $inc: { ratingCount: 1 },
-      $set: {
-        rating: await calculateNewRating(productId, rating)
-      }
-    },
-    { new: true }
+      $set: { rating: newRatingValue }
+    }
   );
 
   // 8️⃣ Notifications
@@ -2847,6 +2863,8 @@ const writeReview = asyncHandler(async (req, res) => {
     review: populatedReview,
   });
 });
+
+
 
 
 
