@@ -382,42 +382,46 @@ const getTodaysOrders = asyncHandler(async (req, res) => {
 });
 
 
-const getVendorProducts = asyncHandler(async (req, res) => {
+ const getVendorProducts = asyncHandler(async (req, res) => {
     const vendorId = req.user._id;
 
-    // 1️⃣ Populate category name + all reviews & reviewer name
+    // 1️⃣ Fetch Products + Category + Reviews + Reviewer Name
     const products = await Product.find({ vendor: vendorId })
         .populate("category", "name")
         .populate({
             path: "reviews",
             populate: {
                 path: "user",
-                select: "name"    // reviewer name
+                select: "name profilePicture"
             }
         });
 
-    // 2️⃣ Format: category => category.name & keep reviews
+    // 2️⃣ Format: category => category.name & clean reviews
     const cleanProducts = products.map(p => {
         const obj = p.toObject();
 
-        // category name only
+        // Convert category object → name only
         obj.category = obj.category?.name || null;
 
-        // format reviews (optional cleanup)
-        obj.reviews = obj.reviews?.map(r => ({
+        // Format reviews properly
+        obj.reviews = (obj.reviews || []).map(r => ({
             _id: r._id,
             rating: r.rating,
             comment: r.comment,
-            user: {
-                _id: r.user?._id,
-                name: r.user?.name
-            },
-            createdAt: r.createdAt
-        })) || [];
+            createdAt: r.createdAt,
+            user: r.user
+                ? {
+                      _id: r.user._id,
+                      name: r.user.name,
+                      profilePicture: r.user.profilePicture || null
+                  }
+                : null
+        }));
 
         return obj;
     });
 
+    // 3️⃣ Send Response
     res.json({
         success: true,
         count: cleanProducts.length,
@@ -789,11 +793,18 @@ const getProductById = asyncHandler(async (req, res) => {
         });
     }
 
-    // 2️⃣ Find Product + Vendor Details
+    // 2️⃣ Find Product + Vendor + Reviews
     const product = await Product.findById(id)
         .populate({
             path: 'vendor',
             select: 'name mobileNumber email address vendorDetails.about profilePicture'
+        })
+        .populate({
+            path: 'reviews',
+            populate: {
+                path: 'user',
+                select: 'name profilePicture'
+            }
         })
         .lean();
 
@@ -804,6 +815,21 @@ const getProductById = asyncHandler(async (req, res) => {
             message: 'Product not found.'
         });
     }
+
+    // ⭐ Format Reviews
+    const formattedReviews = (product.reviews || []).map(r => ({
+        _id: r._id,
+        rating: r.rating,
+        comment: r.comment,
+        createdAt: r.createdAt,
+        user: r.user
+            ? {
+                  _id: r.user._id,
+                  name: r.user.name,
+                  profilePicture: r.user.profilePicture || null
+              }
+            : null
+    }));
 
     // 4️⃣ Construct Clean Response
     const responseData = {
@@ -819,19 +845,25 @@ const getProductById = asyncHandler(async (req, res) => {
         allIndiaDelivery: product.allIndiaDelivery,
         images: product.images,
         status: product.status,
+
         vendor: product.vendor
             ? {
-                name: product.vendor.name,
-                about: product.vendor.vendorDetails?.about || '',
-                mobileNumber: product.vendor.mobileNumber,
-                email: product.vendor.email || '',
-                address:
-                    product.vendor.address ||
-                    product.vendor.vendorDetails?.address ||
-                    null,
-                profilePicture: product.vendor.profilePicture || ''
-            }
+                  name: product.vendor.name,
+                  about: product.vendor.vendorDetails?.about || '',
+                  mobileNumber: product.vendor.mobileNumber,
+                  email: product.vendor.email || '',
+                  address:
+                      product.vendor.address ||
+                      product.vendor.vendorDetails?.address ||
+                      null,
+                  profilePicture: product.vendor.profilePicture || ''
+              }
             : null,
+
+        reviews: formattedReviews,  // ⭐ Added
+        rating: product.rating,     // ⭐ Avg rating
+        ratingCount: product.ratingCount,
+
         createdAt: product.createdAt,
         updatedAt: product.updatedAt
     };
@@ -843,6 +875,7 @@ const getProductById = asyncHandler(async (req, res) => {
         data: responseData
     });
 });
+
 
 
 
