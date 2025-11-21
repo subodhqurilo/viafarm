@@ -2792,12 +2792,23 @@ const writeReview = asyncHandler(async (req, res) => {
 
   // 7️⃣ Populate Review for Response
   const populatedReview = await Review.findById(review._id)
-    .populate("user", "name")
+    .populate("user", "name profilePicture")
     .populate("product", "name variety vendor");
 
-  // 8️⃣ Notifications
+  // ⭐⭐⭐ 7.5️⃣ PUSH REVIEW INTO PRODUCT ⭐⭐⭐
+  await Product.findByIdAndUpdate(
+    productId,
+    {
+      $push: { reviews: review._id },
+      $inc: { ratingCount: 1 },
+      $set: {
+        rating: await calculateNewRating(productId, rating)
+      }
+    },
+    { new: true }
+  );
 
-  // Buyer notification
+  // 8️⃣ Notifications
   await createAndSendNotification(
     req,
     "⭐ Review Submitted",
@@ -2836,6 +2847,7 @@ const writeReview = asyncHandler(async (req, res) => {
     review: populatedReview,
   });
 });
+
 
 
 
@@ -2949,13 +2961,13 @@ const getReviewsForProduct = asyncHandler(async (req, res) => {
 
 
 
-const updateReview = asyncHandler(async (req, res) => {
+ const updateReview = asyncHandler(async (req, res) => {
   const { reviewId } = req.params;
   const { rating, comment } = req.body;
 
   console.log("🔍 Incoming Review Update For ID:", reviewId);
 
-  // 1️⃣ Find review
+  // 1️⃣ Find review with product + user
   let review = await Review.findById(reviewId)
     .populate("product", "name vendor")
     .populate("user", "name");
@@ -2977,36 +2989,34 @@ const updateReview = asyncHandler(async (req, res) => {
     });
   }
 
-  // 3️⃣ Update rating
-  if (rating) {
-    if (rating < 1 || rating > 5) {
+  // 3️⃣ Validate rating if provided
+  const oldRating = review.rating;
+  let ratingChanged = false;
+  if (rating !== undefined && rating !== null) {
+    const parsed = Number(rating);
+    if (Number.isNaN(parsed) || parsed < 1 || parsed > 5) {
       return res.status(400).json({
         success: false,
-        message: "Rating must be between 1 and 5",
+        message: "Rating must be a number between 1 and 5",
       });
     }
-    review.rating = rating;
+    if (parsed !== oldRating) ratingChanged = true;
+    review.rating = parsed;
   }
 
-  // 4️⃣ Update comment
+  // 4️⃣ Update comment if provided
   if (comment !== undefined) review.comment = comment;
 
-  // 5️⃣ Handle Images — Delete old + Upload new
+  // 5️⃣ Handle Images — Delete old + Upload new (if files provided)
   if (req.files && req.files.length > 0) {
-
     console.log("🗑 Deleting old review images...");
 
     if (review.images && review.images.length > 0) {
       for (const img of review.images) {
         try {
-          // supports both string and { url: "" } format
           const imgUrl = typeof img === "string" ? img : img.url;
-
-          const publicId = imgUrl
-            .split("/")
-            .pop()
-            .split(".")[0];
-
+          // NOTE: this assumes your public IDs are last part of the URL without extension
+          const publicId = imgUrl.split("/").pop().split(".")[0];
           await cloudinaryDestroy(`product-reviews/${publicId}`);
         } catch (err) {
           console.error("❌ Error deleting old image:", err.message);
@@ -3015,27 +3025,53 @@ const updateReview = asyncHandler(async (req, res) => {
     }
 
     console.log("📤 Uploading new images...");
-
     const newImages = [];
     for (const file of req.files) {
       const uploaded = await cloudinaryUpload(file.path, "product-reviews");
       newImages.push(uploaded.secure_url);
     }
-
     review.images = newImages;
   }
 
   // 6️⃣ Save updated review
   await review.save();
 
-  // 7️⃣ Re-fetch updated review
+  // 7️⃣ Re-fetch updated review with populates for response
   const updatedReview = await Review.findById(review._id)
     .populate("user", "name profilePicture")
     .populate("product", "name variety vendor");
 
+  // 8️⃣ If rating changed -> recalculate avg rating & ratingCount for the product
+  if (ratingChanged && updatedReview.product && updatedReview.product._id) {
+    try {
+      const agg = await Review.aggregate([
+        { $match: { product: mongoose.Types.ObjectId(updatedReview.product._id) } },
+        {
+          $group: {
+            _id: "$product",
+            avgRating: { $avg: "$rating" },
+            count: { $sum: 1 },
+          },
+        },
+      ]);
+
+      const avgRating = agg[0] ? Number(agg[0].avgRating.toFixed(2)) : 5;
+      const count = agg[0] ? agg[0].count : 0;
+
+      await Product.findByIdAndUpdate(
+        updatedReview.product._id,
+        { rating: avgRating, ratingCount: count },
+        { new: true }
+      );
+    } catch (err) {
+      console.error("❌ Failed to recalc product rating:", err);
+      // don't fail the request for notification reasons — just log
+    }
+  }
+
   const product = updatedReview.product;
 
-  // 8️⃣ Buyer Notification
+  // 9️⃣ Buyer Notification
   await createAndSendNotification(
     req,
     "✏️ Review Updated",
@@ -3050,7 +3086,7 @@ const updateReview = asyncHandler(async (req, res) => {
     req.user._id
   );
 
-  // 9️⃣ Vendor Notification
+  // 🔟 Vendor Notification
   if (product.vendor) {
     await createAndSendNotification(
       req,
@@ -3067,7 +3103,7 @@ const updateReview = asyncHandler(async (req, res) => {
     );
   }
 
-  // 🔟 Response
+  // 1️⃣1️⃣ Response
   res.status(200).json({
     success: true,
     message: "Review updated successfully.",
