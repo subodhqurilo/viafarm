@@ -1909,7 +1909,8 @@ const placeOrder = asyncHandler(async (req, res) => {
   const cart = await Cart.findOne({ user: userId })
     .populate({
       path: "items.product",
-      select: "name price vendor images unit",
+      select: "name price vendor images unit category weightPerPiece",
+      populate: { path: "category", select: "name" }
     })
     .lean();
 
@@ -1952,7 +1953,7 @@ const placeOrder = asyncHandler(async (req, res) => {
   let coupon = null;
   if (couponCode) {
     coupon = await Coupon.findOne({
-      code: couponCode.toUpperCase(),
+      code: couponCode.trim().toUpperCase(),
       status: "Active",
       startDate: { $lte: new Date() },
       expiryDate: { $gte: new Date() },
@@ -1998,9 +1999,10 @@ const placeOrder = asyncHandler(async (req, res) => {
   for (const vendorId in ordersByVendor) {
     const vendorItems = ordersByVendor[vendorId];
 
+    // IMPORTANT: pass coupon object (not couponCode string)
     const { summary } = await calculateOrderSummary(
       { items: vendorItems, user: userId },
-      couponCode,
+      coupon,
       deliveryType
     );
 
@@ -2036,7 +2038,7 @@ const placeOrder = asyncHandler(async (req, res) => {
 
     createdOrderIds.push(newOrder._id);
 
-    // ------------------ 🔔 PERSONAL VENDOR NOTIFICATION ------------------
+    // ------------------ 🔔 VENDOR NOTIFICATION ------------------
     await createAndSendNotification(
       req,
       "📦 New Order Received",
@@ -2046,7 +2048,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       vendorId
     );
 
-    // ------------------ 🔔 PERSONAL BUYER NOTIFICATION (Per Vendor Order) ------------------
+    // ------------------ 🔔 BUYER NOTIFICATION ------------------
     await createAndSendNotification(
       req,
       "🛍️ Order Placed",
@@ -2061,7 +2063,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       userId
     );
 
-    // ------------------ 💳 UPI PAYMENT QR GENERATION ------------------
+    // ------------------ 💳 UPI PAYMENT QR ------------------
     if (isOnlinePayment && vendor?.upiId) {
       const transactionRef = `TXN-${newOrder.orderId.replace("#", "-")}-${Date.now()}`;
       const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=Payment for ${newOrder.orderId}&tr=${transactionRef}&cu=INR`;
@@ -2145,6 +2147,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     pickupSlot: deliveryType === "Pickup" ? pickupSlot : null,
   });
 });
+
 
 
 
