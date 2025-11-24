@@ -1278,16 +1278,16 @@ const createCoupon = asyncHandler(async (req, res) => {
         return res.status(400).json({ success: false, message: "Expiry date must be after start date." });
     }
 
-    // -------------------------------------------
-    // 🔥 AUTO CONVERT CATEGORY NAME → CATEGORY IDs
-    // -------------------------------------------
+    // ----------------------------------------------------
+    // 🔥 CATEGORY NAME → ID AUTO DETECT
+    // ----------------------------------------------------
     if (Array.isArray(appliesTo) && appliesTo.length > 0) {
         const categories = await Category.find({
             $or: [
                 { _id: { $in: appliesTo.filter(id => mongoose.Types.ObjectId.isValid(id)) } },
                 { name: { $in: appliesTo } }
             ]
-        }).select("_id");
+        });
 
         if (categories.length === 0) {
             return res.status(400).json({ success: false, message: "Invalid category names or IDs." });
@@ -1296,21 +1296,18 @@ const createCoupon = asyncHandler(async (req, res) => {
         appliesTo = categories.map(c => c._id);
     }
 
-    // -------------------------------------------
-    // 🔥 SMART PRODUCT FILTER LOGIC
-    // -------------------------------------------
+    // ----------------------------------------------------
+    // 🔥 PRODUCT FILTER LOGIC
+    // ----------------------------------------------------
     let finalApplicable = [];
     let isUniversal = false;
 
-    // 1️⃣ All Products / All Categories
     if (appliesTo === "All Products" || appliesTo === "All Categories") {
         isUniversal = true;
     }
 
-    // 2️⃣ Category based
     else if (Array.isArray(appliesTo) && appliesTo.length > 0) {
 
-        // A → All products under selected categories
         if (productIds.length === 0) {
             const products = await Product.find({
                 vendor: creatorId,
@@ -1324,7 +1321,6 @@ const createCoupon = asyncHandler(async (req, res) => {
             finalApplicable = products.map(p => p._id);
         }
 
-        // B → Only selected products
         else {
             const products = await Product.find({
                 _id: { $in: productIds },
@@ -1340,7 +1336,6 @@ const createCoupon = asyncHandler(async (req, res) => {
         }
     }
 
-    // 3️⃣ Specific Product(s)
     else if (appliesTo === "Specific Product") {
 
         const products = await Product.find({
@@ -1359,7 +1354,11 @@ const createCoupon = asyncHandler(async (req, res) => {
         return res.status(400).json({ success: false, message: "Invalid appliesTo." });
     }
 
-    const newCoupon = await Coupon.create({
+
+    // ----------------------------------------------------
+    // 🔥 CREATE COUPON
+    // ----------------------------------------------------
+    let newCoupon = await Coupon.create({
         code: code.toUpperCase(),
         discount: { value: discountValue, type: discountType },
         appliesTo,
@@ -1374,8 +1373,12 @@ const createCoupon = asyncHandler(async (req, res) => {
         status
     });
 
-    // Notifications (same as earlier)...
-    // ---------------------
+    // ----------------------------------------------------
+    // 🔥 POPULATE CATEGORY NAME & PRODUCT DETAILS
+    // ----------------------------------------------------
+    newCoupon = await Coupon.findById(newCoupon._id)
+        .populate("appliesTo", "name")
+        .populate("applicableProducts", "name images price");
 
     res.status(201).json({
         success: true,
@@ -1383,6 +1386,7 @@ const createCoupon = asyncHandler(async (req, res) => {
         data: newCoupon
     });
 });
+
 
 
 
@@ -1401,48 +1405,52 @@ const getVendorCoupons = asyncHandler(async (req, res) => {
 
     const { search = '', status } = req.query;
 
-    // --- Build query ---
     const query = { vendor: vendorId };
 
-    // Filter by status
     const allowedStatuses = ['Active', 'Expired', 'Disabled'];
     if (status && allowedStatuses.includes(status)) {
         query.status = status;
     }
 
-    // Search by coupon code (case-insensitive)
     if (search.trim()) {
         query.code = { $regex: search.trim(), $options: 'i' };
     }
 
-    // Fetch coupons WITH category + vendor + product names
+    // -------------------------------------------
+    // 🔥 POPULATE: vendor, appliesTo(category), products(product + category + vendor)
+    // -------------------------------------------
     const coupons = await Coupon.find(query)
         .sort({ createdAt: -1 })
         .populate({
             path: "vendor",
-            select: "name profilePicture"   // 🔥 Vendor Name
+            select: "name profilePicture"
+        })
+        .populate({
+            path: "appliesTo",
+            select: "name"       // 🔥 CATEGORY NAME HERE
         })
         .populate({
             path: "applicableProducts",
-            select: "name price category vendor",
+            select: "name price category vendor images",
             populate: [
                 {
                     path: "category",
-                    select: "name"          // 🔥 Category Name
+                    select: "name"
                 },
                 {
                     path: "vendor",
-                    select: "name"          // 🔥 Vendor Name (product vendor)
+                    select: "name"
                 }
             ]
         });
 
-    // FORMAT RESPONSE
+    // -------------------------------------------
+    // 🔥 FORMAT CLEAN RESPONSE
+    // -------------------------------------------
     const formatted = coupons.map(c => ({
         id: c._id,
         code: c.code,
         discount: c.discount,
-        appliesTo: c.appliesTo,
         minimumOrder: c.minimumOrder,
         totalUsageLimit: c.totalUsageLimit,
         usageLimitPerUser: c.usageLimitPerUser,
@@ -1450,27 +1458,37 @@ const getVendorCoupons = asyncHandler(async (req, res) => {
         startDate: c.startDate,
         expiryDate: c.expiryDate,
 
+        // CATEGORY NAME(S)
+        appliesTo: c.appliesTo?.map(cat => ({
+            id: cat?._id,
+            name: cat?.name
+        })) || [],
+
+        // VENDOR DETAILS
         vendor: {
             id: c.vendor?._id,
             name: c.vendor?.name || "Unknown Vendor",
             profilePicture: c.vendor?.profilePicture || null
         },
 
+        // PRODUCT DETAILS
         products: c.applicableProducts.map(p => ({
             id: p._id,
             name: p.name,
             price: p.price,
+            image: p.images?.[0] || null,
             categoryName: p.category?.name || "No Category",
             vendorName: p.vendor?.name || "No Vendor",
         }))
     }));
 
-    res.status(200).json({
+    return res.status(200).json({
         success: true,
         count: formatted.length,
         data: formatted
     });
 });
+
 
 
 
@@ -1483,7 +1501,9 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
     }
 
     const coupon = await Coupon.findById(id);
-    if (!coupon) return res.status(404).json({ success: false, message: "Coupon not found." });
+    if (!coupon) {
+        return res.status(404).json({ success: false, message: "Coupon not found." });
+    }
 
     if (coupon.vendor.toString() !== req.user._id.toString()) {
         return res.status(403).json({ success: false, message: "Not authorized." });
@@ -1502,8 +1522,9 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
         status
     } = req.body;
 
-    const oldValue = coupon.discount.value;
-
+    // -------------------------
+    // 🔥 BASIC FIELDS UPDATE
+    // -------------------------
     if (code) coupon.code = code.toUpperCase();
     if (discount) {
         coupon.discount.value = discount.value ?? coupon.discount.value;
@@ -1518,7 +1539,7 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
     if (expiryDate) coupon.expiryDate = new Date(expiryDate);
 
     // -------------------------------------------
-    // 🔥 AUTO CONVERT CATEGORY NAME → CATEGORY IDs
+    // 🔥 CATEGORY NAME → CATEGORY IDs
     // -------------------------------------------
     if (Array.isArray(appliesTo) && appliesTo.length > 0) {
         const categories = await Category.find({
@@ -1526,28 +1547,31 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
                 { _id: { $in: appliesTo.filter(id => mongoose.Types.ObjectId.isValid(id)) } },
                 { name: { $in: appliesTo } }
             ]
-        }).select("_id");
+        }).select("_id name");
 
-        if (categories.length === 0)
+        if (categories.length === 0) {
             return res.status(400).json({ success: false, message: "Invalid category names." });
+        }
 
         appliesTo = categories.map(c => c._id);
     }
 
     // -------------------------------------------
-    // 🔥 SMART PRODUCT FILTER LOGIC
+    // 🔥 PRODUCT LOGIC
     // -------------------------------------------
     if (appliesTo !== undefined) {
 
         let finalApplicable = [];
         let isUniversal = false;
 
+        // UNIVERSAL
         if (appliesTo === "All Products" || appliesTo === "All Categories") {
             coupon.appliesTo = appliesTo;
             coupon.applicableProducts = [];
             isUniversal = true;
         }
 
+        // CATEGORY BASED
         else if (Array.isArray(appliesTo)) {
 
             if (productIds.length === 0) {
@@ -1556,21 +1580,21 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
                     category: { $in: appliesTo }
                 }).select("_id");
 
-                if (products.length === 0)
+                if (products.length === 0) {
                     return res.status(404).json({ success: false, message: "No products found." });
+                }
 
                 finalApplicable = products.map(p => p._id);
-            }
-
-            else {
+            } else {
                 const products = await Product.find({
                     _id: { $in: productIds },
                     vendor: req.user._id,
                     category: { $in: appliesTo }
                 }).select("_id");
 
-                if (products.length !== productIds.length)
+                if (products.length !== productIds.length) {
                     return res.status(403).json({ success: false, message: "Invalid product selection." });
+                }
 
                 finalApplicable = products.map(p => p._id);
             }
@@ -1579,14 +1603,17 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
             coupon.applicableProducts = finalApplicable;
         }
 
+        // SPECIFIC PRODUCT
         else if (appliesTo === "Specific Product") {
+
             const products = await Product.find({
                 _id: { $in: productIds },
                 vendor: req.user._id
             }).select("_id");
 
-            if (products.length !== productIds.length)
+            if (products.length !== productIds.length) {
                 return res.status(403).json({ success: false, message: "Invalid product selection." });
+            }
 
             coupon.appliesTo = appliesTo;
             coupon.applicableProducts = products.map(p => p._id);
@@ -1597,17 +1624,73 @@ const updateVendorCoupon = asyncHandler(async (req, res) => {
         }
     }
 
-    const updated = await coupon.save();
+    // -------------------------------------------
+    // 🔥 SAVE + POPULATE FOR RESPONSE
+    // -------------------------------------------
+    let updated = await coupon.save();
 
-    // Notifications...
-    // ---------------------
+    updated = await Coupon.findById(updated._id)
+        .populate({
+            path: "appliesTo",
+            select: "name"
+        })
+        .populate({
+            path: "applicableProducts",
+            select: "name images price category vendor",
+            populate: [
+                { path: "category", select: "name" },
+                { path: "vendor", select: "name" }
+            ]
+        })
+        .populate({
+            path: "vendor",
+            select: "name profilePicture"
+        });
+
+    // -------------------------------------------
+    // 🔥 CLEAN RESPONSE FORMAT
+    // -------------------------------------------
+    const response = {
+        id: updated._id,
+        code: updated.code,
+        discount: updated.discount,
+        minimumOrder: updated.minimumOrder,
+        usageLimitPerUser: updated.usageLimitPerUser,
+        totalUsageLimit: updated.totalUsageLimit,
+        startDate: updated.startDate,
+        expiryDate: updated.expiryDate,
+        status: updated.status,
+
+        appliesTo: Array.isArray(updated.appliesTo)
+            ? updated.appliesTo.map(c => ({
+                id: c._id,
+                name: c.name
+            }))
+            : updated.appliesTo,
+
+        vendor: {
+            id: updated.vendor?._id,
+            name: updated.vendor?.name || "Unknown Vendor",
+            profilePicture: updated.vendor?.profilePicture || null
+        },
+
+        products: updated.applicableProducts.map(p => ({
+            id: p._id,
+            name: p.name,
+            price: p.price,
+            image: p.images?.[0] || null,
+            categoryName: p.category?.name || "No Category",
+            vendorName: p.vendor?.name || "No Vendor"
+        }))
+    };
 
     res.status(200).json({
         success: true,
         message: "Coupon updated successfully.",
-        data: updated
+        data: response
     });
 });
+
 
 
 
