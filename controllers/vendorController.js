@@ -1415,20 +1415,63 @@ const getVendorCoupons = asyncHandler(async (req, res) => {
         query.code = { $regex: search.trim(), $options: 'i' };
     }
 
-    // Fetch all matching coupons (no pagination)
+    // Fetch coupons WITH category + vendor + product names
     const coupons = await Coupon.find(query)
         .sort({ createdAt: -1 })
         .populate({
-            path: 'applicableProducts', // populate products if any
-            select: 'name category price'
+            path: "vendor",
+            select: "name profilePicture"   // 🔥 Vendor Name
+        })
+        .populate({
+            path: "applicableProducts",
+            select: "name price category vendor",
+            populate: [
+                {
+                    path: "category",
+                    select: "name"          // 🔥 Category Name
+                },
+                {
+                    path: "vendor",
+                    select: "name"          // 🔥 Vendor Name (product vendor)
+                }
+            ]
         });
+
+    // FORMAT RESPONSE
+    const formatted = coupons.map(c => ({
+        id: c._id,
+        code: c.code,
+        discount: c.discount,
+        appliesTo: c.appliesTo,
+        minimumOrder: c.minimumOrder,
+        totalUsageLimit: c.totalUsageLimit,
+        usageLimitPerUser: c.usageLimitPerUser,
+        status: c.status,
+        startDate: c.startDate,
+        expiryDate: c.expiryDate,
+
+        vendor: {
+            id: c.vendor?._id,
+            name: c.vendor?.name || "Unknown Vendor",
+            profilePicture: c.vendor?.profilePicture || null
+        },
+
+        products: c.applicableProducts.map(p => ({
+            id: p._id,
+            name: p.name,
+            price: p.price,
+            categoryName: p.category?.name || "No Category",
+            vendorName: p.vendor?.name || "No Vendor",
+        }))
+    }));
 
     res.status(200).json({
         success: true,
-        count: coupons.length,
-        data: coupons
+        count: formatted.length,
+        data: formatted
     });
 });
+
 
 
 // Update a coupon
