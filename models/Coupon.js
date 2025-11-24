@@ -8,6 +8,7 @@ const couponSchema = new mongoose.Schema({
     trim: true,
     uppercase: true,
   },
+
   discount: {
     value: {
       type: Number,
@@ -19,32 +20,44 @@ const couponSchema = new mongoose.Schema({
       required: [true, 'Discount type is required.'],
     },
   },
-appliesTo: {
-  type: [String],   // Array of strings
-  required: [true, 'Applies to field is required.'],
-  default: [],      // Optional default
-},
-  applicableProducts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+
+  // ✅ FIXED — STORE CATEGORY IDS, NOT STRINGS
+  appliesTo: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Category"
+    }
+  ],
+
+  applicableProducts: [
+    { type: mongoose.Schema.Types.ObjectId, ref: 'Product' }
+  ],
+
   startDate: {
     type: Date,
     required: [true, 'Start date is required.'],
   },
+
   expiryDate: {
     type: Date,
     required: [true, 'Expiry date is required.'],
   },
+
   minimumOrder: {
     type: Number,
     default: 0,
   },
+
   totalUsageLimit: {
     type: Number,
     default: 0,
   },
+
   usageLimitPerUser: {
     type: Number,
     default: 1,
   },
+
   usedCount: {
     type: Number,
     default: 0,
@@ -62,10 +75,10 @@ appliesTo: {
     enum: ['Active', 'Expired', 'Disabled'],
     default: 'Active',
   },
+
   vendor: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: false, // ✅ not required, so admin coupons can skip this
     default: null
   },
 
@@ -74,6 +87,7 @@ appliesTo: {
     required: true,
     ref: 'User',
   },
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('Coupon', couponSchema);
