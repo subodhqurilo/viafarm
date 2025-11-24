@@ -770,10 +770,10 @@ const getSmartPicks = asyncHandler(async (req, res) => {
         });
     }
 
-    // ✅ Correct order: [longitude, latitude]
+    // Correct order: [longitude, latitude]
     const [buyerLng, buyerLat] = buyer.location.coordinates;
 
-    // 📏 Helper: Haversine formula (distance in km)
+    // 📏 Distance function
     const getDistanceKm = (lat1, lon1, lat2, lon2) => {
         const toRad = (v) => (v * Math.PI) / 180;
         const R = 6371;
@@ -787,44 +787,40 @@ const getSmartPicks = asyncHandler(async (req, res) => {
         return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     };
 
-    // 🟢 Step 2: Get active vendors
+    // 🟢 Step 2: Active Vendors
     const activeVendorIds = (
         await User.find({ role: "Vendor", status: "Active" }).select("_id")
     ).map((v) => v._id);
 
-    // 🟢 Step 3: Product filter
+    // 🟢 Step 3: Filter
     const filter = {
         status: "In Stock",
         vendor: { $in: activeVendorIds },
     };
     if (category) filter.category = category;
 
-    // 🟢 Step 4: Fetch and populate
+    // 🟢 Step 4: Fetch Products + Category Name
     const products = await Product.find(filter)
         .sort({ rating: -1, createdAt: -1 })
         .limit(20)
-        .populate("vendor", "name profilePicture location status");
+        .populate("vendor", "name profilePicture location status")
+        .populate("category", "name image"); // ⭐ ADDED
 
     if (!products.length) {
         return res.status(404).json({
             success: false,
             message: category
                 ? `No smart picks found for category: ${category}`
-                : "No smart picks found at this time.",
+                : "No smart picks found.",
         });
     }
 
-    // 🧮 Step 5: Format and calculate distances
+    // 🧮 Step 5: Format Response
     const formatted = products.map((p) => {
         const image = p.images?.[0] || null;
         let distanceText = "N/A";
 
-        if (
-            p.vendor?.location?.coordinates?.length &&
-            p.vendor.location.coordinates[0] !== 0 &&
-            p.vendor.location.coordinates[1] !== 0
-        ) {
-            // ✅ Correct order
+        if (p.vendor?.location?.coordinates?.length) {
             const [vendorLng, vendorLat] = p.vendor.location.coordinates;
             const dist = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
             distanceText = `${dist.toFixed(2)} km away`;
@@ -838,6 +834,12 @@ const getSmartPicks = asyncHandler(async (req, res) => {
             unit: p.unit,
             rating: p.rating || 0,
             quantity: p.quantity,
+
+            // ⭐ CATEGORY INFO ADDED
+            categoryId: p.category?._id || null,
+            categoryName: p.category?.name || null,
+            categoryImage: p.category?.image || null,
+
             vendorId: p.vendor?._id,
             vendorName: p.vendor?.name || "Unknown Vendor",
             vendorImage: p.vendor?.profilePicture || null,
@@ -845,13 +847,14 @@ const getSmartPicks = asyncHandler(async (req, res) => {
         };
     });
 
-    // ✅ Step 6: Send response
+    // 🟢 Step 6: Response
     res.status(200).json({
         success: true,
         count: formatted.length,
         data: formatted,
     });
 });
+
 
 const getProductsByCategory = asyncHandler(async (req, res) => {
     const { category } = req.query;
