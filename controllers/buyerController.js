@@ -1361,54 +1361,96 @@ const applyCouponToCart = asyncHandler(async (req, res) => {
     const { code } = req.body;
     const userId = req.user._id;
 
-    if (!code) {
-        return res.status(400).json({ success: false, message: 'Coupon code is required.' });
+    if (!code || typeof code !== "string") {
+        return res.status(400).json({
+            success: false,
+            message: "A valid coupon code is required."
+        });
     }
 
-    // Fetch user's cart
-    const cart = await Cart.findOne({ user: userId }).populate('items.product');
+    // Fetch user's cart WITH CATEGORY POPULATED
+    const cart = await Cart.findOne({ user: userId })
+        .populate({
+            path: "items.product",
+            populate: { path: "category", select: "name" }  // 🔥 IMPORTANT FIX
+        });
+
     if (!cart || !cart.items.length) {
-        return res.status(404).json({ success: false, message: 'Your cart is empty.' });
+        return res.status(404).json({
+            success: false,
+            message: "Your cart is empty."
+        });
     }
 
-    // Validate coupon
+    // Fetch coupon
     const coupon = await Coupon.findOne({
-        code: code.toUpperCase(),
-        status: 'Active',
+        code: code.trim().toUpperCase(),
+        status: "Active",
         startDate: { $lte: new Date() },
         expiryDate: { $gte: new Date() }
     });
 
     if (!coupon) {
-        return res.status(400).json({ success: false, message: 'Invalid, expired, or inactive coupon code.' });
+        return res.status(400).json({
+            success: false,
+            message: "Invalid or expired coupon."
+        });
     }
 
-    // Check per-user usage limit using coupon.usedBy
-    const userUsage = coupon.usedBy.find(u => u.user.toString() === userId.toString());
+    // Usage limits
+    const userUsage = coupon.usedBy.find(
+        u => u.user.toString() === userId.toString()
+    );
+
     if (coupon.usageLimitPerUser && userUsage?.count >= coupon.usageLimitPerUser) {
         return res.status(400).json({
             success: false,
-            message: `You have already used this coupon the maximum allowed times (${coupon.usageLimitPerUser}).`
+            message: `You already used this coupon ${coupon.usageLimitPerUser} times.`
         });
     }
 
-    // Check total usage limit
     if (coupon.totalUsageLimit && coupon.usedCount >= coupon.totalUsageLimit) {
         return res.status(400).json({
             success: false,
-            message: 'This coupon has reached its total usage limit.'
+            message: "This coupon has reached its total usage limit."
         });
     }
 
-    // Calculate total MRP of cart
+    // ==========================================================
+    // 📌 CALCULATE MRP + FIND ELIGIBLE MRP USING CATEGORY LOGIC
+    // ==========================================================
     let totalMRP = 0;
+    let eligibleMRP = 0;
+
     cart.items.forEach(item => {
-        const price = item.product?.price || 0;
+        const product = item.product;
+        const price = product?.price || 0;
         const qty = item.quantity || 1;
-        totalMRP += price * qty;
+        const itemTotal = price * qty;
+
+        totalMRP += itemTotal;
+
+        // ---- Get category name properly ----
+        const categoryName =
+            typeof product.category === "string"
+                ? product.category
+                : product.category?.name;
+
+        // ---- Check eligibility ----
+        const isCategoryMatch =
+            coupon.appliesTo.includes("All Products") ||
+            (categoryName && coupon.appliesTo.includes(categoryName));
+
+        const isProductMatch = coupon.applicableProducts.some(
+            (p) => p.toString() === product._id.toString()
+        );
+
+        if (isCategoryMatch || isProductMatch) {
+            eligibleMRP += itemTotal;
+        }
     });
 
-    // Check minimum order
+    // Minimum order check
     if (coupon.minimumOrder && totalMRP < coupon.minimumOrder) {
         return res.status(400).json({
             success: false,
@@ -1416,27 +1458,32 @@ const applyCouponToCart = asyncHandler(async (req, res) => {
         });
     }
 
-    // Apply discount
+    // ==========================================================
+    // 📌 APPLY COUPON DISCOUNT
+    // ==========================================================
     let discount = 0;
-    if (coupon.discount.type === 'Percentage') {
-        discount = (totalMRP * coupon.discount.value) / 100;
-    } else if (coupon.discount.type === 'Fixed') {
-        discount = coupon.discount.value;
+
+    if (eligibleMRP > 0) {
+        if (coupon.discount.type === "Percentage") {
+            discount = (eligibleMRP * coupon.discount.value) / 100;
+        } else if (coupon.discount.type === "Fixed") {
+            discount = Math.min(coupon.discount.value, eligibleMRP);
+        }
     }
+
     if (discount > totalMRP) discount = totalMRP;
 
-    // Delivery charge
-    const deliveryCharge = totalMRP > 500 ? 0 : 50;
+    // Example Delivery Charge
+    const deliveryCharge = totalMRP >= 500 ? 0 : 50;
     const totalAmount = totalMRP - discount + deliveryCharge;
 
-    // Save coupon code to cart
-    cart.couponCode = code;
+    // Save coupon to cart
+    cart.couponCode = code.trim().toUpperCase();
     await cart.save();
 
-    // Respond
-    res.status(200).json({
+    return res.status(200).json({
         success: true,
-        message: 'Coupon applied successfully.',
+        message: "Coupon applied successfully.",
         summary: {
             TotalMRP: `₹ ${totalMRP.toFixed(2)}`,
             CouponDiscount: `₹ ${discount.toFixed(2)}`,
@@ -1445,13 +1492,15 @@ const applyCouponToCart = asyncHandler(async (req, res) => {
         },
         priceDetails: {
             totalMRP,
-            couponDiscount: discount,
+            discount,
             deliveryCharge,
             totalAmount
         },
-        couponCode: code
+        couponCode: code.trim().toUpperCase()
     });
 });
+
+
 
 
 
