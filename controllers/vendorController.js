@@ -1417,7 +1417,7 @@ const getVendorCoupons = asyncHandler(async (req, res) => {
     }
 
     // -------------------------------------------
-    // 🔥 POPULATE: vendor, appliesTo(category), products(product + category + vendor)
+    // 🔥 POPULATE vendor, appliesTo(category), products
     // -------------------------------------------
     const coupons = await Coupon.find(query)
         .sort({ createdAt: -1 })
@@ -1427,7 +1427,7 @@ const getVendorCoupons = asyncHandler(async (req, res) => {
         })
         .populate({
             path: "appliesTo",
-            select: "name"       // 🔥 CATEGORY NAME HERE
+            select: "name"       // 🔥 Only Category Name
         })
         .populate({
             path: "applicableProducts",
@@ -1458,11 +1458,10 @@ const getVendorCoupons = asyncHandler(async (req, res) => {
         startDate: c.startDate,
         expiryDate: c.expiryDate,
 
-        // CATEGORY NAME(S)
-        appliesTo: c.appliesTo?.map(cat => ({
-            id: cat?._id,
-            name: cat?.name
-        })) || [],
+        // CATEGORY NAME ONLY (NO ID)
+        appliesTo: Array.isArray(c.appliesTo)
+            ? c.appliesTo.map(cat => cat.name)
+            : [],
 
         // VENDOR DETAILS
         vendor: {
@@ -1488,6 +1487,7 @@ const getVendorCoupons = asyncHandler(async (req, res) => {
         data: formatted
     });
 });
+
 
 
 
