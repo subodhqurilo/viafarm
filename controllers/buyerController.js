@@ -248,6 +248,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
   const { id } = req.params;
   let { buyerLat, buyerLng } = req.query;
 
+  // Validate product ID
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return res.status(400).json({
       success: false,
@@ -255,10 +256,10 @@ const getProductDetails = asyncHandler(async (req, res) => {
     });
   }
 
-  // Fetch product with vendor + category name
+  // Fetch main product with vendor + category
   const product = await Product.findById(id)
     .populate("vendor", "name address mobileNumber rating location profilePicture vendorDetails")
-    .populate("category", "name image");  // ⭐ Category NAME fetch ho raha hai
+    .populate("category", "name image");
 
   if (!product) {
     return res.status(404).json({
@@ -267,10 +268,12 @@ const getProductDetails = asyncHandler(async (req, res) => {
     });
   }
 
-  // ⭐ CATEGORY NAME FIX
+  // Keep only category name
   const categoryName = product.category?.name || null;
 
-  // Distance calculation
+  // ----------------------------
+  // DISTANCE CALCULATION
+  // ----------------------------
   const getDistanceKm = (lat1, lon1, lat2, lon2) => {
     const toRad = (v) => (v * Math.PI) / 180;
     const R = 6371;
@@ -297,9 +300,9 @@ const getProductDetails = asyncHandler(async (req, res) => {
     );
   };
 
-  // Buyer location fetch
   let buyerHasLocation = false;
 
+  // If buyer location missing, try fetching from user profile
   if ((!buyerLat || !buyerLng) && req.user?._id) {
     const buyer = await User.findById(req.user._id).select("location");
     if (buyer?.location?.coordinates?.length === 2) {
@@ -311,7 +314,6 @@ const getProductDetails = asyncHandler(async (req, res) => {
     buyerHasLocation = true;
   }
 
-  // Distance text
   let distanceText = "Please update your delivery address to view distance.";
 
   if (buyerHasLocation && product.vendor?.location?.coordinates?.length === 2) {
@@ -325,7 +327,10 @@ const getProductDetails = asyncHandler(async (req, res) => {
     distanceText = `${distance.toFixed(2)} km away`;
   }
 
-  // Recommended products FIX
+  // ----------------------------
+  // RECOMMENDED PRODUCTS
+  // ----------------------------
+
   const recQuery = {
     _id: { $ne: product._id },
     status: "In Stock",
@@ -337,19 +342,25 @@ const getProductDetails = asyncHandler(async (req, res) => {
   }
 
   const recommendedProducts = await Product.find(recQuery)
-    .populate("category", "name") // ⭐ Category name included
+    .populate("category", "name")
+    .populate("vendor", "name profilePicture") // ⭐ vendor name added
     .sort({ rating: -1, createdAt: -1 })
     .limit(6)
-    .select("name category price unit quantity images rating status allIndiaDelivery");
+    .select(
+      "name category vendor price unit quantity images rating status allIndiaDelivery"
+    );
 
-  // Final response
+  // ----------------------------
+  // FINAL RESPONSE
+  // ----------------------------
+
   res.status(200).json({
     success: true,
     data: {
       product: {
         _id: product._id,
         name: product.name,
-        category: categoryName,   // ⭐ ONLY NAME
+        category: categoryName,
         variety: product.variety,
         price: product.price,
         quantity: product.quantity,
@@ -387,6 +398,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
     },
   });
 });
+
 
 
 const getCategoriesWithProducts = asyncHandler(async (req, res) => {
