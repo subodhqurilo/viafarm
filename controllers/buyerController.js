@@ -489,26 +489,38 @@ const getFreshAndPopularProducts = asyncHandler(async (req, res) => {
         return R * c;
     };
 
-    const products = await Product.find({ status: 'In Stock' })
-        .populate('vendor', 'name location')
+    const products = await Product.find({ status: "In Stock" })
+        .populate("vendor", "name location")
+        .populate("category", "name")   // ✅ Add category name
         .sort({ rating: -1, createdAt: -1 })
         .limit(10);
 
     const enriched = products.map((p) => {
-        let distanceText = 'N/A';
+        let distanceText = "N/A";
+
         if (p.vendor?.location?.coordinates && buyer?.location?.coordinates) {
             const [vendorLng, vendorLat] = p.vendor.location.coordinates;
             const [buyerLng, buyerLat] = buyer.location.coordinates;
 
-            const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
+            const distance = getDistanceKm(
+                buyerLat,
+                buyerLng,
+                vendorLat,
+                vendorLng
+            );
 
             if (!isNaN(distance)) {
                 distanceText = `${distance.toFixed(2)} km away`;
             }
         }
 
+        const obj = p.toObject();
+
+        // ✅ convert category object → category name only
+        obj.category = obj.category?.name || null;
+
         return {
-            ...p.toObject(),
+            ...obj,
             distance: distanceText,
         };
     });
@@ -519,6 +531,7 @@ const getFreshAndPopularProducts = asyncHandler(async (req, res) => {
         data: enriched,
     });
 });
+
 
 
 function DistanceKm(lat1, lon1, lat2, lon2) {
