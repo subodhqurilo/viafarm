@@ -308,33 +308,53 @@ const getRecentListings = asyncHandler(async (req, res) => {
     const { category, search } = req.query;
 
     let filter = {
-        status: 'In Stock',
+        status: "In Stock",
         vendor: vendorId
     };
 
-    if (category && category !== 'All') {
+    if (category && category !== "All") {
         filter.category = category;
     }
 
     if (search) {
         filter.$or = [
-            { name: { $regex: search, $options: 'i' } },
-            { description: { $regex: search, $options: 'i' } }
+            { name: { $regex: search, $options: "i" } },
+            { description: { $regex: search, $options: "i" } }
         ];
     }
 
     const products = await Product.find(filter)
-        .populate("vendor", "name profilePicture")             // ⭐ Vendor details
-        .populate("category", "name image")                   // ⭐ Category details
+        .populate("vendor", "name profilePicture")
+        .populate("category", "name")   // ⭐ only name
         .sort({ datePosted: -1 })
         .limit(20);
 
+    // ⭐ Format response to remove unwanted fields
+    const formatted = products.map(p => ({
+        id: p._id,
+        name: p.name,
+        description: p.description,
+        price: p.price,
+        quantity: p.quantity,
+        unit: p.unit,
+        images: p.images,
+        status: p.status,
+        vendor: {
+            id: p.vendor?._id,
+            name: p.vendor?.name || "",
+            profilePicture: p.vendor?.profilePicture || ""
+        },
+        category: p.category?.name || "Unknown",   // ⭐ Only name returned
+        datePosted: p.datePosted
+    }));
+
     res.status(200).json({
         success: true,
-        count: products.length,
-        products,
+        count: formatted.length,
+        products: formatted
     });
 });
+
 
 
 
