@@ -1281,17 +1281,10 @@ const getCartItems = asyncHandler(async (req, res) => {
     }
 
     const validItems = cart.items.filter((i) => i.product);
-
-    // ⭐ Cart page ALWAYS uses PICKUP → so no delivery charge
-    const summaryResult = await calculateOrderSummary(
-      cart,
-      cart.couponCode,
-      "pickup" // force no delivery charge
-    );
-
+    const summaryResult = await calculateOrderSummary(cart, cart.couponCode);
     const summary = summaryResult?.summary || emptySummary;
 
-    // ⭐ Fetch buyer for delivery date text only
+    // ✅ Get buyer info for delivery distance logic
     const buyer = await User.findById(userId)
       .select("address location role")
       .lean();
@@ -1299,7 +1292,7 @@ const getCartItems = asyncHandler(async (req, res) => {
     const items = validItems.map((i) => {
       const vendor = i.product.vendor || {};
 
-      // ⭐ Delivery date shown only as estimate (no cost)
+      // ✅ Calculate delivery date based on vendor + buyer
       const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
       const deliveryDateText = deliveryInfo.deliveryText;
 
@@ -1311,7 +1304,7 @@ const getCartItems = asyncHandler(async (req, res) => {
         imageUrl: i.product.images?.[0] || "https://placehold.co/100x100",
         quantity: i.quantity,
         unit: i.product.unit,
-        deliveryText: deliveryDateText,
+        deliveryText: deliveryDateText, // ✅ Dynamic now
         vendor: {
           id: vendor._id,
           name: vendor.name,
@@ -1331,18 +1324,17 @@ const getCartItems = asyncHandler(async (req, res) => {
       };
     });
 
-    // ⭐ Price breakdown (deliveryCharge ALWAYS = 0)
     const priceDetails = {
-      totalMRP: summary.totalMRP,
-      couponDiscount: summary.discount,
-      deliveryCharge: 0,
-      totalAmount: summary.totalAmount, // already no delivery added
+      totalMRP: summary.totalMRP || 0,
+      couponDiscount: summary.discount || 0,
+      deliveryCharge: summary.deliveryCharge || 0,
+      totalAmount: summary.totalAmount || 0,
     };
 
     const formattedSummary = {
       totalMRP: priceDetails.totalMRP,
       couponDiscount: priceDetails.couponDiscount,
-      deliveryCharge: 0,
+      deliveryCharge: priceDetails.deliveryCharge,
       totalAmount: priceDetails.totalAmount,
     };
 
@@ -1362,7 +1354,6 @@ const getCartItems = asyncHandler(async (req, res) => {
       .json({ success: false, message: "Failed to load cart details." });
   }
 });
-
 
 
 
