@@ -618,7 +618,7 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
     })
       .sort({ rating: -1, createdAt: -1 })
       .limit(100)
-      .select("name images vendor price unit rating quantity")
+      .select("name images vendor price unit rating quantity weightPerPiece")
       .populate("vendor", "name status profilePicture location");
 
     // ✅ 6️⃣ Format response with vendor distance + image
@@ -643,6 +643,7 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
           rating: p.rating,
           unit: p.unit,
           quantity: p.quantity,
+          weightPerPiece: p.weightPerPiece
         };
       });
 
