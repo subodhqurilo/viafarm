@@ -1261,64 +1261,90 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
 
 const getAllVendors = asyncHandler(async (req, res) => {
   const { q, category } = req.query;
-  const userId = req.user._id;
+  const userId = req.user._id; 
 
   try {
-    // 🧭 1️⃣ Get buyer location (safe)
+    // 1️⃣ Buyer location
     const buyer = await User.findById(userId).select("location");
-
     const buyerCoords = buyer?.location?.coordinates || [];
-    const latitude = buyerCoords[1] || null;
-    const longitude = buyerCoords[0] || null;
 
-    const locationAvailable = latitude !== null && longitude !== null;
+    let latitude = buyerCoords[1];
+    let longitude = buyerCoords[0];
 
-    // 🟢 2️⃣ Vendor base query
-    let query = { role: "Vendor", status: "Active" };
-
-    // 🔍 Search vendor by name
-    if (q) query.name = { $regex: q, $options: "i" };
-
-    // 🔍 Category filter
-    if (category) {
-      const vendorsWithCategory = await Product.distinct("vendor", {
-        category: { $regex: category, $options: "i" },
-      });
-
-      query._id = { $in: vendorsWithCategory };
+    // 📌 If buyer has no location → API should NOT crash
+    if (!latitude || !longitude) {
+      latitude = null;
+      longitude = null;
     }
 
-    // 🧩 3️⃣ Fetch vendors
+    // 2️⃣ Vendor base query
+    let query = { role: "Vendor", status: "Active" };
+
+    // 🔍 Search
+    if (q) query.name = { $regex: q, $options: "i" };
+
+    // 🔍 Filter vendors by category
+    if (category) {
+      const vendorIds = await Product.distinct("vendor", {
+        category: { $regex: category, $options: "i" }
+      });
+
+      query._id = { $in: vendorIds };
+    }
+
+    // 3️⃣ Fetch vendor list
     const vendors = await User.find(query).select(
-      "name profilePicture location farmImages address"
+      "name profilePicture location vendorDetails farmImages address"
     );
 
-    // 🧮 4️⃣ Add distance + categories
-    const enriched = await Promise.all(
+    // ⭐ HELPER: GET vendor categories by vendorId
+    const getVendorCategories = async (vendorId) => {
+      try {
+        const products = await Product.find({ vendor: vendorId })
+          .populate("category", "name")
+          .select("category");
+
+        if (!products.length) return ["No categories listed"];
+
+        const names = products
+          .map((p) => p.category?.name)
+          .filter(Boolean);
+
+        const unique = [...new Set(names)];
+
+        return unique.length ? unique : ["No categories listed"];
+      } catch (err) {
+        console.log("formatCategories error:", err.message);
+        return ["No categories listed"];
+      }
+    };
+
+    // 4️⃣ Build final vendor objects
+    const enrichedVendors = await Promise.all(
       vendors.map(async (vendor) => {
         let distanceText = "N/A";
-        let distanceVal = null;
+        let distanceValue = null;
 
         if (
-          locationAvailable &&
+          latitude !== null &&
+          longitude !== null &&
           vendor.location?.coordinates?.length === 2
         ) {
-          const [vLng, vLat] = vendor.location.coordinates;
+          const [vendorLng, vendorLat] = vendor.location.coordinates;
 
           const toRad = (v) => (v * Math.PI) / 180;
           const R = 6371;
-          const dLat = toRad(vLat - latitude);
-          const dLon = toRad(vLng - longitude);
+          const dLat = toRad(vendorLat - latitude);
+          const dLon = toRad(vendorLng - longitude);
           const a =
             Math.sin(dLat / 2) ** 2 +
             Math.cos(toRad(latitude)) *
-              Math.cos(toRad(vLat)) *
+              Math.cos(toRad(vendorLat)) *
               Math.sin(dLon / 2) ** 2;
-          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-          const km = (R * c).toFixed(1);
 
-          distanceText = `${km} km away`;
-          distanceVal = parseFloat(km);
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+          distanceValue = +(R * c).toFixed(1);
+          distanceText = `${distanceValue} km away`;
         }
 
         return {
@@ -1333,24 +1359,22 @@ const getAllVendors = asyncHandler(async (req, res) => {
             vendor.address?.city ||
             "Unknown Location",
           distance: distanceText,
-          distanceValue: distanceVal,
-          categories: await formatCategories(vendor._id), // ⭐ FIXED
+          distanceValue: distanceValue || 0,
+          categories: await getVendorCategories(vendor._id), // ⭐ ARRAY OF CATEGORY NAMES
         };
       })
     );
 
-    // 🧹 5️⃣ Sort by nearest vendor if location available
-    const finalList = enriched.sort((a, b) => {
-      if (a.distanceValue === null) return 1;
-      if (b.distanceValue === null) return -1;
-      return a.distanceValue - b.distanceValue;
-    });
+    // 5️⃣ Sort by nearest vendors first
+    enrichedVendors.sort((a, b) => a.distanceValue - b.distanceValue);
 
+    // 6️⃣ Final response
     res.status(200).json({
       success: true,
-      count: finalList.length,
-      vendors: finalList,
+      count: enrichedVendors.length,
+      vendors: enrichedVendors,
     });
+
   } catch (err) {
     console.error("Error fetching vendors:", err);
     res.status(500).json({
@@ -1359,6 +1383,7 @@ const getAllVendors = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
