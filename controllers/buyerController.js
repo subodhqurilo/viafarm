@@ -1261,37 +1261,31 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
 
 const getAllVendors = asyncHandler(async (req, res) => {
   const { q, category } = req.query;
-  const userId = req.user._id; // 👈 buyer’s ID from token (middleware)
+  const userId = req.user._id;
 
   try {
-    // 🧭 1️⃣ Get buyer location
+    // 🧭 1️⃣ Get buyer location (safe)
     const buyer = await User.findById(userId).select("location");
+
     const buyerCoords = buyer?.location?.coordinates || [];
+    const latitude = buyerCoords[1] || null;
+    const longitude = buyerCoords[0] || null;
 
-    const latitude = buyerCoords[1];
-    const longitude = buyerCoords[0];
+    const locationAvailable = latitude !== null && longitude !== null;
 
-    if (!latitude || !longitude) {
-      return res.status(400).json({
-        success: false,
-        message: "Buyer location not found. Please update your address.",
-      });
-    }
-
-    // 🟢 2️⃣ Base query for active vendors
+    // 🟢 2️⃣ Vendor base query
     let query = { role: "Vendor", status: "Active" };
 
-    // 🔍 Search by vendor name
+    // 🔍 Search vendor by name
     if (q) query.name = { $regex: q, $options: "i" };
 
-    // 🔍 Optional category filter
+    // 🔍 Category filter
     if (category) {
       const vendorsWithCategory = await Product.distinct("vendor", {
         category: { $regex: category, $options: "i" },
       });
 
-      const uniqueVendors = [...new Set(vendorsWithCategory.map(String))];
-      query._id = { $in: uniqueVendors };
+      query._id = { $in: vendorsWithCategory };
     }
 
     // 🧩 3️⃣ Fetch vendors
@@ -1299,67 +1293,63 @@ const getAllVendors = asyncHandler(async (req, res) => {
       "name profilePicture location farmImages address"
     );
 
-    // 🧮 4️⃣ Calculate distances
-    const enrichedVendors = await Promise.all(
+    // 🧮 4️⃣ Add distance + categories
+    const enriched = await Promise.all(
       vendors.map(async (vendor) => {
-        let distance = null;
         let distanceText = "N/A";
+        let distanceVal = null;
 
-        if (vendor.location?.coordinates?.length === 2) {
-          const [vendorLng, vendorLat] = vendor.location.coordinates;
+        if (
+          locationAvailable &&
+          vendor.location?.coordinates?.length === 2
+        ) {
+          const [vLng, vLat] = vendor.location.coordinates;
+
           const toRad = (v) => (v * Math.PI) / 180;
-          const R = 6371; // km
-          const dLat = toRad(vendorLat - latitude);
-          const dLon = toRad(vendorLng - longitude);
+          const R = 6371;
+          const dLat = toRad(vLat - latitude);
+          const dLon = toRad(vLng - longitude);
           const a =
             Math.sin(dLat / 2) ** 2 +
             Math.cos(toRad(latitude)) *
-              Math.cos(toRad(vendorLat)) *
+              Math.cos(toRad(vLat)) *
               Math.sin(dLon / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  const distanceKm = (R * c).toFixed(1);
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+          const km = (R * c).toFixed(1);
 
-  distance = `${distanceKm} km away`; // 👈 always a string now
-  distanceText = `${distanceKm} km away`;
-} else {
-  distance = "N/A";
-  distanceText = "N/A";
-}
+          distanceText = `${km} km away`;
+          distanceVal = parseFloat(km);
+        }
 
         return {
           id: vendor._id.toString(),
           name: vendor.name,
           profilePicture:
-            vendor.profilePicture || "https://default-image-url.com/default.png",
+            vendor.profilePicture ||
+            "https://default-image-url.com/default.png",
           farmImages: vendor.farmImages || [],
           locationText:
             vendor.address?.locality ||
             vendor.address?.city ||
             "Unknown Location",
-          distance,
-          distanceText,
-          categories: await formatCategories(vendor._id),
+          distance: distanceText,
+          distanceValue: distanceVal,
+          categories: await formatCategories(vendor._id), // ⭐ FIXED
         };
       })
     );
 
-    // 🧹 Remove duplicate vendors (safety)
-    const uniqueList = enrichedVendors.filter(
-      (v, i, self) => i === self.findIndex((x) => x.id === v.id)
-    );
-
-    // 📏 Sort by nearest first
-    uniqueList.sort((a, b) => {
-      if (a.distance === null) return 1;
-      if (b.distance === null) return -1;
-      return a.distance - b.distance;
+    // 🧹 5️⃣ Sort by nearest vendor if location available
+    const finalList = enriched.sort((a, b) => {
+      if (a.distanceValue === null) return 1;
+      if (b.distanceValue === null) return -1;
+      return a.distanceValue - b.distanceValue;
     });
 
-    // ✅ 5️⃣ Response
     res.status(200).json({
       success: true,
-      count: uniqueList.length,
-      vendors: uniqueList,
+      count: finalList.length,
+      vendors: finalList,
     });
   } catch (err) {
     console.error("Error fetching vendors:", err);
@@ -1369,6 +1359,7 @@ const getAllVendors = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
