@@ -1031,7 +1031,6 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
   try {
     const buyerId = req.user?._id;
 
-    // 🧭 1️⃣ Ensure user is logged in
     if (!buyerId) {
       return res.status(401).json({
         success: false,
@@ -1039,7 +1038,6 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
       });
     }
 
-    // 📍 2️⃣ Get buyer’s location (from profile)
     const buyer = await User.findById(buyerId).select("location");
     const buyerCoords = buyer?.location?.coordinates;
 
@@ -1051,20 +1049,17 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
     }
 
     const [buyerLng, buyerLat] = buyerCoords.map(Number);
-    console.log("📍 Buyer Location:", buyerLat, buyerLng);
 
-    // 📏 3️⃣ Get maxDistance from query (default = 50 km)
     const maxDistanceKm = parseFloat(req.query.maxDistance) || 50;
     const maxDistanceMeters = maxDistanceKm * 1000;
 
-    // 🧮 4️⃣ Find nearby vendors with $geoNear
     const vendors = await User.aggregate([
       {
         $geoNear: {
           near: { type: "Point", coordinates: [buyerLng, buyerLat] },
           distanceField: "distanceMeters",
           spherical: true,
-          maxDistance: maxDistanceMeters, // ✅ apply limit here
+          maxDistance: maxDistanceMeters,
           query: { role: "Vendor", status: "Active" },
         },
       },
@@ -1083,32 +1078,49 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
       },
     ]);
 
-    if (!vendors || vendors.length === 0) {
+    if (!vendors.length) {
       return res.status(404).json({
         success: false,
         message: `No vendors found within ${maxDistanceKm} km.`,
       });
     }
 
-    // 🧩 5️⃣ Add categories & format distances
+    // ⭐⭐ FIXED: Fetch vendor categories properly
     const enrichedVendors = await Promise.all(
-      vendors.map(async (v) => ({
-        id: v._id,
-        name: v.name,
-        profilePicture:
-          v.profilePicture ||
-          "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
-        distance: `${v.distanceKm.toFixed(1)} km away`,
-        distanceValue: parseFloat(v.distanceKm.toFixed(1)),
-        categories: await formatCategories(v._id),
-        deliveryRegion: v.vendorDetails?.deliveryRegion || 0,
-      }))
+      vendors.map(async (v) => {
+        const products = await Product.find({
+          vendor: v._id,
+          status: "In Stock"
+        })
+          .select("category")
+          .populate("category", "name");
+
+        // Extract category names
+        const categoryNames = [
+          ...new Set(
+            products
+              .map((p) => p.category?.name)
+              .filter(Boolean)
+          )
+        ];
+
+        return {
+          id: v._id,
+          name: v.name,
+          profilePicture:
+            v.profilePicture ||
+            "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
+          distance: `${v.distanceKm.toFixed(1)} km away`,
+          distanceValue: parseFloat(v.distanceKm.toFixed(1)),
+          categories:
+            categoryNames.length ? categoryNames : "No categories listed",
+          deliveryRegion: v.vendorDetails?.deliveryRegion || 0,
+        };
+      })
     );
 
-    // ✅ 6️⃣ Sort nearest first
     enrichedVendors.sort((a, b) => a.distanceValue - b.distanceValue);
 
-    // 📤 7️⃣ Response
     return res.status(200).json({
       success: true,
       count: enrichedVendors.length,
@@ -1128,6 +1140,7 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
