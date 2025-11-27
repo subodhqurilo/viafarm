@@ -952,9 +952,9 @@ const getSmartPicks = asyncHandler(async (req, res) => {
             quantity: p.quantity,
 
             // ⭐ CATEGORY INFO ADDED
-            categoryId: p.category?._id || null,
-            categoryName: p.category?.name || null,
-            categoryImage: p.category?.image || null,
+            // categoryId: p.category?._id || null,
+            category: p.category?.name || null,
+            // categoryImage: p.category?.image || null,
 
             vendorId: p.vendor?._id,
             vendorName: p.vendor?.name || "Unknown Vendor",
