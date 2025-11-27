@@ -1390,16 +1390,17 @@ const getAllVendors = asyncHandler(async (req, res) => {
 
 // 🛒 GET CART ITEMS
 const getCartItems = asyncHandler(async (req, res) => {
-  const userId = req.user._id;
-
-  const emptySummary = {
-    totalMRP: 0,
-    discount: 0,
-    deliveryCharge: 0,
-    totalAmount: 0,
-  };
-
   try {
+    const userId = req.user._id;
+
+    const emptySummary = {
+      totalMRP: 0,
+      couponDiscount: 0,
+      totalAmount: 0,
+      deliveryCharge: 0, // always 0 (not used)
+    };
+
+    // FETCH CART
     const cart = await Cart.findOne({ user: userId })
       .populate({
         path: "items.product",
@@ -1425,20 +1426,50 @@ const getCartItems = asyncHandler(async (req, res) => {
     }
 
     const validItems = cart.items.filter((i) => i.product);
-    const summaryResult = await calculateOrderSummary(cart, cart.couponCode);
-    const summary = summaryResult?.summary || emptySummary;
 
-    // ✅ Get buyer info for delivery distance logic
+    // BUYER INFO
     const buyer = await User.findById(userId)
       .select("address location role")
       .lean();
 
+    // ------------------------------------------------
+    // 1️⃣ CALCULATE TOTAL MRP
+    // ------------------------------------------------
+    let totalMRP = 0;
+    validItems.forEach((i) => {
+      totalMRP += i.product.price * i.quantity;
+    });
+
+    // ------------------------------------------------
+    // 2️⃣ CALCULATE COUPON DISCOUNT
+    // ------------------------------------------------
+    let couponDiscount = 0;
+
+    if (cart.couponCode) {
+      const coupon = await Coupon.findOne({ code: cart.couponCode }).lean();
+
+      if (coupon) {
+        if (coupon.discount.type === "Percentage") {
+          couponDiscount = (totalMRP * coupon.discount.value) / 100;
+        } else {
+          couponDiscount = coupon.discount.value;
+        }
+
+        couponDiscount = Math.min(couponDiscount, totalMRP);
+      }
+    }
+
+    // ------------------------------------------------
+    // 3️⃣ FINAL TOTAL (NO DELIVERY CHARGE)
+    // ------------------------------------------------
+    const totalAmount = totalMRP - couponDiscount;
+
+    // ------------------------------------------------
+    // 4️⃣ FORMAT ITEMS
+    // ------------------------------------------------
     const items = validItems.map((i) => {
       const vendor = i.product.vendor || {};
-
-      // ✅ Calculate delivery date based on vendor + buyer
       const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
-      const deliveryDateText = deliveryInfo.deliveryText;
 
       return {
         id: i.product._id,
@@ -1448,7 +1479,8 @@ const getCartItems = asyncHandler(async (req, res) => {
         imageUrl: i.product.images?.[0] || "https://placehold.co/100x100",
         quantity: i.quantity,
         unit: i.product.unit,
-        deliveryText: deliveryDateText, // ✅ Dynamic now
+        deliveryText: deliveryInfo.deliveryText,
+
         vendor: {
           id: vendor._id,
           name: vendor.name,
@@ -1468,36 +1500,39 @@ const getCartItems = asyncHandler(async (req, res) => {
       };
     });
 
-    const priceDetails = {
-      totalMRP: summary.totalMRP || 0,
-      couponDiscount: summary.discount || 0,
-      deliveryCharge: summary.deliveryCharge || 0,
-      totalAmount: summary.totalAmount || 0,
+    // ------------------------------------------------
+    // 5️⃣ SUMMARY (NO DELIVERY CHARGE)
+    // ------------------------------------------------
+    const summary = {
+      totalMRP,
+      couponDiscount,
+      deliveryCharge: 0,
+      totalAmount,
     };
 
-    const formattedSummary = {
-      totalMRP: priceDetails.totalMRP,
-      couponDiscount: priceDetails.couponDiscount,
-      deliveryCharge: priceDetails.deliveryCharge,
-      totalAmount: priceDetails.totalAmount,
-    };
+    const priceDetails = summary;
 
+    // ------------------------------------------------
+    // 6️⃣ RESPONSE
+    // ------------------------------------------------
     res.json({
       success: true,
       data: {
         items,
-        summary: formattedSummary,
+        summary,
         priceDetails,
         couponCode: cart.couponCode || "",
       },
     });
   } catch (error) {
     console.error("❌ getCartItems error:", error);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to load cart details." });
+    res.status(500).json({
+      success: false,
+      message: "Failed to load cart details.",
+    });
   }
 });
+
 
 
 
