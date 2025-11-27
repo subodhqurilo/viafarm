@@ -544,6 +544,121 @@ const getFreshAndPopularProducts = asyncHandler(async (req, res) => {
     });
 });
 
+const getFreshAndPopularVendors = asyncHandler(async (req, res) => {
+    const buyerId = req.user._id;
+
+    // 🧭 1️⃣ Fetch buyer location
+    const buyer = await User.findById(buyerId).select("location");
+    if (!buyer || !buyer.location?.coordinates?.length) {
+        return res.status(400).json({
+            success: false,
+            message: "Buyer location not found. Please update your address.",
+        });
+    }
+
+    const [buyerLng, buyerLat] = buyer.location.coordinates;
+
+    // 📏 Distance helper
+    const getDistanceKm = (lat1, lon1, lat2, lon2) => {
+        const toRad = (v) => (v * Math.PI) / 180;
+        const R = 6371;
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+        const a =
+            Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(lat1)) *
+                Math.cos(toRad(lat2)) *
+                Math.sin(dLon / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    };
+
+    // 🟢 2️⃣ Get ALL Fresh + Popular products
+    const products = await Product.find({ status: "In Stock" })
+        .populate("vendor", "name profilePicture location vendorDetails")
+        .populate("category", "name")
+        .sort({ rating: -1, createdAt: -1 })
+        .limit(100); // fetch more, we will filter later
+
+    if (!products.length) {
+        return res.status(404).json({
+            success: false,
+            message: "No fresh or popular products found.",
+        });
+    }
+
+    // 🟢 3️⃣ Group products by vendor
+    const mapVendor = {};
+
+    for (const p of products) {
+        if (!p.vendor) continue;
+        const vId = p.vendor._id.toString();
+
+        if (!mapVendor[vId]) {
+            // initialize vendor
+            mapVendor[vId] = {
+                id: vId,
+                name: p.vendor.name,
+                profilePicture:
+                    p.vendor.profilePicture ||
+                    "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
+                distance: "N/A",
+                distanceValue: 9999,
+                categories: new Set(),
+                topProducts: [],
+            };
+
+            // calculate distance once per vendor
+            if (p.vendor.location?.coordinates?.length === 2) {
+                const [vLng, vLat] = p.vendor.location.coordinates;
+                const dist = getDistanceKm(
+                    buyerLat,
+                    buyerLng,
+                    vLat,
+                    vLng
+                );
+
+                mapVendor[vId].distance = `${dist.toFixed(2)} km away`;
+                mapVendor[vId].distanceValue = parseFloat(dist.toFixed(2));
+            }
+        }
+
+        // add category
+        if (p.category?.name) {
+            mapVendor[vId].categories.add(p.category.name);
+        }
+
+        // add product to top list
+        mapVendor[vId].topProducts.push({
+            id: p._id,
+            name: p.name,
+            price: p.price,
+            unit: p.unit,
+            rating: p.rating,
+            image: p.images?.[0] || null,
+            category: p.category?.name || null,
+        });
+    }
+
+    // 🟢 4️⃣ Convert map -> array
+    let vendors = Object.values(mapVendor);
+
+    // limit top 5 fresh/popular products per vendor
+    vendors = vendors.map((v) => ({
+        ...v,
+        categories: [...v.categories], // Set → array
+        topProducts: v.topProducts.slice(0, 5),
+    }));
+
+    // 🟢 5️⃣ Sort by distance (nearest vendor first)
+    vendors.sort((a, b) => a.distanceValue - b.distanceValue);
+
+    // 🟢 6️⃣ Response
+    return res.status(200).json({
+        success: true,
+        count: vendors.length,
+        vendors,
+    });
+});
 
 
 function DistanceKm(lat1, lon1, lat2, lon2) {
@@ -4944,7 +5059,7 @@ module.exports = {
     reorder,
     getBuyerProfile,
     updateBuyerProfile,
-    logout,
+    logout,getFreshAndPopularVendors,
     getOrderDetails,getProductsByVariety ,
     setDefaultAddress, deleteAddress, getProductById,
     updateBuyerLocation, addToWishlist, getAllVendors, getVendorsByProductName, getProductsByName, updateAddress,

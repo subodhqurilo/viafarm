@@ -5,7 +5,7 @@ const { authMiddleware, authorizeRoles } = require('../middleware/authMiddleware
 // Get all exported controllers from the buyerController file
 const { 
     getBuyerProfile, updateBuyerProfile, updateBuyerLocation, updateBuyerLanguage, getWishlist, addToWishlist, getBuyerOrders, removeFromWishlist, getProductsByVariety ,
-    getStaticPageContent, writeReview, getCartItems, addItemToCart, removeItemFromCart, updateCartItemQuantity, placeOrder,updateAddress,deleteAddress,
+    getStaticPageContent, writeReview, getCartItems, addItemToCart, removeItemFromCart, updateCartItemQuantity, placeOrder,updateAddress,deleteAddress,getFreshAndPopularVendors,
     reorder, getReviewsForProduct, updateReview, deleteReview, applyCouponToCart,getAllVendors,searchAllProducts,getProductsByVendorId,getProductById,
     getOrderDetails, startCheckout, getHighlightedCoupon, getPickupLocationDetails, selectPickupSlot,getProductsByName,getPickupLocationDetailsPost,getCategoriesWithProducts,
     verifyPayment, getProductsByCategory, getVendorProfileForBuyer, getProductReviews, getAvailableCouponsForBuyer, getCouponsByProductId,getDonationsReceived,
@@ -44,6 +44,8 @@ router.get('/public/product/:id', getProductById);
 router.get('/products/:id', getProductDetails); // Path clearer
 
 router.get('/fresh-and-popular', getFreshAndPopularProducts);
+router.get('/fresh-and-vendor', getFreshAndPopularVendors);
+
 router.get('/all-around-india', getAllAroundIndiaProducts);
 router.get('/smart-picks', getSmartPicks);
 
