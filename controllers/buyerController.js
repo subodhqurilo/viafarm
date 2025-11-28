@@ -1392,99 +1392,144 @@ const getAllVendors = asyncHandler(async (req, res) => {
 // 🛒 GET CART ITEMS
 // GET CART WITHOUT DELIVERY CHARGE
 const getCartItems = asyncHandler(async (req, res) => {
-  const userId = req.user._id;
+  try {
+    const userId = req.user._id;
 
-  const cart = await Cart.findOne({ user: userId })
-    .populate({
-      path: "items.product",
-      select: "name price variety images unit vendor category weightPerPiece",
-      populate: [
-        { path: "category", select: "name" },
-        {
-          path: "vendor",
-          select:
-            "name mobileNumber email upiId address vendorDetails profilePicture location status"
+    const emptySummary = {
+      totalMRP: 0,
+      couponDiscount: 0,
+      deliveryCharge: 0,
+      totalAmount: 0,
+    };
+
+    // ---------------- FETCH CART ----------------
+    const cart = await Cart.findOne({ user: userId })
+      .populate({
+        path: "items.product",
+        select: "name price variety images unit vendor category weightPerPiece",
+        populate: [
+          { path: "category", select: "name" },
+          {
+            path: "vendor",
+            select:
+              "name mobileNumber email upiId address vendorDetails profilePicture location status",
+          },
+        ],
+      })
+      .lean();
+
+    if (!cart || !cart.items.length) {
+      return res.json({
+        success: true,
+        data: {
+          items: [],
+          summary: emptySummary,
+          priceDetails: emptySummary,
+          couponCode: "",
+        },
+      });
+    }
+
+    // ---------------- BUYER INFO ----------------
+    const buyer = await User.findById(userId)
+      .select("address location")
+      .lean();
+
+    const validItems = [];
+
+    for (const i of cart.items) {
+      if (!i.product) continue;
+
+      const p = i.product;
+      const vendor = p.vendor || {};
+
+      // ---------------- ESTIMATED DELIVERY ----------------
+      const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
+
+      validItems.push({
+        id: p._id,
+        name: p.name,
+        subtitle: p.variety || "",
+        mrp: p.price,
+        imageUrl: p.images?.[0] || "https://placehold.co/100x100",
+        quantity: i.quantity,
+        unit: p.unit || "",
+        category: p.category?.name || "",
+        deliveryText: deliveryInfo.deliveryText,
+
+        vendor: {
+          id: vendor._id,
+          name: vendor.name,
+          mobileNumber: vendor.mobileNumber,
+          email: vendor.email,
+          upiId: vendor.upiId,
+          contactNo: vendor.vendorDetails?.contactNo,
+          about: vendor.vendorDetails?.about,
+          location: vendor.vendorDetails?.location,
+          deliveryRegion: vendor.vendorDetails?.deliveryRegion,
+          totalOrders: vendor.vendorDetails?.totalOrders,
+          profilePicture: vendor.profilePicture,
+          address: vendor.address || {},
+          geoLocation: vendor.location?.coordinates || [0, 0],
+          status: vendor.status,
+        },
+      });
+    }
+
+    // ---------------- SUMMARY ----------------
+    let totalMRP = 0;
+
+    validItems.forEach((i) => {
+      totalMRP += i.mrp * i.quantity;
+    });
+
+    let couponDiscount = 0;
+
+    // If coupon applied — calculate simple discount (same as old)
+    if (cart.couponCode) {
+      const coupon = await Coupon.findOne({ code: cart.couponCode }).lean();
+
+      if (coupon) {
+        if (coupon.discount.type === "Percentage") {
+          couponDiscount = (totalMRP * coupon.discount.value) / 100;
+        } else {
+          couponDiscount = coupon.discount.value;
         }
-      ]
-    })
-    .lean();
 
-  if (!cart || !cart.items.length) {
+        if (couponDiscount > totalMRP) couponDiscount = totalMRP;
+      }
+    }
+
+    const totalAmount = totalMRP - couponDiscount;
+
+    const summary = {
+      totalMRP,
+      couponDiscount,
+      deliveryCharge: 0, // same logic
+      totalAmount,
+    };
+
+    const priceDetails = summary;
+
+    // ---------------- RESPONSE (OLD FORMAT) ----------------
     return res.json({
       success: true,
-      items: [],
-      summary: {
-        totalMRP: 0,
-        couponDiscount: 0,
-        deliveryCharge: 0,
-        totalAmount: 0
-      }
+      data: {
+        items: validItems,
+        summary,
+        priceDetails,
+        couponCode: cart.couponCode || "",
+      },
+    });
+  } catch (error) {
+    console.error("❌ getCartItems error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to load cart details.",
     });
   }
-
-  // ---------------- BUYER INFO (for delivery ETA) ----------------
-  const buyer = await User.findById(userId)
-    .select("address location")
-    .lean();
-
-  const validItems = [];
-
-  for (const i of cart.items) {
-    if (!i.product) continue;
-
-    const p = i.product;
-    const vendor = p.vendor || {};
-
-    // ------ ESTIMATED DELIVERY ------
-    const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
-    const estimatedDelivery = deliveryInfo.deliveryText;
-
-    validItems.push({
-      id: p._id,
-      name: p.name,
-      variety: p.variety || "",
-      category: p.category?.name || "",
-      mrp: p.price,
-      unit: p.unit || "",
-      imageUrl: p.images?.[0] || "https://placehold.co/100x100",
-      quantity: i.quantity,
-
-      deliveryText: estimatedDelivery,
-
-      vendor: {
-        id: vendor._id,
-        name: vendor.name,
-        email: vendor.email,
-        mobileNumber: vendor.mobileNumber,
-        profilePicture: vendor.profilePicture,
-        status: vendor.status,
-        upiId: vendor.upiId,
-        address: vendor.address,
-        vendorDetails: vendor.vendorDetails || {},
-        geoLocation: vendor.location?.coordinates || [0, 0]
-      }
-    });
-  }
-
-  // ---------------- SUMMARY ----------------
-  const totalMRP = validItems.reduce(
-    (sum, item) => sum + item.mrp * item.quantity,
-    0
-  );
-
-  const summary = {
-    totalMRP,
-    couponDiscount: 0,
-    deliveryCharge: 0, // always 0 here
-    totalAmount: totalMRP
-  };
-
-  res.json({
-    success: true,
-    items: validItems,
-    summary
-  });
 });
+
 
 
 
