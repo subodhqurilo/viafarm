@@ -1844,7 +1844,7 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
 
     const query = {};
 
-    // 🔍 Filter by search text
+    // 🔍 Filter by search
     if (q.trim()) {
         query.code = { $regex: q.trim(), $options: "i" };
     }
@@ -1862,10 +1862,7 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
     // 📌 Fetch + Populate
     const coupons = await Coupon.find(query)
         .sort({ createdAt: -1 })
-        .populate({
-            path: "appliesTo",
-            select: "name" // category name
-        })
+        .populate({ path: "appliesTo", select: "name" })
         .populate({
             path: "applicableProducts",
             select: "name price images category vendor",
@@ -1879,58 +1876,66 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
             select: "name email role"
         });
 
-    // 🎯 Format clean response
-    const formatted = coupons.map(c => {
-        // 🔥 FIX appliesTo output (same logic as vendor API)
-        let appliesToResult = [];
+    // 📌 Current Time
+    const now = new Date();
 
-        if (typeof c.appliesTo === "string" && c.appliesTo.trim() !== "") {
-            appliesToResult = [c.appliesTo];
-        }
-        else if (Array.isArray(c.appliesTo) && c.appliesTo.length > 0) {
-            appliesToResult = c.appliesTo.map(a => a?.name).filter(Boolean);
-        }
-        else {
-            const autoCategories = [
-                ...new Set(
-                    c.applicableProducts.map(p => p.category?.name).filter(Boolean)
-                )
-            ];
+    // 🎯 Format clean response + auto status update
+    const formatted = await Promise.all(
+        coupons.map(async c => {
+            let updatedStatus = c.status;
 
-            appliesToResult = autoCategories.length > 0 ? autoCategories : ["All Products"];
-        }
+            // 🔥 AUTO EXPIRE COUPON (expiryDate < now)
+            if (c.expiryDate && c.expiryDate < now && c.status !== "Expired") {
+                updatedStatus = "Expired";
+                await Coupon.findByIdAndUpdate(c._id, { status: "Expired" });
+            }
 
-        return {
-            id: c._id,
-            code: c.code,
-            discount: c.discount,
-            minimumOrder: c.minimumOrder,
-            totalUsageLimit: c.totalUsageLimit,
-            usageLimitPerUser: c.usageLimitPerUser,
-            usedCount: c.usedCount,
-            status: c.status,
-            startDate: c.startDate,
-            expiryDate: c.expiryDate,
+            // 🔥 FIX appliesTo output
+            let appliesToResult = [];
+            if (Array.isArray(c.appliesTo) && c.appliesTo.length > 0) {
+                appliesToResult = c.appliesTo.map(a => a?.name).filter(Boolean);
+            } else {
+                const autoCategories = [
+                    ...new Set(
+                        c.applicableProducts.map(p => p.category?.name).filter(Boolean)
+                    )
+                ];
 
-            appliesTo: appliesToResult,
+                appliesToResult = autoCategories.length > 0 ? autoCategories : ["All Products"];
+            }
 
-            createdBy: {
-                id: c.createdBy?._id,
-                name: c.createdBy?.name,
-                email: c.createdBy?.email,
-                role: c.createdBy?.role,
-            },
+            return {
+                id: c._id,
+                code: c.code,
+                discount: c.discount,
+                minimumOrder: c.minimumOrder,
+                totalUsageLimit: c.totalUsageLimit,
+                usageLimitPerUser: c.usageLimitPerUser,
+                usedCount: c.usedCount,
+                status: updatedStatus,
+                startDate: c.startDate,
+                expiryDate: c.expiryDate,
 
-            products: c.applicableProducts.map(p => ({
-                id: p._id,
-                name: p.name,
-                price: p.price,
-                image: p.images?.[0] || null,
-                categoryName: p.category?.name || "No Category",
-                vendorName: p.vendor?.name || "No Vendor"
-            }))
-        };
-    });
+                appliesTo: appliesToResult,
+
+                createdBy: {
+                    id: c.createdBy?._id,
+                    name: c.createdBy?.name,
+                    email: c.createdBy?.email,
+                    role: c.createdBy?.role,
+                },
+
+                products: c.applicableProducts.map(p => ({
+                    id: p._id,
+                    name: p.name,
+                    price: p.price,
+                    image: p.images?.[0] || null,
+                    categoryName: p.category?.name || "No Category",
+                    vendorName: p.vendor?.name || "No Vendor"
+                }))
+            };
+        })
+    );
 
     return res.status(200).json({
         success: true,
@@ -1938,6 +1943,7 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
         data: formatted
     });
 });
+
 
 
 const updateCoupon = asyncHandler(async (req, res) => {
