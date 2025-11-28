@@ -1854,15 +1854,18 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
         query.status = status;
     }
 
-    // 🔒 Vendors only see their own coupons
+    // 🔒 Vendors see their own coupons
     if (user.role === "vendor") {
         query.createdBy = user._id;
     }
 
-    // 📌 Fetch + Populate
+    // 📌 Fetch & Populate
     const coupons = await Coupon.find(query)
         .sort({ createdAt: -1 })
-        .populate({ path: "appliesTo", select: "name" })
+        .populate({
+            path: "appliesTo",
+            select: "name"
+        })
         .populate({
             path: "applicableProducts",
             select: "name price images category vendor",
@@ -1876,32 +1879,37 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
             select: "name email role"
         });
 
-    // 📌 Current Time
     const now = new Date();
 
-    // 🎯 Format clean response + auto status update
     const formatted = await Promise.all(
-        coupons.map(async c => {
+        coupons.map(async (c) => {
             let updatedStatus = c.status;
 
-            // 🔥 AUTO EXPIRE COUPON (expiryDate < now)
+            // ⏳ Auto Expire
             if (c.expiryDate && c.expiryDate < now && c.status !== "Expired") {
                 updatedStatus = "Expired";
                 await Coupon.findByIdAndUpdate(c._id, { status: "Expired" });
             }
 
-            // 🔥 FIX appliesTo output
+            // ⭐⭐⭐ OLD appliesTo LOGIC EXACTLY SAME ⭐⭐⭐
             let appliesToResult = [];
-            if (Array.isArray(c.appliesTo) && c.appliesTo.length > 0) {
+
+            if (typeof c.appliesTo === "string" && c.appliesTo.trim() !== "") {
+                appliesToResult = [c.appliesTo];
+            }
+            else if (Array.isArray(c.appliesTo) && c.appliesTo.length > 0) {
                 appliesToResult = c.appliesTo.map(a => a?.name).filter(Boolean);
-            } else {
+            }
+            else {
                 const autoCategories = [
                     ...new Set(
                         c.applicableProducts.map(p => p.category?.name).filter(Boolean)
                     )
                 ];
 
-                appliesToResult = autoCategories.length > 0 ? autoCategories : ["All Products"];
+                appliesToResult = autoCategories.length > 0
+                    ? autoCategories
+                    : ["All Products"];
             }
 
             return {
@@ -1916,7 +1924,7 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
                 startDate: c.startDate,
                 expiryDate: c.expiryDate,
 
-                appliesTo: appliesToResult,
+                appliesTo: appliesToResult, // ⭐ OLD RESULT ⭐
 
                 createdBy: {
                     id: c.createdBy?._id,
@@ -1925,7 +1933,7 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
                     role: c.createdBy?.role,
                 },
 
-                products: c.applicableProducts.map(p => ({
+                products: c.applicableProducts.map((p) => ({
                     id: p._id,
                     name: p.name,
                     price: p.price,
@@ -1943,6 +1951,7 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
         data: formatted
     });
 });
+
 
 
 
