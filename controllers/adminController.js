@@ -1745,7 +1745,6 @@ const createCoupon = asyncHandler(async (req, res) => {
       startDate,
       expiryDate,
       appliesTo = [],
-      applicableProducts = [],
     } = req.body;
 
     // 1️⃣ Required fields validate
@@ -1759,7 +1758,10 @@ const createCoupon = asyncHandler(async (req, res) => {
     // 2️⃣ Duplicate code check
     const existingCoupon = await Coupon.findOne({ code: code.toUpperCase() });
     if (existingCoupon) {
-      return res.status(400).json({ success: false, message: "Coupon code already exists." });
+      return res.status(400).json({
+        success: false,
+        message: "Coupon code already exists.",
+      });
     }
 
     // 3️⃣ Validate date range
@@ -1771,7 +1773,7 @@ const createCoupon = asyncHandler(async (req, res) => {
     }
 
     // ============================================================
-    // 🔥 4️⃣ CATEGORY NAME / ID → Convert appliesTo to ObjectIds
+    // 4️⃣ CATEGORY NAME / ID → Convert appliesTo to ObjectIds
     // ============================================================
 
     let finalCategoryIds = [];
@@ -1782,7 +1784,7 @@ const createCoupon = asyncHandler(async (req, res) => {
           { _id: { $in: appliesTo.filter(id => mongoose.Types.ObjectId.isValid(id)) } },
           { name: { $in: appliesTo } }
         ]
-      }).select("_id name");
+      }).select("_id");
 
       if (categories.length === 0) {
         return res.status(400).json({
@@ -1792,12 +1794,26 @@ const createCoupon = asyncHandler(async (req, res) => {
       }
 
       finalCategoryIds = categories.map(c => c._id);
-    } else {
-      finalCategoryIds = []; // Empty means "All Products"
     }
 
     // ============================================================
-    // 5️⃣ CREATE COUPON
+    // 🔥 5️⃣ FETCH ALL PRODUCTS FROM THESE CATEGORIES (ALL VENDORS)
+    // ============================================================
+
+    let allProducts = [];
+
+    if (finalCategoryIds.length > 0) {
+      // Specific categories
+      allProducts = await Product.find({ category: { $in: finalCategoryIds } }).select("_id");
+    } else {
+      // If no categories selected → All products
+      allProducts = await Product.find().select("_id");
+    }
+
+    const productIds = allProducts.map(p => p._id);
+
+    // ============================================================
+    // 6️⃣ CREATE COUPON
     // ============================================================
 
     const newCoupon = await Coupon.create({
@@ -1808,21 +1824,15 @@ const createCoupon = asyncHandler(async (req, res) => {
       totalUsageLimit,
       startDate,
       expiryDate,
-      appliesTo: finalCategoryIds,     // << FIXED
-      applicableProducts,
+      appliesTo: finalCategoryIds,
+      applicableProducts: productIds,  // 🔥 Auto-apply to ALL vendor products
       vendor: null,
       createdBy: adminId,
     });
 
-    // ============================================================
-    // 6️⃣ SEND NOTIFICATIONS (Already Correct)
-    // ============================================================
-
-    // ... your existing socket / expo code remains same here ...
-
     res.status(201).json({
       success: true,
-      message: "Coupon created and notifications sent to all users.",
+      message: "Coupon created for selected categories for ALL vendors.",
       data: newCoupon,
     });
 
@@ -1838,13 +1848,14 @@ const createCoupon = asyncHandler(async (req, res) => {
 
 
 
+
 const getAdminCoupons = asyncHandler(async (req, res) => {
     const { q = "", status } = req.query;
     const user = req.user || {};
 
     const query = {};
 
-    // 🔍 Filter by search
+    // 🔍 Filter by search text
     if (q.trim()) {
         query.code = { $regex: q.trim(), $options: "i" };
     }
@@ -1854,17 +1865,19 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
         query.status = status;
     }
 
-    // 🔒 Vendors see their own coupons
+    // 🔒 Vendor → only see their own coupons
     if (user.role === "vendor") {
         query.createdBy = user._id;
     }
 
-    // 📌 Fetch & Populate
+    // ⭐ Admin → sees ALL coupons automatically
+
+    // 📌 Fetch + Populate
     const coupons = await Coupon.find(query)
         .sort({ createdAt: -1 })
         .populate({
             path: "appliesTo",
-            select: "name"
+            select: "name"  // return category name
         })
         .populate({
             path: "applicableProducts",
@@ -1885,31 +1898,21 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
         coupons.map(async (c) => {
             let updatedStatus = c.status;
 
-            // ⏳ Auto Expire
+            // ⏳ AUTO MARK EXPIRED
             if (c.expiryDate && c.expiryDate < now && c.status !== "Expired") {
                 updatedStatus = "Expired";
                 await Coupon.findByIdAndUpdate(c._id, { status: "Expired" });
             }
 
-            // ⭐⭐⭐ OLD appliesTo LOGIC EXACTLY SAME ⭐⭐⭐
+            // ⭐⭐⭐ FINAL appliesTo LOGIC (CATEGORY NAMES) ⭐⭐⭐
             let appliesToResult = [];
 
-            if (typeof c.appliesTo === "string" && c.appliesTo.trim() !== "") {
-                appliesToResult = [c.appliesTo];
-            }
-            else if (Array.isArray(c.appliesTo) && c.appliesTo.length > 0) {
-                appliesToResult = c.appliesTo.map(a => a?.name).filter(Boolean);
-            }
-            else {
-                const autoCategories = [
-                    ...new Set(
-                        c.applicableProducts.map(p => p.category?.name).filter(Boolean)
-                    )
-                ];
-
-                appliesToResult = autoCategories.length > 0
-                    ? autoCategories
-                    : ["All Products"];
+            if (Array.isArray(c.appliesTo) && c.appliesTo.length > 0) {
+                // Always return category names
+                appliesToResult = c.appliesTo.map(cat => cat?.name).filter(Boolean);
+            } else {
+                // If no category selected → All products
+                appliesToResult = ["All Products"];
             }
 
             return {
@@ -1924,7 +1927,7 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
                 startDate: c.startDate,
                 expiryDate: c.expiryDate,
 
-                appliesTo: appliesToResult, // ⭐ OLD RESULT ⭐
+                appliesTo: appliesToResult,
 
                 createdBy: {
                     id: c.createdBy?._id,
@@ -1955,9 +1958,11 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
 
 
 
+
+
 const updateCoupon = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const updates = { ...req.body };
+  let updates = { ...req.body };
 
   // 1️⃣ Validate coupon ID
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -1974,30 +1979,7 @@ const updateCoupon = asyncHandler(async (req, res) => {
   // 3️⃣ Uppercase coupon code
   if (updates.code) updates.code = updates.code.toUpperCase();
 
-  // 4️⃣ Validate appliesTo
-  if (updates.appliesTo) {
-    const validCategories = [
-      "All Products",
-      "Fruits",
-      "Vegetables",
-      "Plants",
-      "Seeds",
-      "Handicrafts",
-    ];
-
-    const invalid = updates.appliesTo.filter(
-      (cat) => !validCategories.includes(cat)
-    );
-
-    if (invalid.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid category: ${invalid.join(", ")}`,
-      });
-    }
-  }
-
-  // 5️⃣ Validate date range
+  // 4️⃣ Validate date range
   if (updates.startDate && updates.expiryDate) {
     if (new Date(updates.expiryDate) <= new Date(updates.startDate)) {
       return res.status(400).json({
@@ -2007,7 +1989,53 @@ const updateCoupon = asyncHandler(async (req, res) => {
     }
   }
 
-  // 6️⃣ Update coupon
+  // ============================================================
+  // 5️⃣ VALIDATE & CONVERT appliesTo → Category IDs
+  // ============================================================
+
+  let finalCategoryIds = [];
+
+  if (Array.isArray(updates.appliesTo) && updates.appliesTo.length > 0) {
+    const categories = await Category.find({
+      $or: [
+        { _id: { $in: updates.appliesTo.filter(id => mongoose.Types.ObjectId.isValid(id)) } },
+        { name: { $in: updates.appliesTo } }
+      ]
+    }).select("_id name");
+
+    if (categories.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid category names or IDs in appliesTo.",
+      });
+    }
+
+    finalCategoryIds = categories.map((c) => c._id);
+    updates.appliesTo = finalCategoryIds;
+  } else {
+    updates.appliesTo = []; // Means "All Products"
+  }
+
+  // ============================================================
+  // 6️⃣ AUTO-ATTACH ALL PRODUCTS FOR SELECTED CATEGORIES
+  // ============================================================
+
+  let allProducts = [];
+
+  if (updates.appliesTo.length > 0) {
+    allProducts = await Product.find({
+      category: { $in: updates.appliesTo },
+    }).select("_id");
+  } else {
+    allProducts = await Product.find().select("_id"); // All Products
+  }
+
+  updates.applicableProducts = allProducts.map((p) => p._id);
+
+  // ============================================================
+  // 7️⃣ UPDATE COUPON
+  // ============================================================
+
   const coupon = await Coupon.findByIdAndUpdate(id, updates, {
     new: true,
     runValidators: true,
@@ -2020,7 +2048,10 @@ const updateCoupon = asyncHandler(async (req, res) => {
     });
   }
 
-  // 7️⃣ Setup
+  // ============================================================
+  // 8️⃣ NOTIFICATIONS LOGIC (unchanged)
+  // ============================================================
+
   const io = req.app.get("io");
   const onlineUsers = req.app.get("onlineUsers") || {};
   const expo = req.app.get("expo");
@@ -2028,14 +2059,10 @@ const updateCoupon = asyncHandler(async (req, res) => {
   const title = "🎟️ Coupon Updated";
   const message = `Coupon "${coupon.code}" has been updated!`;
 
-  // 8️⃣ Fetch ALL: Admin + Buyer + Vendor
   const allUsers = await User.find({
     role: { $in: ["Admin", "Buyer", "Vendor"] },
   }).select("_id role expoPushToken");
 
-  // ================================
-  // 9️⃣ Save Notifications to DB
-  // ================================
   const notifPayloads = allUsers.map((user) => ({
     title,
     message,
@@ -2052,9 +2079,7 @@ const updateCoupon = asyncHandler(async (req, res) => {
 
   const savedNotifications = await Notification.insertMany(notifPayloads);
 
-  // ================================
-  // 🔟 Socket Real-time Notification
-  // ================================
+  // 🔟 Real-time sockets
   savedNotifications.forEach((notif) => {
     const uid = notif.receiverId.toString();
     if (onlineUsers[uid]) {
@@ -2062,11 +2087,12 @@ const updateCoupon = asyncHandler(async (req, res) => {
     }
   });
 
-  // ================================
-  // 1️⃣1️⃣ Expo Push Notification
-  // ================================
+  // 1️⃣1️⃣ Expo Push Notifications
   const pushMessages = allUsers
-    .filter((user) => user.expoPushToken && Expo.isExpoPushToken(user.expoPushToken))
+    .filter(
+      (user) =>
+        user.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)
+    )
     .map((user) => ({
       to: user.expoPushToken,
       sound: "default",
@@ -2095,38 +2121,55 @@ const updateCoupon = asyncHandler(async (req, res) => {
 
 
 
+
 const deleteCoupon = asyncHandler(async (req, res) => {
   const { id } = req.params;
+  const userId = req.user._id;
+  const userRole = req.user.role;
 
-  // 1️⃣ Find coupon
+  // 1️⃣ Validate ID format
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid coupon ID.",
+    });
+  }
+
+  // 2️⃣ Find coupon
   const coupon = await Coupon.findById(id);
   if (!coupon) {
     return res.status(404).json({
       success: false,
-      message: "Coupon not found",
+      message: "Coupon not found.",
     });
   }
 
-  // 2️⃣ Delete coupon
+  // 3️⃣ Permission Check
+  if (userRole === "vendor" && coupon.createdBy.toString() !== userId.toString()) {
+    return res.status(403).json({
+      success: false,
+      message: "You are not allowed to delete this coupon.",
+    });
+  }
+
+  // 4️⃣ Delete coupon
   await coupon.deleteOne();
 
-  // 3️⃣ Setup socket + online users + expo
+  // 5️⃣ Notification Setup
   const io = req.app.get("io");
   const onlineUsers = req.app.get("onlineUsers") || {};
   const expo = req.app.get("expo");
 
-  // 4️⃣ ADMIN ONLY notification
-  const adminId = req.user._id.toString();
+  const title = "Coupon Deleted ❌";
+  const message = `The coupon "${coupon.code}" has been deleted successfully.`;
 
-  const title = "Coupon Deleted ✅";
-  const message = `You successfully deleted the coupon "${coupon.code}".`;
-
-  const adminNotification = {
+  // 6️⃣ Notify Only the User Who Deleted (Admin or Vendor)
+  const notificationPayload = {
     title,
     message,
-    receiverId: adminId,
-    userType: "Admin",
-    createdBy: adminId,
+    receiverId: userId,
+    userType: userRole,
+    createdBy: userId,
     data: {
       type: "coupon_deleted",
       couponId: coupon._id,
@@ -2135,26 +2178,25 @@ const deleteCoupon = asyncHandler(async (req, res) => {
     isRead: false,
   };
 
-  // Save notification
-  const savedNotif = await Notification.create(adminNotification);
+  const savedNotif = await Notification.create(notificationPayload);
 
-  // Socket real-time message
-  if (onlineUsers[adminId]) {
-    io.to(onlineUsers[adminId].socketId).emit("notification", savedNotif);
+  // 7️⃣ Send Real-time Socket Notification
+  if (onlineUsers[userId]) {
+    io.to(onlineUsers[userId].socketId).emit("notification", savedNotif);
   }
 
-  // Expo push (if admin has token)
-  const admin = await User.findById(adminId).select("expoPushToken");
+  // 8️⃣ Send Expo Push Notification
+  const user = await User.findById(userId).select("expoPushToken");
 
-  if (admin.expoPushToken && Expo.isExpoPushToken(admin.expoPushToken)) {
+  if (user?.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
     try {
       const messages = [
         {
-          to: admin.expoPushToken,
+          to: user.expoPushToken,
           sound: "default",
           title,
           body: message,
-          data: adminNotification.data,
+          data: notificationPayload.data,
         },
       ];
 
@@ -2167,12 +2209,13 @@ const deleteCoupon = asyncHandler(async (req, res) => {
     }
   }
 
-  // 5️⃣ Final API Response
+  // 9️⃣ Final Response
   res.status(200).json({
     success: true,
-    message: "Coupon deleted successfully and admin notified.",
+    message: "Coupon deleted successfully.",
   });
 });
+
 
 
 const getAdminProfile = asyncHandler(async (req, res) => {
