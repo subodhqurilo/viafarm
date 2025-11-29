@@ -227,33 +227,27 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
 
   const filter = {};
 
-  /* ----------------------------------------
-     CATEGORY FILTER — SUPPORT NAME & ID BOTH
-  ---------------------------------------- */
+  // ⭐ CATEGORY FILTER — support both ID or name
   if (category) {
-    // Check if category is ObjectId
     const isObjectId = /^[0-9a-fA-F]{24}$/.test(category);
 
     if (isObjectId) {
-      filter.category = category;          // search by ID
+      // If category=ObjectId
+      filter.category = category;
     } else {
-      // search by category name
+      // If category=Name (ex: "Fruits")
       const categoryDoc = await Category.findOne({
-        name: { $regex: category, $options: "i" }
+        name: { $regex: category, $options: "i" },
       });
 
-      if (categoryDoc) {
-        filter.category = categoryDoc._id;
-      } else {
-        // No category found → return empty
+      if (!categoryDoc) {
         return res.status(200).json({ success: true, data: [] });
       }
+
+      filter.category = categoryDoc._id;
     }
   }
 
-  /* ----------------------------------------
-      OTHER FILTERS REMAIN SAME
-  ---------------------------------------- */
   if (vendor) filter.vendor = vendor;
   if (status) filter.status = status;
 
@@ -263,16 +257,24 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
     if (maxPrice) filter.price.$lte = Number(maxPrice);
   }
 
-  /* ----------------------------------------
-      PRODUCTS FETCH + CATEGORY NAME POPULATE
-  ---------------------------------------- */
   const products = await Product.find(filter)
     .populate("vendor", "name mobileNumber")
-    .populate("category", "name")          // ⭐ only category name
-    .sort({ createdAt: -1 });
+    .populate("category", "name") // ONLY NAME
+    .sort({ createdAt: -1 })
+    .lean(); // so we can modify response
 
-  res.status(200).json({ success: true, data: products });
+  // ⭐ Replace category object → only name
+  const formatted = products.map((item) => ({
+    ...item,
+    category: item.category?.name || "",
+  }));
+
+  return res.json({
+    success: true,
+    data: formatted,
+  });
 });
+
 
 
 
