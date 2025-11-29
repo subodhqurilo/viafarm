@@ -223,19 +223,17 @@ const searchProducts = asyncHandler(async (req, res) => {
 
 
 const getFilteredProducts = asyncHandler(async (req, res) => {
-  const { category, vendor, minPrice, maxPrice, status } = req.query;
+  const { search, category, vendor, minPrice, maxPrice, status } = req.query;
 
   const filter = {};
 
-  // ⭐ CATEGORY FILTER — support both ID or name
+  // ⭐ CATEGORY FILTER — ID or NAME
   if (category) {
     const isObjectId = /^[0-9a-fA-F]{24}$/.test(category);
 
     if (isObjectId) {
-      // If category=ObjectId
       filter.category = category;
     } else {
-      // If category=Name (ex: "Fruits")
       const categoryDoc = await Category.findOne({
         name: { $regex: category, $options: "i" },
       });
@@ -251,19 +249,36 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
   if (vendor) filter.vendor = vendor;
   if (status) filter.status = status;
 
+  // ⭐ PRICE FILTER
   if (minPrice || maxPrice) {
     filter.price = {};
     if (minPrice) filter.price.$gte = Number(minPrice);
     if (maxPrice) filter.price.$lte = Number(maxPrice);
   }
 
+  // ⭐ BIG SEARCH (product, variety, category, vendor)
+  let searchQuery = {};
+
+  if (search) {
+    searchQuery = {
+      $or: [
+        { name: { $regex: search, $options: "i" } }, // product name
+        { varietyName: { $regex: search, $options: "i" } }, // variety
+        { "category.name": { $regex: search, $options: "i" } }, // category
+        { "vendor.name": { $regex: search, $options: "i" } }, // vendor
+      ],
+    };
+  }
+
+  // ⭐ QUERY
   const products = await Product.find(filter)
     .populate("vendor", "name mobileNumber")
-    .populate("category", "name") // ONLY NAME
+    .populate("category", "name")
+    .find(searchQuery)
     .sort({ createdAt: -1 })
-    .lean(); // so we can modify response
+    .lean();
 
-  // ⭐ Replace category object → only name
+  // ⭐ CLEAN RESPONSE
   const formatted = products.map((item) => ({
     ...item,
     category: item.category?.name || "",
@@ -274,6 +289,7 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
     data: formatted,
   });
 });
+
 
 
 
