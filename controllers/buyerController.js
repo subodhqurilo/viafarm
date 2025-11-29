@@ -1519,7 +1519,7 @@ const getCartItems = asyncHandler(async (req, res) => {
       category: { $in: Array.from(categoryIds) },
       _id: { $nin: validItems.map((x) => x.id) },
     })
-      .select("name price images unit vendor")
+      .select("name price images unit rating weightPerPiece vendor")
       .limit(12)
       .populate("vendor", "name")
       .lean();
@@ -1531,6 +1531,8 @@ const getCartItems = asyncHandler(async (req, res) => {
       unit: p.unit,
       imageUrl: p.images?.[0] || "",
       vendor: p.vendor?.name || "",
+      rating: p.rating,
+      weightPerPiece: p.weightPerPiece,
     }));
 
     // ---------------- RESPONSE ----------------
