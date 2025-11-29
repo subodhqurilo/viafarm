@@ -223,26 +223,57 @@ const searchProducts = asyncHandler(async (req, res) => {
 
 
 const getFilteredProducts = asyncHandler(async (req, res) => {
-    const { category, vendor, minPrice, maxPrice, status } = req.query;
+  const { category, vendor, minPrice, maxPrice, status } = req.query;
 
-    // Build filter object dynamically
-    const filter = {};
+  const filter = {};
 
-    if (category) filter.category = category;
-    if (vendor) filter.vendor = vendor;
-    if (status) filter.status = status;
-    if (minPrice || maxPrice) {
-        filter.price = {};
-        if (minPrice) filter.price.$gte = Number(minPrice);
-        if (maxPrice) filter.price.$lte = Number(maxPrice);
+  /* ----------------------------------------
+     CATEGORY FILTER — SUPPORT NAME & ID BOTH
+  ---------------------------------------- */
+  if (category) {
+    // Check if category is ObjectId
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(category);
+
+    if (isObjectId) {
+      filter.category = category;          // search by ID
+    } else {
+      // search by category name
+      const categoryDoc = await Category.findOne({
+        name: { $regex: category, $options: "i" }
+      });
+
+      if (categoryDoc) {
+        filter.category = categoryDoc._id;
+      } else {
+        // No category found → return empty
+        return res.status(200).json({ success: true, data: [] });
+      }
     }
+  }
 
-    const products = await Product.find(filter)
-        .populate('vendor', 'name mobileNumber')  // populate vendor info
-        .sort({ createdAt: -1 });
+  /* ----------------------------------------
+      OTHER FILTERS REMAIN SAME
+  ---------------------------------------- */
+  if (vendor) filter.vendor = vendor;
+  if (status) filter.status = status;
 
-    res.status(200).json({ success: true, data: products });
+  if (minPrice || maxPrice) {
+    filter.price = {};
+    if (minPrice) filter.price.$gte = Number(minPrice);
+    if (maxPrice) filter.price.$lte = Number(maxPrice);
+  }
+
+  /* ----------------------------------------
+      PRODUCTS FETCH + CATEGORY NAME POPULATE
+  ---------------------------------------- */
+  const products = await Product.find(filter)
+    .populate("vendor", "name mobileNumber")
+    .populate("category", "name")          // ⭐ only category name
+    .sort({ createdAt: -1 });
+
+  res.status(200).json({ success: true, data: products });
 });
+
 
 
 const getProductDetails = asyncHandler(async (req, res) => {
