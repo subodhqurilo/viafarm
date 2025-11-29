@@ -380,81 +380,126 @@ exports.forgotPassword = async (req, res) => {
 
   if (!mobileNumber) {
     return res.status(400).json({
-      status: 'fail',
-      message: 'Mobile number is required.',
+      status: "fail",
+      message: "Mobile number is required.",
     });
   }
 
   try {
     const user = await User.findOne({ mobileNumber });
-    let otp = null;
 
-    if (user) {
-      // Generate new OTP
-      otp = otpService.generateOTP();
-
-      // Save OTP + expiry (10 minutes)
-      user.otp = otp;
-      user.otpExpiry = Date.now() + 10 * 60 * 1000;
-      await user.save();
-
-      // Optional: send OTP via SMS in production
-      // await smsService.sendOTP(mobileNumber, otp);
-
+    if (!user) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found.",
+      });
     }
 
-    res.status(200).json({
-      status: 'success',
-      message:
-        'If an account with that number exists, an OTP has been sent.',
-      otp, // always include for dev/testing
+    // 4 digit OTP
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
+    user.otp = otp;
+    user.otpExpiry = Date.now() + 10 * 60 * 1000; // 10 mins
+    await user.save();
+
+    // TODO: send SMS here
+
+    return res.status(200).json({
+      status: "success",
+      message: "OTP sent successfully.",
+      otp, // Dev only—remove in production
     });
+    
   } catch (err) {
-    console.error('Forgot Password Error:', err);
-    res.status(500).json({
-      status: 'error',
-      message: 'Server error',
+    return res.status(500).json({
+      status: "error",
+      message: "Server error",
       error: err.message,
     });
   }
 };
 
 
+
 exports.resetPassword = async (req, res) => {
-  const { otp, newPassword, confirmPassword } = req.body;
+  const { otp } = req.body;
 
-  if (!otp || !newPassword || !confirmPassword) {
-    return res.status(400).json({ status: 'error', message: 'All fields are required.' });
-  }
-
-  if (newPassword !== confirmPassword) {
-    return res.status(400).json({ status: 'error', message: 'Passwords do not match.' });
+  if (!otp) {
+    return res.status(400).json({
+      status: "error",
+      message: "OTP is required.",
+    });
   }
 
   try {
-    // ✅ Find user by OTP only
     const user = await User.findOne({ otp });
 
     if (!user || !user.otpExpiry || user.otpExpiry < Date.now()) {
-      return res.status(400).json({ status: 'error', message: 'Invalid or expired OTP.' });
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid or expired OTP.",
+      });
     }
 
-    // ✅ Update password
-    user.password = newPassword;
-
-    // ✅ Clear OTP fields
+    // OTP clear
     user.otp = undefined;
     user.otpExpiry = undefined;
     await user.save();
 
-    res.status(200).json({
-      status: 'success',
-      message: 'Password has been reset successfully.'
+    return res.status(200).json({
+      status: "success",
+      message: "OTP verified successfully.",
+      mobileNumber: user.mobileNumber,   // ← IMPORTANT
     });
   } catch (err) {
-    res.status(500).json({
-      status: 'error',
-      message: 'Server error',
+    return res.status(500).json({
+      status: "error",
+      message: "Server error",
+      error: err.message,
+    });
+  }
+};
+
+
+exports.NewPassword = async (req, res) => {
+  const { mobileNumber, password, confirmPassword } = req.body;
+
+  if (!password || !confirmPassword) {
+    return res.status(400).json({
+      status: "error",
+      message: "Password & Confirm Password are required."
+    });
+  }
+
+  if (password !== confirmPassword) {
+    return res.status(400).json({
+      status: "error",
+      message: "Passwords do not match."
+    });
+  }
+
+  try {
+    const user = await User.findOne({ mobileNumber });
+
+    if (!user) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found."
+      });
+    }
+
+    user.password = password;
+    await user.save();
+
+    return res.status(200).json({
+      status: "success",
+      message: "Password updated successfully."
+    });
+
+  } catch (err) {
+    return res.status(500).json({
+      status: "error",
+      message: "Server error",
       error: err.message
     });
   }

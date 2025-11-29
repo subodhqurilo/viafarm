@@ -18,6 +18,7 @@ const {
   adminRequestPasswordOtp,
   adminResetPasswordByOtp,
   logout,
+  NewPassword,
 } = require('../controllers/authController');
 
 // Public Auth Routes
@@ -28,9 +29,10 @@ router.post('/login', login);
 router.post('/request-otp-login', requestOtpLogin);
 router.post('/verify-otp-login', verifyOtpLogin);
 
-// Password Reset (User)
+// Password Reset (User)NewPassword
 router.post('/forgot-password', forgotPassword);
 router.post('/reset-password', resetPassword);
+router.post('/password', NewPassword);
 
 // Admin Login / Signup
 router.post('/admin-login', adminLogin);
