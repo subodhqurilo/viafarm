@@ -1426,6 +1426,7 @@ const getCartItems = asyncHandler(async (req, res) => {
           summary: emptySummary,
           priceDetails: emptySummary,
           couponCode: "",
+          similarProducts: [],  // <--- added
         },
       });
     }
@@ -1436,12 +1437,18 @@ const getCartItems = asyncHandler(async (req, res) => {
       .lean();
 
     const validItems = [];
+    const categoryIds = new Set();
 
     for (const i of cart.items) {
       if (!i.product) continue;
 
       const p = i.product;
       const vendor = p.vendor || {};
+
+      // track category for similar products
+      if (p.category?._id) {
+        categoryIds.add(p.category._id.toString());
+      }
 
       // ---------------- ESTIMATED DELIVERY ----------------
       const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
@@ -1463,7 +1470,6 @@ const getCartItems = asyncHandler(async (req, res) => {
           mobileNumber: vendor.mobileNumber,
           email: vendor.email,
           upiId: vendor.upiId,
-          contactNo: vendor.vendorDetails?.contactNo,
           about: vendor.vendorDetails?.about,
           location: vendor.vendorDetails?.location,
           deliveryRegion: vendor.vendorDetails?.deliveryRegion,
@@ -1485,7 +1491,6 @@ const getCartItems = asyncHandler(async (req, res) => {
 
     let couponDiscount = 0;
 
-    // If coupon applied — calculate simple discount (same as old)
     if (cart.couponCode) {
       const coupon = await Coupon.findOne({ code: cart.couponCode }).lean();
 
@@ -1505,20 +1510,38 @@ const getCartItems = asyncHandler(async (req, res) => {
     const summary = {
       totalMRP,
       couponDiscount,
-      deliveryCharge: 0, // same logic
+      deliveryCharge: 0,
       totalAmount,
     };
 
-    const priceDetails = summary;
+    // ---------------- FIND SIMILAR PRODUCTS (BOTTOM OF RESPONSE) ----------------
+    const similarProducts = await Product.find({
+      category: { $in: Array.from(categoryIds) },
+      _id: { $nin: validItems.map((x) => x.id) },
+    })
+      .select("name price images unit vendor")
+      .limit(12)
+      .populate("vendor", "name")
+      .lean();
 
-    // ---------------- RESPONSE (OLD FORMAT) ----------------
+    const formattedSimilar = similarProducts.map((p) => ({
+      id: p._id,
+      name: p.name,
+      price: p.price,
+      unit: p.unit,
+      imageUrl: p.images?.[0] || "",
+      vendor: p.vendor?.name || "",
+    }));
+
+    // ---------------- RESPONSE ----------------
     return res.json({
       success: true,
       data: {
         items: validItems,
         summary,
-        priceDetails,
+        priceDetails: summary,
         couponCode: cart.couponCode || "",
+        similarProducts: formattedSimilar, // <--- ADDED HERE
       },
     });
   } catch (error) {
@@ -1529,6 +1552,7 @@ const getCartItems = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
