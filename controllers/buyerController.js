@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Variety = require('../models/Variety');
 const DeliveryPreference = require("../models/DeliveryPreference");
 
+
 const Cart = require('../models/Cart');
 const Order = require('../models/Order');
 const User = require('../models/User');
@@ -1727,21 +1728,23 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       })
       .lean();
 
-    if (!cart || !cart.items.length)
+    if (!cart || !cart.items.length) {
       return res.status(400).json({
         success: false,
-        message: "Your cart is empty."
+        message: "Your cart is empty.",
       });
+    }
 
-    // ⭐ AUTO APPLY COUPON (CART > INPUT)
+    // ⭐ AUTO APPLY COUPON (CART → INPUT)
     const appliedCouponCode = cart.couponCode || inputCoupon || null;
 
     const validItems = cart.items.filter(i => i.product);
-    if (!validItems.length)
+    if (!validItems.length) {
       return res.status(400).json({
         success: false,
-        message: "Cart contains invalid products."
+        message: "Cart contains invalid products.",
       });
+    }
 
     // ------------------ 4️⃣ COUPON VALIDATION ------------------
     let coupon = null;
@@ -1757,7 +1760,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       if (!coupon) {
         return res.status(400).json({
           success: false,
-          message: "Invalid or expired coupon."
+          message: "Invalid or expired coupon.",
         });
       }
 
@@ -1791,22 +1794,16 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     let totalPay = 0;
     let totalDiscount = 0;
 
-    // ------------------ 6️⃣ PROCESS ORDER PER VENDOR ------------------
+    // ------------------ 6️⃣ PROCESS EACH VENDOR ORDER ------------------
     for (const vendorId in itemsByVendor) {
       const vendorItems = itemsByVendor[vendorId];
 
-      // ⭐ APPLY COUPON IN ORDER SUMMARY
+      // ⭐ FIX: use updated calculateOrderSummary (same as reviewOrder)
       const { summary } = await calculateOrderSummary(
         { items: vendorItems, user: userId },
         appliedCouponCode,
-        "Pickup"
+        "Pickup" // no delivery charge
       );
-
-      if (!summary.totalAmount)
-        return res.status(400).json({
-          success: false,
-          message: "Invalid order total."
-        });
 
       const vendor = await User.findById(vendorId).select("name upiId").lean();
 
@@ -1836,7 +1833,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
 
       createdOrderIds.push(newOrder._id);
 
-      // 🔔 Notifications
+      // ------------------ 🔔 SEND NOTIFICATIONS ------------------
       await createAndSendNotification(
         req,
         "📦 New Pickup Order",
@@ -1889,7 +1886,10 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     }
 
     // ------------------ 8️⃣ CLEAR CART ------------------
-    await Cart.updateOne({ user: userId }, { $set: { items: [] } });
+    await Cart.updateOne(
+      { user: userId },
+      { $set: { items: [], couponCode: null } }
+    );
 
     // ------------------ 9️⃣ FINAL RESPONSE ------------------
     return res.json({
@@ -1920,7 +1920,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
 const placeOrder = asyncHandler(async (req, res) => {
   try {
     const userId = req.user._id;
-    const { addressId, couponCode, comments, paymentMethod } = req.body;
+    const { comments, paymentMethod } = req.body;
 
     // ------------------ 1️⃣ VALIDATE PAYMENT (Delivery = UPI only) ------------------
     if (paymentMethod !== "UPI") {
@@ -1934,17 +1934,28 @@ const placeOrder = asyncHandler(async (req, res) => {
     const isPaid = false;
     const orderStatus = "In-process";
 
-    // ------------------ 2️⃣ VALIDATE SHIPPING ADDRESS ------------------
-    const shippingAddress = await Address.findById(addressId).lean();
-
-    if (!shippingAddress) {
-      return res.status(404).json({
+    // ------------------ 2️⃣ GET SAVED DELIVERY PREFERENCE ------------------
+    const pref = await DeliveryPreference.findOne({ user: userId }).lean();
+    if (!pref || !pref.addressId) {
+      return res.status(400).json({
         success: false,
-        message: "Valid delivery address is required.",
+        message: "Select delivery address first.",
       });
     }
 
-    // ------------------ 3️⃣ FETCH CART ------------------
+    // coupon priority (same as reviewOrder)
+    const appliedCouponCode = pref.couponCode || null;
+
+    // ------------------ 3️⃣ VALIDATE SHIPPING ADDRESS ------------------
+    const shippingAddress = await Address.findById(pref.addressId).lean();
+    if (!shippingAddress) {
+      return res.status(404).json({
+        success: false,
+        message: "Delivery address not found.",
+      });
+    }
+
+    // ------------------ 4️⃣ FETCH CART ------------------
     const cart = await Cart.findOne({ user: userId })
       .populate({
         path: "items.product",
@@ -1952,43 +1963,56 @@ const placeOrder = asyncHandler(async (req, res) => {
       })
       .lean();
 
-    if (!cart || !cart.items.length)
-      return res.status(400).json({ success: false, message: "Your cart is empty." });
+    if (!cart || !cart.items.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Your cart is empty.",
+      });
+    }
 
     const validItems = cart.items.filter(i => i.product);
-    if (!validItems.length)
-      return res.status(400).json({ success: false, message: "Cart contains invalid products." });
+    if (!validItems.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Cart contains invalid products.",
+      });
+    }
 
-    // ------------------ 4️⃣ COUPON VALIDATION ------------------
+    // ------------------ 5️⃣ VALIDATE COUPON ------------------
     let coupon = null;
 
-    if (couponCode) {
+    if (appliedCouponCode) {
       coupon = await Coupon.findOne({
-        code: couponCode.toUpperCase(),
+        code: appliedCouponCode.toUpperCase(),
         status: "Active",
         startDate: { $lte: new Date() },
         expiryDate: { $gte: new Date() },
       });
 
-      if (!coupon)
-        return res.status(400).json({ success: false, message: "Invalid or expired coupon." });
+      if (!coupon) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid or expired coupon.",
+        });
+      }
 
-      const userEntry = coupon.usedBy.find(u => u.user.toString() === userId.toString());
-
-      if (coupon.usageLimitPerUser && userEntry && userEntry.count >= coupon.usageLimitPerUser)
+      const used = coupon.usedBy.find(u => u.user.toString() === userId.toString());
+      if (coupon.usageLimitPerUser && used && used.count >= coupon.usageLimitPerUser) {
         return res.status(400).json({
           success: false,
           message: `You already used this coupon ${coupon.usageLimitPerUser} times.`,
         });
+      }
 
-      if (coupon.totalUsageLimit && coupon.usedCount >= coupon.totalUsageLimit)
+      if (coupon.totalUsageLimit && coupon.usedCount >= coupon.totalUsageLimit) {
         return res.status(400).json({
           success: false,
           message: "Coupon usage limit finished.",
         });
+      }
     }
 
-    // ------------------ 5️⃣ GROUP ITEMS BY VENDOR ------------------
+    // ------------------ 6️⃣ GROUP ITEMS BY VENDOR ------------------
     const itemsByVendor = {};
     validItems.forEach(i => {
       const vId = i.product.vendor.toString();
@@ -2001,31 +2025,34 @@ const placeOrder = asyncHandler(async (req, res) => {
     let grandTotal = 0;
     let totalDiscount = 0;
 
-    // ------------------ 6️⃣ PROCESS EACH VENDOR ORDER ------------------
+    // ------------------ 7️⃣ PROCESS VENDOR-WISE ORDER ------------------
     for (const vendorId in itemsByVendor) {
       const vendorItems = itemsByVendor[vendorId];
 
+      // ⭐ FIX: Use same delivery summary as reviewOrder
       const { summary } = await calculateOrderSummary(
-        { items: vendorItems, user: userId },
-        couponCode,
+        {
+          items: vendorItems,
+          user: userId,
+          addressId: pref.addressId
+        },
+        appliedCouponCode,
         "Delivery"
       );
 
-      if (!summary.totalAmount)
-        return res.status(400).json({ success: false, message: "Invalid order total." });
-
       const vendor = await User.findById(vendorId).select("name upiId").lean();
-      if (!vendor?.upiId)
+      if (!vendor?.upiId) {
         return res.status(400).json({
           success: false,
           message: `Vendor ${vendor?.name || ""} UPI ID missing.`,
         });
+      }
 
       grandTotal += summary.totalAmount;
       totalDiscount += summary.discount || 0;
 
       // ------------------ CREATE ORDER ------------------
-      const order = await Order.create({
+      const newOrder = await Order.create({
         orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
         buyer: userId,
         vendor: vendorId,
@@ -2035,62 +2062,59 @@ const placeOrder = asyncHandler(async (req, res) => {
           price: i.product.price,
         })),
         totalPrice: summary.totalAmount,
-        discount: summary.discount || 0,
-        couponCode,
+        discount: summary.discount,
+        couponCode: appliedCouponCode,
         orderType: "Delivery",
-        orderStatus,
         shippingAddress,
         pickupSlot: null,
         comments: comments || "",
         paymentMethod,
         isPaid,
+        orderStatus,
       });
 
-      createdOrderIds.push(order._id);
+      createdOrderIds.push(newOrder._id);
 
-      // ------------------ 🔔 VENDOR NOTIFICATION ------------------
+      // ------------------ 🔔 NOTIFICATIONS ------------------
       await createAndSendNotification(
         req,
         "📦 New Delivery Order",
-        `You received a new delivery order (${order.orderId}).`,
-        { orderId: order._id, amount: summary.totalAmount },
+        `You received a new delivery order (${newOrder.orderId}).`,
+        { orderId: newOrder._id, amount: summary.totalAmount },
         "Vendor",
         vendorId
       );
 
-      // ------------------ 🔔 BUYER NOTIFICATION ------------------
       await createAndSendNotification(
         req,
         "🛍️ Order Placed",
-        `Your delivery order (${order.orderId}) has been placed.`,
-        { orderId: order._id, amount: summary.totalAmount },
+        `Your delivery order (${newOrder.orderId}) has been placed.`,
+        { orderId: newOrder._id, amount: summary.totalAmount },
         "Buyer",
         userId
       );
 
-      // ------------------ 💳 PAYMENT QR GENERATION ------------------
-      const transactionRef = `TXN-${order.orderId.replace("#", "-")}-${Date.now()}`;
-      const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=${order.orderId}&tr=${transactionRef}&cu=INR`;
+      // ------------------ 💳 PAYMENT QR ------------------
+      const ref = `TXN-${newOrder.orderId.replace("#", "-")}-${Date.now()}`;
+      const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=${newOrder.orderId}&tr=${ref}&cu=INR`;
       const qrCode = await QRCode.toDataURL(upiUrl);
 
       payments.push({
-        orderId: order._id,
+        orderId: newOrder._id,
         vendorName: vendor.name,
         upiId: vendor.upiId,
         amount: summary.totalAmount,
         upiUrl,
         qrCode,
-        transactionRef,
         comments
       });
     }
 
-    // ------------------ 7️⃣ UPDATE COUPON USAGE ------------------
+    // ------------------ 8️⃣ UPDATE COUPON USAGE ------------------
     if (coupon) {
       coupon.usedCount++;
-
-      const entry = coupon.usedBy.find(u => u.user.toString() === userId.toString());
-      if (entry) entry.count++;
+      const used = coupon.usedBy.find(u => u.user.toString() === userId.toString());
+      if (used) used.count++;
       else coupon.usedBy.push({ user: userId, count: 1 });
 
       if (coupon.totalUsageLimit && coupon.usedCount >= coupon.totalUsageLimit)
@@ -2099,19 +2123,22 @@ const placeOrder = asyncHandler(async (req, res) => {
       await coupon.save();
     }
 
-    // ------------------ 8️⃣ CLEAR CART ------------------
-    await Cart.findOneAndUpdate({ user: userId }, { $set: { items: [] } });
+    // ------------------ 9️⃣ CLEAR CART ------------------
+    await Cart.updateOne(
+      { user: userId },
+      { $set: { items: [], couponCode: null } }
+    );
 
-    // ------------------ 9️⃣ FINAL RESPONSE ------------------
+    // ------------------ 🔟 FINAL RESPONSE ------------------
     return res.json({
       success: true,
       message: "Delivery orders created. Complete UPI payment to confirm.",
       orderIds: createdOrderIds,
       totalAmount: grandTotal,
-      totalDiscount,
+      discount: totalDiscount,
       paymentMethod,
-      payments,
-      address: shippingAddress
+      address: shippingAddress,
+      payments
     });
 
   } catch (error) {
@@ -2123,6 +2150,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
@@ -2138,11 +2166,10 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // Force delivery only
-  const deliveryType = "Delivery";
-  const { addressId } = pref;
+  // Delivery only
+  const { addressId, couponCode: prefCoupon } = pref;
 
-  // ---------------- Delivery → address required ----------------
+  // 2️⃣ Delivery requires address
   if (!addressId) {
     return res.status(400).json({
       success: false,
@@ -2158,7 +2185,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // ---------------- Fetch Cart ----------------
+  // 3️⃣ Fetch cart
   const cart = await Cart.findOne({ user: userId })
     .populate({
       path: "items.product",
@@ -2179,19 +2206,20 @@ const reviewOrder = asyncHandler(async (req, res) => {
 
   const validItems = cart.items.filter(i => i.product);
 
-  // ---------------- FIXED: COUPON SHOULD MATCH GETCART ----------------
-  const cartCoupon = cart.couponCode || null;   // from cart
-  const prefCoupon = pref.couponCode || null;   // from delivery pref
-  const finalCouponCode = cartCoupon || prefCoupon || null; // USE CART FIRST
+  // ⭐ FINAL COUPON — CART > PREF
+  const finalCouponCode = cart.couponCode || prefCoupon || null;
 
-  // ---------------- Order Summary ----------------
-  let { summary, items: updatedItems } = await calculateOrderSummary(
-    { items: validItems, user: userId, addressId },
-    finalCouponCode, // FIXED: coupon applied correctly
+  // 4️⃣ Calculate summary (VERY IMPORTANT FIX)
+  const { summary, items: updatedItems } = await calculateOrderSummary(
+    {
+      items: validItems,
+      user: userId   // 🔥 ONLY pass user here
+    },
+    finalCouponCode,
     "Delivery"
   );
 
-  // ---------------- Estimated Delivery ----------------
+  // 5️⃣ Build response items
   const buyer = await User.findById(userId)
     .select("address location")
     .lean();
@@ -2201,9 +2229,10 @@ const reviewOrder = asyncHandler(async (req, res) => {
   const finalItems = updatedItems.map((i) => {
     const p = i.product;
     const vendor = p.vendor;
-    const est = calculateEstimatedDelivery(vendor, buyer);
 
     if (p.category?._id) categoryIds.add(p.category._id.toString());
+
+    const est = calculateEstimatedDelivery(vendor, buyer);
 
     return {
       id: p._id,
@@ -2216,28 +2245,20 @@ const reviewOrder = asyncHandler(async (req, res) => {
       category: p.category?.name || "",
       deliveryText: est.deliveryText,
 
+      itemMRP: i.itemMRP,
+      discount: i.discount,
+      total: i.total,
+
       vendor: {
         id: vendor._id,
         name: vendor.name,
-        mobileNumber: vendor.address?.mobileNumber || "",
-        upiId: vendor.address?.upiId || "",
-        about: vendor.vendorDetails?.about || "",
-        location: vendor.vendorDetails?.location || "",
-        deliveryRegion: vendor.vendorDetails?.deliveryRegion || "",
-        totalOrders: vendor.vendorDetails?.totalOrders || 0,
-        profilePicture: vendor.profilePicture || "",
-        address: vendor.address || {},
-        geoLocation: vendor.location?.coordinates || [0, 0],
-        status: vendor.vendorDetails?.status || "Active",
-      },
-
-      itemMRP: i.itemMRP,
-      discount: i.discount,
-      total: i.total
+        address: vendor.address,
+        location: vendor.vendorDetails?.location
+      }
     };
   });
 
-  // ---------------- SIMILAR PRODUCTS ----------------
+  // 6️⃣ Similar products
   const similarProductsRaw = await Product.find({
     category: { $in: [...categoryIds] },
     _id: { $nin: finalItems.map((x) => x.id) },
@@ -2258,10 +2279,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
     weightPerPiece: p.weightPerPiece,
   }));
 
-  // ---------------- Final total ----------------
-  const finalAmount = summary.totalAmount;
-
-  // ---------------- FINAL RESPONSE ----------------
+  // 7️⃣ FINAL RESPONSE
   return res.json({
     success: true,
     data: {
@@ -2269,26 +2287,29 @@ const reviewOrder = asyncHandler(async (req, res) => {
 
       summary: {
         totalMRP: summary.totalMRP,
-        couponDiscount: summary.discount,   // FIXED ✔
+        couponDiscount: summary.discount,
         deliveryCharge: summary.deliveryCharge,
-        totalAmount: finalAmount
+        totalAmount: summary.totalAmount,
       },
 
       priceDetails: {
         totalMRP: summary.totalMRP,
-        couponDiscount: summary.discount,   // FIXED ✔
+        couponDiscount: summary.discount,
         deliveryCharge: summary.deliveryCharge,
-        totalAmount: finalAmount
+        totalAmount: summary.totalAmount,
       },
 
-      couponCode: finalCouponCode || "",     // FIXED ✔
+      couponCode: finalCouponCode || "",
       similarProducts,
       deliveryType: "Delivery",
       address: deliveryAddress,
-      pickupSlot: null
-    }
+      pickupSlot: null,
+    },
   });
 });
+
+
+
 
 
 
@@ -2465,7 +2486,6 @@ const addItemToCart = asyncHandler(async (req, res) => {
     const { productId, quantity = 1 } = req.body;
     const userId = req.user._id;
 
-
     if (!productId || quantity <= 0) {
         return res.status(400).json({
             success: false,
@@ -2473,7 +2493,7 @@ const addItemToCart = asyncHandler(async (req, res) => {
         });
     }
 
-    // --- 1️⃣ Fetch product details ---
+    // 1️⃣ Fetch product
     const product = await Product.findById(productId)
         .select('name price weightPerPiece vendor status images unit variety');
 
@@ -2485,24 +2505,26 @@ const addItemToCart = asyncHandler(async (req, res) => {
         return res.status(400).json({ success: false, message: 'Product is out of stock or invalid.' });
     }
 
-    // --- 2️⃣ Find or create user's cart ---
+    // 2️⃣ Find or create cart
     let cart = await Cart.findOne({ user: userId });
     if (!cart) {
         cart = await Cart.create({ user: userId, items: [] });
     }
 
-
-    // --- 3️⃣ Vendor consistency check ---
+    // 3️⃣ Vendor restriction
     const existingVendors = cart.items.map(i => i.vendor?.toString()).filter(Boolean);
 
-    if (existingVendors.length > 0 && existingVendors[0] !== product.vendor.toString()) {
+    if (
+        existingVendors.length > 0 &&
+        existingVendors[0] !== product.vendor.toString()
+    ) {
         return res.status(400).json({
             success: false,
             message: 'You can only add products from one vendor. Please choose products from the same vendor.'
         });
     }
 
-    // --- 4️⃣ Add or update product ---
+    // 4️⃣ Add or update product
     const existingItemIndex = cart.items.findIndex(
         i => i.product && i.product.toString() === productId
     );
@@ -2521,12 +2543,27 @@ const addItemToCart = asyncHandler(async (req, res) => {
 
     await cart.save();
 
-    // --- 5️⃣ Recalculate summary ---
-    const summary = await calculateOrderSummary(cart, cart.couponCode);
+    // 5️⃣ Populate cart BEFORE summary (IMPORTANT FIX)
+    const populatedForSummary = await Cart.findById(cart._id)
+        .populate({
+            path: "items.product",
+            select: "name price weightPerPiece vendor category"
+        })
+        .lean();
 
-    // --- 6️⃣ Populate for response ---
+    const summary = await calculateOrderSummary(
+        {
+            items: populatedForSummary.items,
+            user: userId,
+            addressId: null
+        },
+        cart.couponCode,
+        "Delivery"
+    );
+
+    // 6️⃣ Populate again for client response
     const populatedCart = await Cart.findById(cart._id)
-        .populate('items.product', 'name price variety images unit vendor')
+        .populate("items.product", "name price variety images unit vendor")
         .lean();
 
     const items = populatedCart.items.map(i => ({
@@ -2549,6 +2586,7 @@ const addItemToCart = asyncHandler(async (req, res) => {
         }
     });
 });
+
 
 
 
@@ -4295,36 +4333,59 @@ const logout = asyncHandler(async (_req, res) => {
 
 
 const getAddresses = asyncHandler(async (req, res) => {
-    // Fetch all addresses for the logged-in user (exclude name and mobileNumber)
-    const addresses = await Address.find({ user: req.user._id })
-        .select('-name -mobileNumber') // exclude these fields
-        .lean();
+  // 1️⃣ Fetch all addresses for this user
+  const addresses = await Address.find({ user: req.user._id })
+    .select("-name -mobileNumber") // exclude unnecessary fields
+    .lean();
 
-    if (!addresses || addresses.length === 0) {
-        return res.status(404).json({ success: false, message: 'No addresses found.' });
-    }
-
-    // Format the response
-    const formattedAddresses = addresses.map(addr => ({
-        id: addr._id.toString(),
-        isDefault: addr.isDefault,
-        pinCode: addr.pinCode,
-        houseNumber: addr.houseNumber,
-        locality: addr.locality,
-        city: addr.city,
-        district: addr.district,
-        state: addr.state,
-        location: addr.location || { type: 'Point', coordinates: [] },
-        createdAt: addr.createdAt,
-        updatedAt: addr.updatedAt
-    }));
-
-    res.status(200).json({
-        success: true,
-        message: 'All addresses retrieved successfully.',
-        addresses: formattedAddresses
+  // 2️⃣ If no addresses found
+  if (!addresses || addresses.length === 0) {
+    return res.status(200).json({
+      success: true,
+      message: "No addresses found.",
+      addresses: []
     });
+  }
+
+  // 3️⃣ Format response
+  const formattedAddresses = addresses.map(addr => {
+    const formattedAddress = [
+      addr.houseNumber,
+      addr.street,
+      addr.locality,
+      addr.city,
+      addr.district,
+      addr.state,
+      addr.pinCode
+    ]
+      .filter(Boolean)
+      .join(", ");
+
+    return {
+      id: addr._id.toString(),
+      isDefault: addr.isDefault,
+      formattedAddress,
+      pinCode: addr.pinCode,
+      houseNumber: addr.houseNumber,
+      street: addr.street || "",
+      locality: addr.locality || "",
+      city: addr.city || "",
+      district: addr.district || "",
+      state: addr.state || "",
+      location: addr.location || { type: "Point", coordinates: [] },
+      createdAt: addr.createdAt,
+      updatedAt: addr.updatedAt
+    };
+  });
+
+  // 4️⃣ Send response
+  res.status(200).json({
+    success: true,
+    message: "All addresses retrieved successfully.",
+    addresses: formattedAddresses
+  });
 });
+
 
 
 
@@ -4357,6 +4418,42 @@ async function geocodeAddress({ houseNumber, street, locality, city, district, s
   }
 }
 
+async function geocodeAddress(addr) {
+  const fullAddress = [
+    addr.houseNumber,
+    addr.street,
+    addr.locality,
+    addr.city,
+    addr.district,
+    addr.state,
+    addr.pinCode
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  if (!fullAddress) return null;
+
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
+    fullAddress
+  )}&format=json&limit=1`;
+
+  try {
+    const res = await axios.get(url, {
+      headers: { "User-Agent": "viafarm-app" },
+    });
+
+    if (!res.data.length) return null;
+
+    return [
+      parseFloat(res.data[0].lon), // X
+      parseFloat(res.data[0].lat)  // Y
+    ];
+  } catch (err) {
+    console.log("❌ Geocoding failed:", err.message);
+    return null;
+  }
+}
+
 const addAddress = asyncHandler(async (req, res) => {
   try {
     let {
@@ -4372,7 +4469,6 @@ const addAddress = asyncHandler(async (req, res) => {
       longitude,
     } = req.body;
 
-    // --- 1️⃣ Validate minimum required field ---
     if (!houseNumber) {
       return res.status(400).json({
         success: false,
@@ -4380,9 +4476,9 @@ const addAddress = asyncHandler(async (req, res) => {
       });
     }
 
-    let geoJsonLocation;
+    let geoJsonLocation = null;
 
-    // --- 2️⃣ Use coordinates if provided ---
+    /** ✅ 1. Use direct coordinates if provided */
     if (latitude && longitude) {
       const lat = parseFloat(latitude);
       const lng = parseFloat(longitude);
@@ -4402,11 +4498,11 @@ const addAddress = asyncHandler(async (req, res) => {
       } else {
         return res.status(400).json({
           success: false,
-          message: "Invalid latitude or longitude values.",
+          message: "Invalid latitude or longitude.",
         });
       }
     } else {
-      // --- 3️⃣ If no coordinates → auto geocode from address ---
+      /** 🌍 2. Auto-GeoCoding if lat/lng missing */
       const coords = await geocodeAddress({
         houseNumber,
         street,
@@ -4422,25 +4518,28 @@ const addAddress = asyncHandler(async (req, res) => {
           type: "Point",
           coordinates: coords,
         };
-        console.log("📍 Auto-coordinates fetched:", coords);
+        console.log("📍 Auto-Geocoded:", coords);
       } else {
-        console.warn("⚠️ Unable to auto-fetch coordinates from address.");
+        console.log("⚠ Geocoding failed → saving without coordinates");
       }
     }
 
-    // --- 4️⃣ Handle Default Address Logic ---
-    const existingAddresses = await Address.find({ user: req.user._id });
+    /** ⭐ 3. Default Address Logic */
+    const existing = await Address.find({ user: req.user._id });
     let makeDefault = isDefault;
 
-    if (existingAddresses.length === 0) {
-      makeDefault = true; // first address always default
+    if (existing.length === 0) {
+      makeDefault = true; // first address is always default
     }
 
     if (makeDefault) {
-      await Address.updateMany({ user: req.user._id, isDefault: true }, { isDefault: false });
+      await Address.updateMany(
+        { user: req.user._id, isDefault: true },
+        { isDefault: false }
+      );
     }
 
-    // --- 5️⃣ Create New Address ---
+    /** 🏠 4. Create Address */
     const newAddress = await Address.create({
       user: req.user._id,
       pinCode: pinCode || "",
@@ -4451,9 +4550,10 @@ const addAddress = asyncHandler(async (req, res) => {
       district: district || "",
       state: state || "",
       isDefault: makeDefault,
-      location: geoJsonLocation, // ✅ will always be Point or undefined
+      location: geoJsonLocation, // 🌍 Saved correctly
     });
 
+    /** 🧩 Build formattedAddress */
     const formattedAddress = [
       newAddress.houseNumber,
       newAddress.street,
@@ -4466,7 +4566,7 @@ const addAddress = asyncHandler(async (req, res) => {
       .filter(Boolean)
       .join(", ");
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Address added successfully.",
       address: {
@@ -4479,8 +4579,8 @@ const addAddress = asyncHandler(async (req, res) => {
           houseNumber: newAddress.houseNumber,
           street: newAddress.street,
           locality: newAddress.locality,
-          district: newAddress.district,
           city: newAddress.city,
+          district: newAddress.district,
           state: newAddress.state,
           pinCode: newAddress.pinCode,
         },
@@ -4496,6 +4596,41 @@ const addAddress = asyncHandler(async (req, res) => {
   }
 });
 
+
+
+
+async function geocodeAddress(addr) {
+  const full = [
+    addr.houseNumber,
+    addr.street,
+    addr.locality,
+    addr.city,
+    addr.district,
+    addr.state,
+    addr.pinCode,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  if (!full) return null;
+
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
+      full
+    )}&format=json&limit=1`;
+
+    const { data } = await axios.get(url, {
+      headers: { "User-Agent": "ViaFarm-GeoCoder" },
+    });
+
+    if (!data.length) return null;
+
+    return [parseFloat(data[0].lon), parseFloat(data[0].lat)];
+  } catch (err) {
+    console.log("❌ Geocode error:", err.message);
+    return null;
+  }
+}
 
 const updateAddress = asyncHandler(async (req, res) => {
   try {
@@ -4521,7 +4656,7 @@ const updateAddress = asyncHandler(async (req, res) => {
       });
     }
 
-    // --- 2️⃣ Find existing address ---
+    // --- 2️⃣ Find the address ---
     const address = await Address.findOne({ _id: id, user: req.user._id });
     if (!address) {
       return res.status(404).json({
@@ -4530,11 +4665,13 @@ const updateAddress = asyncHandler(async (req, res) => {
       });
     }
 
-    // --- 3️⃣ Update coordinates intelligently ---
+    let newCoordinates = null;
+
+    // --- 3️⃣ If coordinates provided → update + reverse-geocode missing fields ---
     if (latitude && longitude) {
-      // ✅ Case 1: User provided coordinates → reverse-geocode for missing fields
       const lat = parseFloat(latitude);
       const lng = parseFloat(longitude);
+
       if (
         isNaN(lat) ||
         isNaN(lng) ||
@@ -4545,28 +4682,28 @@ const updateAddress = asyncHandler(async (req, res) => {
       ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid latitude or longitude values.",
+          message: "Invalid latitude or longitude.",
         });
       }
 
-      address.location = { type: "Point", coordinates: [lng, lat] };
+      newCoordinates = [lng, lat];
 
-      // Reverse geocode to fill missing address fields
+      address.location = {
+        type: "Point",
+        coordinates: newCoordinates,
+      };
+
+      // 🌍 Reverse Geocode → fill missing details
       try {
-        const geoResponse = await axios.get(
+        const resp = await axios.get(
           "https://nominatim.openstreetmap.org/reverse",
           {
-            params: {
-              lat,
-              lon: lng,
-              format: "json",
-              addressdetails: 1,
-            },
-            headers: { "User-Agent": "ViaFarm/1.0 (viafarm.app)" },
+            params: { lat, lon: lng, format: "json", addressdetails: 1 },
+            headers: { "User-Agent": "ViaFarm-GeoCoder" },
           }
         );
 
-        const addr = geoResponse.data.address || {};
+        const addr = resp.data.address || {};
         pinCode = pinCode || addr.postcode || "";
         city = city || addr.city || addr.town || addr.village || "";
         district = district || addr.state_district || addr.county || "";
@@ -4574,15 +4711,17 @@ const updateAddress = asyncHandler(async (req, res) => {
         locality =
           locality ||
           addr.suburb ||
-          addr.neighbourhood ||
           addr.road ||
+          addr.neighbourhood ||
           addr.hamlet ||
           "";
       } catch (err) {
-        console.warn("⚠️ Reverse geocoding failed:", err.message);
+        console.log("⚠ Reverse geocode failed:", err.message);
       }
-    } else {
-      // ✅ Case 2: No lat/lng provided → geocode from address fields
+    }
+
+    // --- 4️⃣ If NO coordinates provided → Forward-Geocode ---
+    else {
       const coords = await geocodeAddress({
         houseNumber,
         street,
@@ -4595,14 +4734,15 @@ const updateAddress = asyncHandler(async (req, res) => {
 
       if (coords) {
         address.location = { type: "Point", coordinates: coords };
-        console.log("📍 Auto-fetched coordinates:", coords);
+        newCoordinates = coords;
+        console.log("📍 Auto-coordinates:", coords);
       } else {
-        console.warn("⚠️ Could not fetch coordinates from address.");
+        console.log("⚠ Could not geocode updated address.");
       }
     }
 
-    // --- 4️⃣ Handle default address ---
-    if (isDefault) {
+    // --- 5️⃣ Make default address ---
+    if (isDefault === true) {
       await Address.updateMany(
         { user: req.user._id, isDefault: true },
         { isDefault: false }
@@ -4610,20 +4750,19 @@ const updateAddress = asyncHandler(async (req, res) => {
       address.isDefault = true;
     }
 
-    // --- 5️⃣ Partial safe update ---
-    if (pinCode) address.pinCode = pinCode;
-    if (houseNumber) address.houseNumber = houseNumber;
+    // --- 6️⃣ Apply partial updates safely ---
+    if (pinCode !== undefined) address.pinCode = pinCode;
+    if (houseNumber !== undefined) address.houseNumber = houseNumber;
     if (street !== undefined) address.street = street || "";
-    if (locality) address.locality = locality;
-    if (city) address.city = city;
-    if (district) address.district = district;
-    if (state) address.state = state;
-    if (typeof isDefault === "boolean") address.isDefault = isDefault;
+    if (locality !== undefined) address.locality = locality;
+    if (city !== undefined) address.city = city;
+    if (district !== undefined) address.district = district;
+    if (state !== undefined) address.state = state;
 
-    // --- 6️⃣ Save updated document ---
+    // --- 7️⃣ Save ---
     await address.save();
 
-    // --- 7️⃣ Format response ---
+    // --- 8️⃣ Build formatted address ---
     const formattedAddress = [
       address.houseNumber,
       address.street,
@@ -4636,12 +4775,11 @@ const updateAddress = asyncHandler(async (req, res) => {
       .filter(Boolean)
       .join(", ");
 
-    res.status(200).json({
+    return res.json({
       success: true,
       message: "Address updated successfully.",
       address: {
         id: address._id,
-        user: address.user,
         formattedAddress,
         isDefault: address.isDefault,
         coordinates: address.location?.coordinates || [],
@@ -4649,22 +4787,24 @@ const updateAddress = asyncHandler(async (req, res) => {
           houseNumber: address.houseNumber,
           street: address.street,
           locality: address.locality,
-          district: address.district,
           city: address.city,
+          district: address.district,
           state: address.state,
           pinCode: address.pinCode,
         },
       },
     });
   } catch (error) {
-    console.error("❌ Error updating address:", error);
-    res.status(500).json({
+    console.error("❌ updateAddress error:", error);
+    return res.status(500).json({
       success: false,
-      message: "Server error while updating address.",
+      message: "Failed to update address",
       error: error.message,
     });
   }
 });
+
+
 
 
 
@@ -4673,30 +4813,50 @@ const deleteAddress = asyncHandler(async (req, res) => {
 
   // 1️⃣ Validate ObjectId
   if (!mongoose.Types.ObjectId.isValid(id)) {
-    return res.status(400).json({ success: false, message: "Invalid address ID." });
+    return res.status(400).json({
+      success: false,
+      message: "Invalid address ID.",
+    });
   }
 
-  // 2️⃣ Find and delete address
-  const address = await Address.findOneAndDelete({ _id: id, user: req.user._id });
+  // 2️⃣ Check address exists for this user
+  const address = await Address.findOne({
+    _id: id,
+    user: req.user._id,
+  });
+
   if (!address) {
-    return res.status(404).json({ success: false, message: "Address not found." });
+    return res.status(404).json({
+      success: false,
+      message: "Address not found.",
+    });
   }
 
-  // 3️⃣ If default, reassign next one
+  const wasDefault = address.isDefault;
+
+  // 3️⃣ Delete address
+  await address.deleteOne();
+
   let newDefaultAddress = null;
-  if (address.isDefault) {
-    newDefaultAddress = await Address.findOne({ user: req.user._id }).sort({ createdAt: -1 });
+
+  // 4️⃣ If deleted address was default → assign NEW default
+  if (wasDefault) {
+    // find latest added address
+    newDefaultAddress = await Address.findOne({ user: req.user._id })
+      .sort({ createdAt: -1 });
+
     if (newDefaultAddress) {
       newDefaultAddress.isDefault = true;
       await newDefaultAddress.save();
     }
   }
 
-  // 4️⃣ Count remaining addresses
-  const remainingCount = await Address.countDocuments({ user: req.user._id });
+  // 5️⃣ Count remaining addresses
+  const remainingCount = await Address.countDocuments({
+    user: req.user._id,
+  });
 
-  // 5️⃣ Send response
-  res.status(200).json({
+  return res.status(200).json({
     success: true,
     message: "Address deleted successfully.",
     deletedAddressId: id,
@@ -4704,6 +4864,7 @@ const deleteAddress = asyncHandler(async (req, res) => {
     remainingAddresses: remainingCount,
   });
 });
+
 
 
 
