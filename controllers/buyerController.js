@@ -1627,9 +1627,12 @@ const getCartItems = asyncHandler(async (req, res) => {
 
 
 
+
+
+
 const setDeliveryType = asyncHandler(async (req, res) => {
   const userId = req.user._id;
-  const { deliveryType } = req.body;
+  const { deliveryType, addressId, pickupSlot } = req.body;
 
   // 1️⃣ Validate delivery type
   if (!["Pickup", "Delivery"].includes(deliveryType)) {
@@ -1639,93 +1642,56 @@ const setDeliveryType = asyncHandler(async (req, res) => {
     });
   }
 
-  // 2️⃣ Prepare update data
   let updateData = {
     user: userId,
-    deliveryType,
-    addressId: null,   // clear old delivery data
-    pickupSlot: null   // clear old pickup data
+    deliveryType
   };
 
-  // 3️⃣ Save in database (upsert)
+  // 2️⃣ If Delivery → MUST have addressId
+  if (deliveryType === "Delivery") {
+    if (!addressId) {
+      return res.status(400).json({
+        success: false,
+        message: "addressId required for Delivery."
+      });
+    }
+
+    updateData.addressId = addressId;
+    updateData.pickupSlot = null;  // ❌ clear pickup slot if previously saved
+  }
+
+  // 3️⃣ If Pickup → MUST have pickupSlot
+  if (deliveryType === "Pickup") {
+    if (
+      !pickupSlot ||
+      !pickupSlot.date ||
+      !pickupSlot.startTime ||
+      !pickupSlot.endTime
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Pickup slot requires date, startTime & endTime."
+      });
+    }
+
+    updateData.pickupSlot = pickupSlot;
+    updateData.addressId = null; // ❌ clear addressId if previously saved
+  }
+
+  // 4️⃣ Save in database (upsert)
   const preference = await DeliveryPreference.findOneAndUpdate(
     { user: userId },
     { $set: updateData },
     { new: true, upsert: true }
   );
 
-  // 4️⃣ Send Response
+  // 5️⃣ Send Response
   res.json({
     success: true,
-    message: "Delivery type updated successfully.",
+    message: "Delivery preference saved successfully.",
     data: preference
   });
 });
-
-
-
-// const setDeliveryType = asyncHandler(async (req, res) => {
-//   const userId = req.user._id;
-//   const { deliveryType, addressId, pickupSlot } = req.body;
-
-//   // 1️⃣ Validate delivery type
-//   if (!["Pickup", "Delivery"].includes(deliveryType)) {
-//     return res.status(400).json({
-//       success: false,
-//       message: "Invalid delivery type. Use 'Pickup' or 'Delivery'."
-//     });
-//   }
-
-//   let updateData = {
-//     user: userId,
-//     deliveryType
-//   };
-
-//   // 2️⃣ If Delivery → MUST have addressId
-//   if (deliveryType === "Delivery") {
-//     if (!addressId) {
-//       return res.status(400).json({
-//         success: false,
-//         message: "addressId required for Delivery."
-//       });
-//     }
-
-//     updateData.addressId = addressId;
-//     updateData.pickupSlot = null;  // ❌ clear pickup slot if previously saved
-//   }
-
-//   // 3️⃣ If Pickup → MUST have pickupSlot
-//   if (deliveryType === "Pickup") {
-//     if (
-//       !pickupSlot ||
-//       !pickupSlot.date ||
-//       !pickupSlot.startTime ||
-//       !pickupSlot.endTime
-//     ) {
-//       return res.status(400).json({
-//         success: false,
-//         message: "Pickup slot requires date, startTime & endTime."
-//       });
-//     }
-
-//     updateData.pickupSlot = pickupSlot;
-//     updateData.addressId = null; // ❌ clear addressId if previously saved
-//   }
-
-//   // 4️⃣ Save in database (upsert)
-//   const preference = await DeliveryPreference.findOneAndUpdate(
-//     { user: userId },
-//     { $set: updateData },
-//     { new: true, upsert: true }
-//   );
-
-//   // 5️⃣ Send Response
-//   res.json({
-//     success: true,
-//     message: "Delivery preference saved successfully.",
-//     data: preference
-//   });
-// });
 
 
 
