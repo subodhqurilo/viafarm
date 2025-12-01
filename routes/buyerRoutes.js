@@ -8,7 +8,7 @@ const {
     getStaticPageContent, writeReview, getCartItems, addItemToCart, removeItemFromCart, updateCartItemQuantity, placeOrder,updateAddress,deleteAddress,getFreshAndPopularVendors,
     reorder, getReviewsForProduct, updateReview, deleteReview, applyCouponToCart,getAllVendors,searchAllProducts,getProductsByVendorId,getProductById,setDeliveryType ,
     getOrderDetails, startCheckout, getHighlightedCoupon, getPickupLocationDetails, selectPickupSlot,getProductsByName,getPickupLocationDetailsPost,getCategoriesWithProducts,
-    verifyPayment, getProductsByCategory, getVendorProfileForBuyer, getProductReviews, getAvailableCouponsForBuyer, getCouponsByProductId,getDonationsReceived,
+    verifyPayment, getProductsByCategory, getVendorProfileForBuyer, getProductReviews, getAvailableCouponsForBuyer, getCouponsByProductId,getDonationsReceived,placePickupOrder,
     addAddress, getFreshAndPopularProducts, getLocalBestProducts, getAllAroundIndiaProducts, getSmartPicks,getVendorsByProductName,donateToAdmin,searchProductsByName,
     getAddresses, setDefaultAddress, getHomePageData, getProductDetails, getFilteredProducts, getVendorsNearYou, searchProducts, generateUpiPaymentUrl,markOrderPaid
 } = require('../controllers/buyerController');
@@ -61,6 +61,7 @@ router.post('/cart/add', addItemToCart);
 router.delete('/cart/:id', removeItemFromCart);
 router.put('/cart/:id/quantity', updateCartItemQuantity);
 router.post('/cart/apply-coupon', applyCouponToCart); 
+router.post('/pickuporder', placePickupOrder );
 
 router.get('/checkout', reviewOrder);
 router.post('/orders/place', placeOrder);
