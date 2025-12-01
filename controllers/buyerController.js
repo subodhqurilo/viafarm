@@ -1697,7 +1697,7 @@ const setDeliveryType = asyncHandler(async (req, res) => {
 const placePickupOrder = asyncHandler(async (req, res) => {
   try {
     const userId = req.user._id;
-    const { pickupSlot, couponCode, comments, paymentMethod } = req.body;
+    const { pickupSlot, couponCode: inputCoupon, comments, paymentMethod } = req.body;
 
     // ------------------ 1️⃣ VALIDATE PICKUP SLOT ------------------
     if (!pickupSlot?.date || !pickupSlot?.startTime || !pickupSlot?.endTime) {
@@ -1730,6 +1730,9 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     if (!cart || !cart.items.length)
       return res.status(400).json({ success: false, message: "Your cart is empty." });
 
+    // ⭐ AUTO APPLY COUPON FROM CART IF AVAILABLE
+    const appliedCouponCode = cart.couponCode || inputCoupon || null;
+
     const validItems = cart.items.filter(i => i.product);
     if (!validItems.length)
       return res.status(400).json({ success: false, message: "Cart contains invalid products." });
@@ -1737,30 +1740,35 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     // ------------------ 4️⃣ COUPON VALIDATION ------------------
     let coupon = null;
 
-    if (couponCode) {
+    if (appliedCouponCode) {
       coupon = await Coupon.findOne({
-        code: couponCode.toUpperCase(),
+        code: appliedCouponCode.toUpperCase(),
         status: "Active",
         startDate: { $lte: new Date() },
         expiryDate: { $gte: new Date() },
       });
 
       if (!coupon)
-        return res.status(400).json({ success: false, message: "Invalid or expired coupon." });
+        return res.status(400).json({
+          success: false,
+          message: "Invalid or expired coupon.",
+        });
 
       const used = coupon.usedBy.find(u => u.user.toString() === userId.toString());
 
-      if (coupon.usageLimitPerUser && used && used.count >= coupon.usageLimitPerUser)
+      if (coupon.usageLimitPerUser && used && used.count >= coupon.usageLimitPerUser) {
         return res.status(400).json({
           success: false,
           message: `You already used this coupon ${coupon.usageLimitPerUser} times.`,
         });
+      }
 
-      if (coupon.totalUsageLimit && coupon.usedCount >= coupon.totalUsageLimit)
+      if (coupon.totalUsageLimit && coupon.usedCount >= coupon.totalUsageLimit) {
         return res.status(400).json({
           success: false,
           message: "Coupon usage limit finished.",
         });
+      }
     }
 
     // ------------------ 5️⃣ GROUP ITEMS BY VENDOR ------------------
@@ -1780,15 +1788,18 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     for (const vendorId in itemsByVendor) {
       const vendorItems = itemsByVendor[vendorId];
 
-      // Summary per vendor
+      // ⭐ USE CART COUPON HERE (AUTO APPLIED)
       const { summary } = await calculateOrderSummary(
         { items: vendorItems, user: userId },
-        couponCode,
+        appliedCouponCode,
         "Pickup"
       );
 
       if (!summary.totalAmount)
-        return res.status(400).json({ success: false, message: "Invalid order total." });
+        return res.status(400).json({
+          success: false,
+          message: "Invalid order total.",
+        });
 
       const vendor = await User.findById(vendorId).select("name upiId").lean();
 
@@ -1807,7 +1818,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
         })),
         totalPrice: summary.totalAmount,
         discount: summary.discount,
-        couponCode,
+        couponCode: appliedCouponCode,
         orderType: "Pickup",
         pickupSlot,
         comments: comments || "",
@@ -1818,7 +1829,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
 
       createdOrderIds.push(newOrder._id);
 
-      // ------------------ 🔔 SEND NOTIFICATION (Vendor) ------------------
+      // ------------------ NOTIFICATIONS ------------------
       await createAndSendNotification(
         req,
         "📦 New Pickup Order",
@@ -1828,7 +1839,6 @@ const placePickupOrder = asyncHandler(async (req, res) => {
         vendorId
       );
 
-      // ------------------ 🔔 SEND NOTIFICATION (Buyer) ------------------
       await createAndSendNotification(
         req,
         "🛍️ Pickup Order Placed",
@@ -1838,7 +1848,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
         userId
       );
 
-      // ------------------ 💳 UPI PAYMENT QR ------------------
+      // ------------------ 💳 UPI QR ------------------
       if (isOnlinePayment && vendor?.upiId) {
         const ref = `TXN-${newOrder.orderId.replace("#", "-")}-${Date.now()}`;
         const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=${newOrder.orderId}&tr=${ref}&cu=INR`;
@@ -1897,6 +1907,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 const placeOrder = asyncHandler(async (req, res) => {
   try {
@@ -2110,7 +2121,7 @@ const placeOrder = asyncHandler(async (req, res) => {
 const reviewOrder = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
-  // 1️⃣ Fetch saved preference
+  // 1️⃣ Fetch saved preference (only for address)
   const pref = await DeliveryPreference.findOne({ user: userId }).lean();
   if (!pref) {
     return res.status(400).json({
@@ -2119,48 +2130,24 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  const { deliveryType, addressId, pickupSlot, couponCode } = pref;
+  // Force only delivery
+  const deliveryType = "Delivery";
+  const { addressId } = pref;
 
-  // ---------------- Validate delivery type ----------------
-  if (!["Pickup", "Delivery"].includes(deliveryType)) {
+  // ---------------- Delivery → address required ----------------
+  if (!addressId) {
     return res.status(400).json({
       success: false,
-      message: "deliveryType must be 'Pickup' or 'Delivery'",
+      message: "Address ID is required for Delivery.",
     });
   }
 
-  // ---------------- Delivery → address required ----------------
-  let deliveryAddress = null;
-  if (deliveryType === "Delivery") {
-    if (!addressId) {
-      return res.status(400).json({
-        success: false,
-        message: "Address ID is required for Delivery.",
-      });
-    }
-
-    deliveryAddress = await Address.findById(addressId).lean();
-    if (!deliveryAddress) {
-      return res.status(404).json({
-        success: false,
-        message: "Address not found.",
-      });
-    }
-  }
-
-  // ---------------- Pickup → slot required ----------------
-  if (deliveryType === "Pickup") {
-    if (
-      !pickupSlot ||
-      !pickupSlot.date ||
-      !pickupSlot.startTime ||
-      !pickupSlot.endTime
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Pickup slot requires date, startTime & endTime.",
-      });
-    }
+  const deliveryAddress = await Address.findById(addressId).lean();
+  if (!deliveryAddress) {
+    return res.status(404).json({
+      success: false,
+      message: "Address not found.",
+    });
   }
 
   // ---------------- Fetch Cart ----------------
@@ -2184,11 +2171,14 @@ const reviewOrder = asyncHandler(async (req, res) => {
 
   const validItems = cart.items.filter((i) => i.product);
 
-  // ---------------- Order Summary ----------------
+  // ⭐ FIX: Get couponCode from CART (same as GetCartItems)
+  const couponCode = cart.couponCode || null;
+
+  // ---------------- Order Summary (ONLY DELIVERY) ----------------
   let { summary, items: updatedItems } = await calculateOrderSummary(
-    { items: validItems, user: userId },
-    couponCode || null,
-    deliveryType
+    { items: validItems, user: userId, addressId },
+    couponCode,
+    "Delivery"
   );
 
   // ---------------- Estimated Delivery ----------------
@@ -2204,7 +2194,6 @@ const reviewOrder = asyncHandler(async (req, res) => {
 
     const est = calculateEstimatedDelivery(vendor, buyer);
 
-    // track similar product categories
     if (p.category?._id) categoryIds.add(p.category._id.toString());
 
     return {
@@ -2216,16 +2205,13 @@ const reviewOrder = asyncHandler(async (req, res) => {
       quantity: i.quantity,
       unit: p.unit || "",
       category: p.category?.name || "",
-      deliveryText:
-        deliveryType === "Pickup"
-          ? "Pickup from vendor's location"
-          : est.deliveryText,
+      deliveryText: est.deliveryText,
 
       vendor: {
         id: vendor._id,
         name: vendor.name,
-        mobileNumber: vendor.address?.mobileNumber || "",
-        upiId: vendor.address?.upiId || "",
+        mobileNumber: vendor.mobileNumber || "",
+        upiId: vendor.upiId || "",
         about: vendor.vendorDetails?.about || "",
         location: vendor.vendorDetails?.location || "",
         deliveryRegion: vendor.vendorDetails?.deliveryRegion || "",
@@ -2233,10 +2219,9 @@ const reviewOrder = asyncHandler(async (req, res) => {
         profilePicture: vendor.profilePicture || "",
         address: vendor.address || {},
         geoLocation: vendor.location?.coordinates || [0, 0],
-        status: vendor.vendorDetails?.status || "Active",
+        status: vendor.status || "Active",
       },
 
-      // extra order calc values but not shown in UI
       itemMRP: i.itemMRP,
       discount: i.discount,
       total: i.total
@@ -2264,10 +2249,10 @@ const reviewOrder = asyncHandler(async (req, res) => {
     weightPerPiece: p.weightPerPiece,
   }));
 
-  // ---------------- Final total (NO donation) ----------------
+  // ---------------- Final total ----------------
   const finalAmount = summary.totalAmount;
 
-  // ---------------- FINAL RESPONSE (MATCHES GETCART FULLY) ----------------
+  // ---------------- FINAL RESPONSE ----------------
   return res.json({
     success: true,
     data: {
@@ -2275,29 +2260,62 @@ const reviewOrder = asyncHandler(async (req, res) => {
 
       summary: {
         totalMRP: summary.totalMRP,
-        couponDiscount: summary.discount,
+        couponDiscount: summary.discount,   // ⭐ DISCOUNT NOW CORRECT
         deliveryCharge: summary.deliveryCharge,
         totalAmount: finalAmount
       },
 
       priceDetails: {
         totalMRP: summary.totalMRP,
-        couponDiscount: summary.discount,
+        couponDiscount: summary.discount,   // ⭐ DISCOUNT NOW CORRECT
         deliveryCharge: summary.deliveryCharge,
         totalAmount: finalAmount
       },
 
       couponCode: couponCode || "",
-
       similarProducts,
-      
-      deliveryType,
-      address: deliveryType === "Delivery" ? deliveryAddress : null,
-      pickupSlot: deliveryType === "Pickup" ? pickupSlot : null
+
+      deliveryType: "Delivery",
+      address: deliveryAddress,
+      pickupSlot: null
     }
   });
 });
 
+
+
+const saveDeliveryAddress = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+  const { addressId } = req.body;
+
+  if (!addressId) {
+    return res.status(400).json({
+      success: false,
+      message: "addressId is required"
+    });
+  }
+
+  // validate address
+  const address = await Address.findById(addressId).lean();
+  if (!address) {
+    return res.status(404).json({
+      success: false,
+      message: "Address not found"
+    });
+  }
+
+  const pref = await DeliveryPreference.findOneAndUpdate(
+    { user: userId },
+    { $set: { deliveryType: "Delivery", addressId } },
+    { new: true, upsert: true }
+  );
+
+  return res.json({
+    success: true,
+    message: "Delivery address saved",
+    data: pref
+  });
+});
 
 
 
@@ -5610,7 +5628,7 @@ module.exports = {
     addItemToCart,
     removeItemFromCart,
     updateCartItemQuantity,
-    placeOrder,
+    placeOrder,saveDeliveryAddress,
     getBuyerOrders,
     getWishlist,
     addToWishlist,getCategoriesWithProducts,

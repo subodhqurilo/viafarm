@@ -6,7 +6,7 @@ const { authMiddleware, authorizeRoles } = require('../middleware/authMiddleware
 const { 
     getBuyerProfile, updateBuyerProfile, updateBuyerLocation, updateBuyerLanguage, getWishlist, addToWishlist, getBuyerOrders, removeFromWishlist, getProductsByVariety ,reviewOrder,
     getStaticPageContent, writeReview, getCartItems, addItemToCart, removeItemFromCart, updateCartItemQuantity, placeOrder,updateAddress,deleteAddress,getFreshAndPopularVendors,
-    reorder, getReviewsForProduct, updateReview, deleteReview, applyCouponToCart,getAllVendors,searchAllProducts,getProductsByVendorId,getProductById,setDeliveryType ,
+    reorder, getReviewsForProduct, updateReview, deleteReview, applyCouponToCart,getAllVendors,searchAllProducts,getProductsByVendorId,getProductById,setDeliveryType ,saveDeliveryAddress,
     getOrderDetails, startCheckout, getHighlightedCoupon, getPickupLocationDetails, selectPickupSlot,getProductsByName,getPickupLocationDetailsPost,getCategoriesWithProducts,
     verifyPayment, getProductsByCategory, getVendorProfileForBuyer, getProductReviews, getAvailableCouponsForBuyer, getCouponsByProductId,getDonationsReceived,placePickupOrder,
     addAddress, getFreshAndPopularProducts, getLocalBestProducts, getAllAroundIndiaProducts, getSmartPicks,getVendorsByProductName,donateToAdmin,searchProductsByName,
@@ -72,7 +72,9 @@ router.post('/orders/verify-payment', verifyPayment);
 router.put('/:orderId/mark-paid',  markOrderPaid);
 
 // Payment & Coupon
-router.post('/delivery-type', setDeliveryType); 
+router.post('/delivery-type', setDeliveryType);
+router.post('/delivery/address', saveDeliveryAddress);
+
 router.get('/coupons/available', getAvailableCouponsForBuyer);
 router.get('/coupons/product/:productId', getCouponsByProductId);
 router.get('/coupons/highlighted', getHighlightedCoupon);
