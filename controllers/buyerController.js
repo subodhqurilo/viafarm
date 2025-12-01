@@ -1728,14 +1728,20 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       .lean();
 
     if (!cart || !cart.items.length)
-      return res.status(400).json({ success: false, message: "Your cart is empty." });
+      return res.status(400).json({
+        success: false,
+        message: "Your cart is empty."
+      });
 
-    // ⭐ AUTO APPLY COUPON FROM CART IF AVAILABLE
+    // ⭐ AUTO APPLY COUPON (CART > INPUT)
     const appliedCouponCode = cart.couponCode || inputCoupon || null;
 
     const validItems = cart.items.filter(i => i.product);
     if (!validItems.length)
-      return res.status(400).json({ success: false, message: "Cart contains invalid products." });
+      return res.status(400).json({
+        success: false,
+        message: "Cart contains invalid products."
+      });
 
     // ------------------ 4️⃣ COUPON VALIDATION ------------------
     let coupon = null;
@@ -1748,11 +1754,12 @@ const placePickupOrder = asyncHandler(async (req, res) => {
         expiryDate: { $gte: new Date() },
       });
 
-      if (!coupon)
+      if (!coupon) {
         return res.status(400).json({
           success: false,
-          message: "Invalid or expired coupon.",
+          message: "Invalid or expired coupon."
         });
+      }
 
       const used = coupon.usedBy.find(u => u.user.toString() === userId.toString());
 
@@ -1784,11 +1791,11 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     let totalPay = 0;
     let totalDiscount = 0;
 
-    // ------------------ 6️⃣ PROCESS EACH VENDOR ORDER ------------------
+    // ------------------ 6️⃣ PROCESS ORDER PER VENDOR ------------------
     for (const vendorId in itemsByVendor) {
       const vendorItems = itemsByVendor[vendorId];
 
-      // ⭐ USE CART COUPON HERE (AUTO APPLIED)
+      // ⭐ APPLY COUPON IN ORDER SUMMARY
       const { summary } = await calculateOrderSummary(
         { items: vendorItems, user: userId },
         appliedCouponCode,
@@ -1798,7 +1805,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       if (!summary.totalAmount)
         return res.status(400).json({
           success: false,
-          message: "Invalid order total.",
+          message: "Invalid order total."
         });
 
       const vendor = await User.findById(vendorId).select("name upiId").lean();
@@ -1829,7 +1836,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
 
       createdOrderIds.push(newOrder._id);
 
-      // ------------------ NOTIFICATIONS ------------------
+      // 🔔 Notifications
       await createAndSendNotification(
         req,
         "📦 New Pickup Order",
@@ -1907,6 +1914,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 const placeOrder = asyncHandler(async (req, res) => {
@@ -2121,7 +2129,7 @@ const placeOrder = asyncHandler(async (req, res) => {
 const reviewOrder = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
-  // 1️⃣ Fetch saved preference (only for address)
+  // 1️⃣ Fetch saved preference
   const pref = await DeliveryPreference.findOne({ user: userId }).lean();
   if (!pref) {
     return res.status(400).json({
@@ -2130,7 +2138,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // Force only delivery
+  // Force delivery only
   const deliveryType = "Delivery";
   const { addressId } = pref;
 
@@ -2169,15 +2177,17 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  const validItems = cart.items.filter((i) => i.product);
+  const validItems = cart.items.filter(i => i.product);
 
-  // ⭐ FIX: Get couponCode from CART (same as GetCartItems)
-  const couponCode = cart.couponCode || null;
+  // ---------------- FIXED: COUPON SHOULD MATCH GETCART ----------------
+  const cartCoupon = cart.couponCode || null;   // from cart
+  const prefCoupon = pref.couponCode || null;   // from delivery pref
+  const finalCouponCode = cartCoupon || prefCoupon || null; // USE CART FIRST
 
-  // ---------------- Order Summary (ONLY DELIVERY) ----------------
+  // ---------------- Order Summary ----------------
   let { summary, items: updatedItems } = await calculateOrderSummary(
     { items: validItems, user: userId, addressId },
-    couponCode,
+    finalCouponCode, // FIXED: coupon applied correctly
     "Delivery"
   );
 
@@ -2191,7 +2201,6 @@ const reviewOrder = asyncHandler(async (req, res) => {
   const finalItems = updatedItems.map((i) => {
     const p = i.product;
     const vendor = p.vendor;
-
     const est = calculateEstimatedDelivery(vendor, buyer);
 
     if (p.category?._id) categoryIds.add(p.category._id.toString());
@@ -2210,8 +2219,8 @@ const reviewOrder = asyncHandler(async (req, res) => {
       vendor: {
         id: vendor._id,
         name: vendor.name,
-        mobileNumber: vendor.mobileNumber || "",
-        upiId: vendor.upiId || "",
+        mobileNumber: vendor.address?.mobileNumber || "",
+        upiId: vendor.address?.upiId || "",
         about: vendor.vendorDetails?.about || "",
         location: vendor.vendorDetails?.location || "",
         deliveryRegion: vendor.vendorDetails?.deliveryRegion || "",
@@ -2219,7 +2228,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
         profilePicture: vendor.profilePicture || "",
         address: vendor.address || {},
         geoLocation: vendor.location?.coordinates || [0, 0],
-        status: vendor.status || "Active",
+        status: vendor.vendorDetails?.status || "Active",
       },
 
       itemMRP: i.itemMRP,
@@ -2231,7 +2240,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
   // ---------------- SIMILAR PRODUCTS ----------------
   const similarProductsRaw = await Product.find({
     category: { $in: [...categoryIds] },
-    _id: { $nin: finalItems.map(x => x.id) },
+    _id: { $nin: finalItems.map((x) => x.id) },
   })
     .select("name price images unit rating weightPerPiece vendor")
     .limit(12)
@@ -2260,27 +2269,27 @@ const reviewOrder = asyncHandler(async (req, res) => {
 
       summary: {
         totalMRP: summary.totalMRP,
-        couponDiscount: summary.discount,   // ⭐ DISCOUNT NOW CORRECT
+        couponDiscount: summary.discount,   // FIXED ✔
         deliveryCharge: summary.deliveryCharge,
         totalAmount: finalAmount
       },
 
       priceDetails: {
         totalMRP: summary.totalMRP,
-        couponDiscount: summary.discount,   // ⭐ DISCOUNT NOW CORRECT
+        couponDiscount: summary.discount,   // FIXED ✔
         deliveryCharge: summary.deliveryCharge,
         totalAmount: finalAmount
       },
 
-      couponCode: couponCode || "",
+      couponCode: finalCouponCode || "",     // FIXED ✔
       similarProducts,
-
       deliveryType: "Delivery",
       address: deliveryAddress,
       pickupSlot: null
     }
   });
 });
+
 
 
 
