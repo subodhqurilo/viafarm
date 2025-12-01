@@ -246,7 +246,26 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
     }
   }
 
-  if (vendor) filter.vendor = vendor;
+  // ⭐ VENDOR FILTER — ID or NAME
+  if (vendor) {
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(vendor);
+
+    if (isObjectId) {
+      filter.vendor = vendor;
+    } else {
+      const vendorDoc = await Vendor.findOne({
+        name: { $regex: vendor, $options: "i" },
+      });
+
+      if (!vendorDoc) {
+        return res.status(200).json({ success: true, data: [] });
+      }
+
+      filter.vendor = vendorDoc._id;
+    }
+  }
+
+  // ⭐ STATUS FILTER
   if (status) filter.status = status;
 
   // ⭐ PRICE FILTER
@@ -256,21 +275,21 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
     if (maxPrice) filter.price.$lte = Number(maxPrice);
   }
 
-  // ⭐ BIG SEARCH (product, variety, category, vendor)
+  // ⭐ COMPLETE SEARCH ENGINE
   let searchQuery = {};
 
   if (search) {
     searchQuery = {
       $or: [
-        { name: { $regex: search, $options: "i" } }, // product name
-        { varietyName: { $regex: search, $options: "i" } }, // variety
-        { "category.name": { $regex: search, $options: "i" } }, // category
-        { "vendor.name": { $regex: search, $options: "i" } }, // vendor
+        { name: { $regex: search, $options: "i" } },          // product name
+        { variety: { $regex: search, $options: "i" } },       // variety
+        { "category.name": { $regex: search, $options: "i" } }, // category name
+        { "vendor.name": { $regex: search, $options: "i" } },   // vendor name
       ],
     };
   }
 
-  // ⭐ QUERY
+  // ⭐ MAIN QUERY
   const products = await Product.find(filter)
     .populate("vendor", "name mobileNumber")
     .populate("category", "name")
@@ -278,10 +297,11 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .lean();
 
-  // ⭐ CLEAN RESPONSE
+  // ⭐ FORMAT OUTPUT
   const formatted = products.map((item) => ({
     ...item,
     category: item.category?.name || "",
+    vendorName: item.vendor?.name || "",
   }));
 
   return res.json({
@@ -1766,67 +1786,108 @@ const reviewOrder = asyncHandler(async (req, res) => {
     .select("address location")
     .lean();
 
+  let categoryIds = new Set();
+
   const finalItems = updatedItems.map((i) => {
     const p = i.product;
     const vendor = p.vendor;
 
     const est = calculateEstimatedDelivery(vendor, buyer);
 
+    // track similar product categories
+    if (p.category?._id) categoryIds.add(p.category._id.toString());
+
     return {
-      productId: p._id,
-      productName: p.name,
-      sku: p.sku || "",
+      id: p._id,
+      name: p.name,
+      subtitle: p.variety || "",
+      mrp: p.price,
+      imageUrl: p.images?.[0] || "",
+      quantity: i.quantity,
       unit: p.unit || "",
       category: p.category?.name || "",
-      variety: p.variety || "",
-      mrp: p.price,
-      quantity: i.quantity,
-      image: p.images?.[0] || "",
       deliveryText:
         deliveryType === "Pickup"
           ? "Pickup from vendor's location"
           : est.deliveryText,
+
       vendor: {
-        vendorId: vendor._id,
+        id: vendor._id,
         name: vendor.name,
-        address: vendor.address || {}
+        mobileNumber: vendor.address?.mobileNumber || "",
+        upiId: vendor.address?.upiId || "",
+        about: vendor.vendorDetails?.about || "",
+        location: vendor.vendorDetails?.location || "",
+        deliveryRegion: vendor.vendorDetails?.deliveryRegion || "",
+        totalOrders: vendor.vendorDetails?.totalOrders || 0,
+        profilePicture: vendor.profilePicture || "",
+        address: vendor.address || {},
+        geoLocation: vendor.location?.coordinates || [0, 0],
+        status: vendor.vendorDetails?.status || "Active",
       },
+
+      // extra order calc values but not shown in UI
       itemMRP: i.itemMRP,
       discount: i.discount,
       total: i.total
     };
   });
 
+  // ---------------- SIMILAR PRODUCTS ----------------
+  const similarProductsRaw = await Product.find({
+    category: { $in: [...categoryIds] },
+    _id: { $nin: finalItems.map(x => x.id) },
+  })
+    .select("name price images unit rating weightPerPiece vendor")
+    .limit(12)
+    .populate("vendor", "name")
+    .lean();
+
+  const similarProducts = similarProductsRaw.map((p) => ({
+    id: p._id,
+    name: p.name,
+    price: p.price,
+    unit: p.unit,
+    imageUrl: p.images?.[0] || "",
+    vendor: p.vendor?.name || "",
+    rating: p.rating,
+    weightPerPiece: p.weightPerPiece,
+  }));
+
   // ---------------- Final total (NO donation) ----------------
   const finalAmount = summary.totalAmount;
 
-  // ---------------- Response ----------------
+  // ---------------- FINAL RESPONSE (MATCHES GETCART FULLY) ----------------
   return res.json({
     success: true,
-    deliveryType,
-    address: deliveryType === "Delivery" ? deliveryAddress : null,
-    pickupSlot: deliveryType === "Pickup" ? pickupSlot : null,
+    data: {
+      items: finalItems,
 
-    items: finalItems,
+      summary: {
+        totalMRP: summary.totalMRP,
+        couponDiscount: summary.discount,
+        deliveryCharge: summary.deliveryCharge,
+        totalAmount: finalAmount
+      },
 
-    priceDetails: {
-      totalMRP: summary.totalMRP,
-      couponDiscount: summary.discount,
-      deliveryCharge: summary.deliveryCharge,
-      totalAmount: finalAmount        // 🚫 donation not added
-    },
+      priceDetails: {
+        totalMRP: summary.totalMRP,
+        couponDiscount: summary.discount,
+        deliveryCharge: summary.deliveryCharge,
+        totalAmount: finalAmount
+      },
 
-    bottomBarPrice: summary.totalMRP - summary.discount,
+      couponCode: couponCode || "",
 
-    summary: {
-      totalMRP: summary.totalMRP,
-      discount: summary.discount,
-      deliveryCharge: summary.deliveryCharge,
-      totalAmount: finalAmount,       // same
-      finalAmount                     // same
+      similarProducts,
+      
+      deliveryType,
+      address: deliveryType === "Delivery" ? deliveryAddress : null,
+      pickupSlot: deliveryType === "Pickup" ? pickupSlot : null
     }
   });
 });
+
 
 
 
