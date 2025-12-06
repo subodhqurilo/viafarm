@@ -2520,78 +2520,70 @@ const addItemToCart = asyncHandler(async (req, res) => {
     if (!productId || quantity <= 0) {
         return res.status(400).json({
             success: false,
-            message: 'Product ID and valid quantity are required.'
+            message: "Product ID and valid quantity are required."
         });
     }
 
-    // --- 1️⃣ Fetch product details ---
+    // 1️⃣ Fetch product
     const product = await Product.findById(productId)
-        .select('name price weightPerPiece vendor status images unit variety');
+        .select("name price status images unit variety vendor");
 
     if (!product) {
-        return res.status(404).json({ success: false, message: 'Product not found.' });
+        return res.status(404).json({
+            success: false,
+            message: "Product not found."
+        });
     }
 
-    if (product.status !== 'In Stock' || product.price == null) {
-        return res.status(400).json({ success: false, message: 'Product is out of stock or invalid.' });
+    if (product.status !== "In Stock") {
+        return res.status(400).json({
+            success: false,
+            message: "Product is out of stock or invalid."
+        });
     }
 
-    // --- 2️⃣ Find or create user's cart ---
+    // 2️⃣ Find or create cart
     let cart = await Cart.findOne({ user: userId });
     if (!cart) {
         cart = await Cart.create({ user: userId, items: [] });
     }
 
-    // ❌❌❌ VENDOR RESTRICTION REMOVED — MULTI VENDOR ALLOWED
-    // (No vendor check here)
+    // 3️⃣ Add or update quantity
+    const index = cart.items.findIndex(i => i.product.toString() === productId);
 
-    // --- 4️⃣ Add or update product ---
-    const existingItemIndex = cart.items.findIndex(
-        i => i.product && i.product.toString() === productId
-    );
-
-    if (existingItemIndex > -1) {
-        cart.items[existingItemIndex].quantity += Number(quantity);
-        cart.items[existingItemIndex].price = product.price;
+    if (index >= 0) {
+        cart.items[index].quantity += Number(quantity);
     } else {
         cart.items.push({
-            product: product._id,
-            vendor: product.vendor,
-            quantity: Number(quantity),
-            price: product.price
+            product: productId,
+            quantity: Number(quantity)
         });
     }
 
     await cart.save();
 
-    // --- 5️⃣ Recalculate summary ---
-    const summary = await calculateOrderSummary(cart, cart.couponCode);
-
-    // --- 6️⃣ Populate for response ---
-    const populatedCart = await Cart.findById(cart._id)
-        .populate('items.product', 'name price variety images unit vendor')
+    // 4️⃣ Populate for response
+    const populated = await Cart.findById(cart._id)
+        .populate("items.product", "name images unit variety vendor")
         .lean();
 
-    const items = populatedCart.items.map(i => ({
+    const items = populated.items.map(i => ({
         id: i.product._id,
         name: i.product.name,
-        subtitle: i.product.variety || '',
-        mrp: i.price,
-        imageUrl: i.product.images?.[0] || null,
+        subtitle: i.product.variety || "",
+        imageUrl: i.product.images?.[0] || "",
         quantity: i.quantity,
         unit: i.product.unit,
-        vendorId: i.vendor
+        vendorId: i.product.vendor   // vendor coming from product
     }));
 
-    res.status(200).json({
+    return res.json({
         success: true,
-        message: 'Item added successfully.',
-        data: {
-            items,
-            summary
-        }
+        message: "Item added successfully.",
+        data: { items }
     });
 });
+
 
 
 
