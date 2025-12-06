@@ -2365,13 +2365,14 @@ const getCartItems = asyncHandler(async (req, res) => {
       });
     }
 
-    // 2️⃣ Format clean items
+    // 2️⃣ Format clean items + ADD PRICE (important)
     const items = cart.items
-      .filter(i => i.product) // remove missing products
+      .filter(i => i.product)
       .map(i => ({
         id: i.product._id,
         name: i.product.name,
         subtitle: i.product.variety || "",
+        mrp: i.price || i.product.price || 0,     // ✅ FIX: PRICE ADDED
         imageUrl: i.product.images?.[0] || "",
         quantity: i.quantity,
         unit: i.product.unit || "",
@@ -2381,7 +2382,7 @@ const getCartItems = asyncHandler(async (req, res) => {
     // 3️⃣ Calculate simple totals
     let totalMRP = 0;
     items.forEach(i => {
-      totalMRP += i.quantity * (i.mrp || i.product?.price || 0);
+      totalMRP += i.quantity * i.mrp;   // ✅ FIX: now using correct price
     });
 
     const summary = {
@@ -2410,6 +2411,7 @@ const getCartItems = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
