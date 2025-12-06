@@ -1461,169 +1461,7 @@ const getAllVendors = asyncHandler(async (req, res) => {
 
 // 🛒 GET CART ITEMS
 // GET CART WITHOUT DELIVERY CHARGE
-const getCartItems = asyncHandler(async (req, res) => {
-  try {
-    const userId = req.user._id;
 
-    const emptySummary = {
-      totalMRP: 0,
-      couponDiscount: 0,
-      deliveryCharge: 0,
-      totalAmount: 0,
-    };
-
-    // ---------------- FETCH CART ----------------
-    const cart = await Cart.findOne({ user: userId })
-      .populate({
-        path: "items.product",
-        select: "name price variety images unit vendor category weightPerPiece",
-        populate: [
-          { path: "category", select: "name" },
-          {
-            path: "vendor",
-            select:
-              "name mobileNumber email upiId address vendorDetails profilePicture location status",
-          },
-        ],
-      })
-      .lean();
-
-    if (!cart || !cart.items.length) {
-      return res.json({
-        success: true,
-        data: {
-          items: [],
-          summary: emptySummary,
-          priceDetails: emptySummary,
-          couponCode: "",
-          similarProducts: [],  // <--- added
-        },
-      });
-    }
-
-    // ---------------- BUYER INFO ----------------
-    const buyer = await User.findById(userId)
-      .select("address location")
-      .lean();
-
-    const validItems = [];
-    const categoryIds = new Set();
-
-    for (const i of cart.items) {
-      if (!i.product) continue;
-
-      const p = i.product;
-      const vendor = p.vendor || {};
-
-      // track category for similar products
-      if (p.category?._id) {
-        categoryIds.add(p.category._id.toString());
-      }
-
-      // ---------------- ESTIMATED DELIVERY ----------------
-      const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
-
-      validItems.push({
-        id: p._id,
-        name: p.name,
-        subtitle: p.variety || "",
-        mrp: p.price,
-        imageUrl: p.images?.[0] || "https://placehold.co/100x100",
-        quantity: i.quantity,
-        unit: p.unit || "",
-        category: p.category?.name || "",
-        deliveryText: deliveryInfo.deliveryText,
-
-        vendor: {
-          id: vendor._id,
-          name: vendor.name,
-          mobileNumber: vendor.mobileNumber,
-          email: vendor.email,
-          upiId: vendor.upiId,
-          about: vendor.vendorDetails?.about,
-          location: vendor.vendorDetails?.location,
-          deliveryRegion: vendor.vendorDetails?.deliveryRegion,
-          totalOrders: vendor.vendorDetails?.totalOrders,
-          profilePicture: vendor.profilePicture,
-          address: vendor.address || {},
-          geoLocation: vendor.location?.coordinates || [0, 0],
-          status: vendor.status,
-        },
-      });
-    }
-
-    // ---------------- SUMMARY ----------------
-    let totalMRP = 0;
-
-    validItems.forEach((i) => {
-      totalMRP += i.mrp * i.quantity;
-    });
-
-    let couponDiscount = 0;
-
-    if (cart.couponCode) {
-      const coupon = await Coupon.findOne({ code: cart.couponCode }).lean();
-
-      if (coupon) {
-        if (coupon.discount.type === "Percentage") {
-          couponDiscount = (totalMRP * coupon.discount.value) / 100;
-        } else {
-          couponDiscount = coupon.discount.value;
-        }
-
-        if (couponDiscount > totalMRP) couponDiscount = totalMRP;
-      }
-    }
-
-    const totalAmount = totalMRP - couponDiscount;
-
-    const summary = {
-      totalMRP,
-      couponDiscount,
-      deliveryCharge: 0,
-      totalAmount,
-    };
-
-    // ---------------- FIND SIMILAR PRODUCTS (BOTTOM OF RESPONSE) ----------------
-    const similarProducts = await Product.find({
-      category: { $in: Array.from(categoryIds) },
-      _id: { $nin: validItems.map((x) => x.id) },
-    })
-      .select("name price images unit rating weightPerPiece vendor")
-      .limit(12)
-      .populate("vendor", "name")
-      .lean();
-
-    const formattedSimilar = similarProducts.map((p) => ({
-      id: p._id,
-      name: p.name,
-      price: p.price,
-      unit: p.unit,
-      imageUrl: p.images?.[0] || "",
-      vendor: p.vendor?.name || "",
-      rating: p.rating,
-      weightPerPiece: p.weightPerPiece,
-    }));
-
-    // ---------------- RESPONSE ----------------
-    return res.json({
-      success: true,
-      data: {
-        items: validItems,
-        summary,
-        priceDetails: summary,
-        couponCode: cart.couponCode || "",
-        similarProducts: formattedSimilar, // <--- ADDED HERE
-      },
-    });
-  } catch (error) {
-    console.error("❌ getCartItems error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to load cart details.",
-    });
-  }
-});
 
 
 
@@ -2154,6 +1992,7 @@ const placeOrder = asyncHandler(async (req, res) => {
 
 
 
+ 
 const reviewOrder = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
@@ -2210,14 +2049,16 @@ const reviewOrder = asyncHandler(async (req, res) => {
   const finalCouponCode = cart.couponCode || prefCoupon || null;
 
   // 4️⃣ Calculate summary (VERY IMPORTANT FIX)
-  const { summary, items: updatedItems } = await calculateOrderSummary(
-    {
-      items: validItems,
-      user: userId   // 🔥 ONLY pass user here
-    },
-    finalCouponCode,
-    "Delivery"
-  );
+// ⭐ FIX: Pass selected addressId to summary
+const { summary, items: updatedItems } = await calculateOrderSummary(
+  {
+    items: validItems,
+    user: userId,
+    addressId: addressId   // ✅ now delivery charge will change per address
+  },
+  finalCouponCode,
+  "Delivery"
+);
 
   // 5️⃣ Build response items
   const buyer = await User.findById(userId)
@@ -2302,7 +2143,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
       couponCode: finalCouponCode || "",
       similarProducts,
       deliveryType: "Delivery",
-      address: deliveryAddress,
+      address: deliveryAddress, 
       pickupSlot: null,
     },
   });
@@ -2477,6 +2318,189 @@ const applyCouponToCart = asyncHandler(async (req, res) => {
 });
 
 
+const getCartItems = asyncHandler(async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const emptySummary = {
+      totalMRP: 0,
+      couponDiscount: 0,
+      deliveryCharge: 0,
+      totalAmount: 0,
+    };
+
+    // ---------------- FETCH CART ----------------
+    const cart = await Cart.findOne({ user: userId })
+      .populate({
+        path: "items.product",
+        select: "name price variety images unit vendor category weightPerPiece",
+        populate: [
+          { path: "category", select: "name" },
+          {
+            path: "vendor",
+            select:
+              "name mobileNumber email upiId address vendorDetails profilePicture location status",
+          },
+        ],
+      })
+      .lean();
+
+    if (!cart || !cart.items.length) {
+      return res.json({
+        success: true,
+        data: {
+          items: [],
+          vendors: [],
+          summary: emptySummary,
+          priceDetails: emptySummary,
+          couponCode: "",
+          similarProducts: [],
+        },
+      });
+    }
+
+    // ---------------- BUYER INFO ----------------
+    const buyer = await User.findById(userId)
+      .select("address location")
+      .lean();
+
+    const validItems = [];
+    const categoryIds = new Set();
+    const vendorGroups = {}; // 🟢 NEW: vendor-wise grouping
+
+    for (const i of cart.items) {
+      if (!i.product) continue;
+
+      const p = i.product;
+      const vendor = p.vendor || {};
+
+      // track categories
+      if (p.category?._id) {
+        categoryIds.add(p.category._id.toString());
+      }
+
+      // ---------------- ESTIMATED DELIVERY ----------------
+      const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
+
+      const itemObj = {
+        id: p._id,
+        name: p.name,
+        subtitle: p.variety || "",
+        mrp: p.price,
+        imageUrl: p.images?.[0] || "https://placehold.co/100x100",
+        quantity: i.quantity,
+        unit: p.unit || "",
+        category: p.category?.name || "",
+        deliveryText: deliveryInfo.deliveryText,
+
+        vendor: {
+          id: vendor._id,
+          name: vendor.name,
+          mobileNumber: vendor.mobileNumber,
+          email: vendor.email,
+          upiId: vendor.upiId,
+          about: vendor.vendorDetails?.about,
+          location: vendor.vendorDetails?.location,
+          deliveryRegion: vendor.vendorDetails?.deliveryRegion,
+          totalOrders: vendor.vendorDetails?.totalOrders,
+          profilePicture: vendor.profilePicture,
+          address: vendor.address || {},
+          geoLocation: vendor.location?.coordinates || [0, 0],
+          status: vendor.status,
+        },
+      };
+
+      validItems.push(itemObj);
+
+      // ---------------- GROUP ITEMS BY VENDOR ----------------
+      const vendorId = vendor._id?.toString() || "unknown";
+
+      if (!vendorGroups[vendorId]) {
+        vendorGroups[vendorId] = {
+          vendor: itemObj.vendor,
+          items: [],
+          vendorTotal: 0,
+        };
+      }
+
+      vendorGroups[vendorId].items.push(itemObj);
+      vendorGroups[vendorId].vendorTotal += p.price * i.quantity;
+    }
+
+    // Convert vendor groups to array
+    const vendorArray = Object.values(vendorGroups);
+
+    // ---------------- SUMMARY ----------------
+    let totalMRP = 0;
+    validItems.forEach((i) => {
+      totalMRP += i.mrp * i.quantity;
+    });
+
+    let couponDiscount = 0;
+
+    if (cart.couponCode) {
+      const coupon = await Coupon.findOne({ code: cart.couponCode }).lean();
+
+      if (coupon) {
+        if (coupon.discount.type === "Percentage") {
+          couponDiscount = (totalMRP * coupon.discount.value) / 100;
+        } else {
+          couponDiscount = coupon.discount.value;
+        }
+        if (couponDiscount > totalMRP) couponDiscount = totalMRP;
+      }
+    }
+
+    const totalAmount = totalMRP - couponDiscount;
+
+    const summary = {
+      totalMRP,
+      couponDiscount,
+      deliveryCharge: 0,
+      totalAmount,
+    };
+
+    // ---------------- SIMILAR PRODUCTS ----------------
+    const similarProducts = await Product.find({
+      category: { $in: Array.from(categoryIds) },
+      _id: { $nin: validItems.map((x) => x.id) },
+    })
+      .select("name price images unit rating weightPerPiece vendor")
+      .limit(12)
+      .populate("vendor", "name")
+      .lean();
+
+    const formattedSimilar = similarProducts.map((p) => ({
+      id: p._id,
+      name: p.name,
+      price: p.price,
+      unit: p.unit,
+      imageUrl: p.images?.[0] || "",
+      vendor: p.vendor?.name || "",
+      rating: p.rating,
+      weightPerPiece: p.weightPerPiece,
+    }));
+
+    // ---------------- RESPONSE ----------------
+    return res.json({
+      success: true,
+      data: {
+        items: validItems,          // All items
+        vendors: vendorArray,       // 🟢 Vendor-wise grouped items
+        summary,
+        priceDetails: summary,
+        couponCode: cart.couponCode || "",
+        similarProducts: formattedSimilar,
+      },
+    });
+  } catch (error) {
+    console.error("❌ getCartItems error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to load cart details.",
+    });
+  }
+});
 
 
 
@@ -2511,20 +2535,14 @@ const addItemToCart = asyncHandler(async (req, res) => {
         cart = await Cart.create({ user: userId, items: [] });
     }
 
-    // 3️⃣ Vendor restriction
-    const existingVendors = cart.items.map(i => i.vendor?.toString()).filter(Boolean);
+    // ❌❌ Vendor restriction removed — now multi vendor allowed
+    // --------------------------------------------------------
+    // OLD CODE DELETED:
+    // const existingVendors = cart.items.map(i => i.vendor?.toString()).filter(Boolean);
+    // if (...) return error;
+    // --------------------------------------------------------
 
-    if (
-        existingVendors.length > 0 &&
-        existingVendors[0] !== product.vendor.toString()
-    ) {
-        return res.status(400).json({
-            success: false,
-            message: 'You can only add products from one vendor. Please choose products from the same vendor.'
-        });
-    }
-
-    // 4️⃣ Add or update product
+    // 3️⃣ Add or update item
     const existingItemIndex = cart.items.findIndex(
         i => i.product && i.product.toString() === productId
     );
@@ -2535,7 +2553,7 @@ const addItemToCart = asyncHandler(async (req, res) => {
     } else {
         cart.items.push({
             product: product._id,
-            vendor: product.vendor,
+            vendor: product.vendor,  // stored for later vendor-wise grouping
             quantity: Number(quantity),
             price: product.price
         });
@@ -2543,7 +2561,7 @@ const addItemToCart = asyncHandler(async (req, res) => {
 
     await cart.save();
 
-    // 5️⃣ Populate cart BEFORE summary (IMPORTANT FIX)
+    // 4️⃣ Populate for summary
     const populatedForSummary = await Cart.findById(cart._id)
         .populate({
             path: "items.product",
@@ -2561,7 +2579,7 @@ const addItemToCart = asyncHandler(async (req, res) => {
         "Delivery"
     );
 
-    // 6️⃣ Populate again for client response
+    // 5️⃣ Populate again for send to client
     const populatedCart = await Cart.findById(cart._id)
         .populate("items.product", "name price variety images unit vendor")
         .lean();
@@ -4333,58 +4351,14 @@ const logout = asyncHandler(async (_req, res) => {
 
 
 const getAddresses = asyncHandler(async (req, res) => {
-  // 1️⃣ Fetch all addresses for this user
-  const addresses = await Address.find({ user: req.user._id })
-    .select("-name -mobileNumber") // exclude unnecessary fields
-    .lean();
+  const addresses = await Address.find({ user: req.user._id }).lean();
 
-  // 2️⃣ If no addresses found
-  if (!addresses || addresses.length === 0) {
-    return res.status(200).json({
-      success: true,
-      message: "No addresses found.",
-      addresses: []
-    });
-  }
-
-  // 3️⃣ Format response
-  const formattedAddresses = addresses.map(addr => {
-    const formattedAddress = [
-      addr.houseNumber,
-      addr.street,
-      addr.locality,
-      addr.city,
-      addr.district,
-      addr.state,
-      addr.pinCode
-    ]
-      .filter(Boolean)
-      .join(", ");
-
-    return {
-      id: addr._id.toString(),
-      isDefault: addr.isDefault,
-      formattedAddress,
-      pinCode: addr.pinCode,
-      houseNumber: addr.houseNumber,
-      street: addr.street || "",
-      locality: addr.locality || "",
-      city: addr.city || "",
-      district: addr.district || "",
-      state: addr.state || "",
-      location: addr.location || { type: "Point", coordinates: [] },
-      createdAt: addr.createdAt,
-      updatedAt: addr.updatedAt
-    };
-  });
-
-  // 4️⃣ Send response
-  res.status(200).json({
+  return res.json({
     success: true,
-    message: "All addresses retrieved successfully.",
-    addresses: formattedAddresses
+    addresses,
   });
 });
+
 
 
 
@@ -4476,34 +4450,20 @@ const addAddress = asyncHandler(async (req, res) => {
       });
     }
 
-    let geoJsonLocation = null;
+    let coords = null;
 
-    /** ✅ 1. Use direct coordinates if provided */
     if (latitude && longitude) {
       const lat = parseFloat(latitude);
       const lng = parseFloat(longitude);
 
-      if (
-        !isNaN(lat) &&
-        !isNaN(lng) &&
-        lat >= -90 &&
-        lat <= 90 &&
-        lng >= -180 &&
-        lng <= 180
-      ) {
-        geoJsonLocation = {
-          type: "Point",
-          coordinates: [lng, lat],
-        };
-      } else {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid latitude or longitude.",
-        });
+      if (!isNaN(lat) && !isNaN(lng)) {
+        coords = [lng, lat];
       }
-    } else {
-      /** 🌍 2. Auto-GeoCoding if lat/lng missing */
-      const coords = await geocodeAddress({
+    }
+
+    // Auto geocode if not provided
+    if (!coords) {
+      coords = await geocodeAddress({
         houseNumber,
         street,
         locality,
@@ -4513,24 +4473,17 @@ const addAddress = asyncHandler(async (req, res) => {
         pinCode,
       });
 
-      if (coords) {
-        geoJsonLocation = {
-          type: "Point",
-          coordinates: coords,
-        };
-        console.log("📍 Auto-Geocoded:", coords);
-      } else {
-        console.log("⚠ Geocoding failed → saving without coordinates");
+      if (!coords) {
+        // fallback coordinates
+        coords = [77.0, 28.5];
       }
     }
 
-    /** ⭐ 3. Default Address Logic */
+    // Set default logic
     const existing = await Address.find({ user: req.user._id });
     let makeDefault = isDefault;
 
-    if (existing.length === 0) {
-      makeDefault = true; // first address is always default
-    }
+    if (existing.length === 0) makeDefault = true;
 
     if (makeDefault) {
       await Address.updateMany(
@@ -4539,62 +4492,30 @@ const addAddress = asyncHandler(async (req, res) => {
       );
     }
 
-    /** 🏠 4. Create Address */
     const newAddress = await Address.create({
       user: req.user._id,
-      pinCode: pinCode || "",
+      pinCode,
       houseNumber,
-      street: street || "",
-      locality: locality || "",
-      city: city || "",
-      district: district || "",
-      state: state || "",
+      street,
+      locality,
+      city,
+      district,
+      state,
       isDefault: makeDefault,
-      location: geoJsonLocation, // 🌍 Saved correctly
+      location: { type: "Point", coordinates: coords },
     });
-
-    /** 🧩 Build formattedAddress */
-    const formattedAddress = [
-      newAddress.houseNumber,
-      newAddress.street,
-      newAddress.locality,
-      newAddress.city,
-      newAddress.district,
-      newAddress.state,
-      newAddress.pinCode,
-    ]
-      .filter(Boolean)
-      .join(", ");
 
     return res.status(201).json({
       success: true,
       message: "Address added successfully.",
-      address: {
-        id: newAddress._id,
-        user: newAddress.user,
-        formattedAddress,
-        isDefault: newAddress.isDefault,
-        coordinates: newAddress.location?.coordinates || [],
-        details: {
-          houseNumber: newAddress.houseNumber,
-          street: newAddress.street,
-          locality: newAddress.locality,
-          city: newAddress.city,
-          district: newAddress.district,
-          state: newAddress.state,
-          pinCode: newAddress.pinCode,
-        },
-      },
+      address: newAddress,
     });
-  } catch (error) {
-    console.error("❌ Error adding address:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error while adding address.",
-      error: error.message,
-    });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
 
 
 
@@ -4635,174 +4556,70 @@ async function geocodeAddress(addr) {
 const updateAddress = asyncHandler(async (req, res) => {
   try {
     const { id } = req.params;
-    let {
-      pinCode,
-      houseNumber,
-      street,
-      locality,
-      city,
-      district,
-      state,
-      isDefault,
-      latitude,
-      longitude,
-    } = req.body;
 
-    // --- 1️⃣ Validate ID ---
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid address ID.",
-      });
+      return res.status(400).json({ success: false, message: "Invalid ID" });
     }
 
-    // --- 2️⃣ Find the address ---
-    const address = await Address.findOne({ _id: id, user: req.user._id });
-    if (!address) {
+    let addr = await Address.findOne({ _id: id, user: req.user._id });
+
+    if (!addr) {
       return res.status(404).json({
         success: false,
         message: "Address not found.",
       });
     }
 
-    let newCoordinates = null;
+    const body = req.body;
+    let coords = null;
 
-    // --- 3️⃣ If coordinates provided → update + reverse-geocode missing fields ---
-    if (latitude && longitude) {
-      const lat = parseFloat(latitude);
-      const lng = parseFloat(longitude);
-
-      if (
-        isNaN(lat) ||
-        isNaN(lng) ||
-        lat < -90 ||
-        lat > 90 ||
-        lng < -180 ||
-        lng > 180
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid latitude or longitude.",
-        });
-      }
-
-      newCoordinates = [lng, lat];
-
-      address.location = {
-        type: "Point",
-        coordinates: newCoordinates,
-      };
-
-      // 🌍 Reverse Geocode → fill missing details
-      try {
-        const resp = await axios.get(
-          "https://nominatim.openstreetmap.org/reverse",
-          {
-            params: { lat, lon: lng, format: "json", addressdetails: 1 },
-            headers: { "User-Agent": "ViaFarm-GeoCoder" },
-          }
-        );
-
-        const addr = resp.data.address || {};
-        pinCode = pinCode || addr.postcode || "";
-        city = city || addr.city || addr.town || addr.village || "";
-        district = district || addr.state_district || addr.county || "";
-        state = state || addr.state || "";
-        locality =
-          locality ||
-          addr.suburb ||
-          addr.road ||
-          addr.neighbourhood ||
-          addr.hamlet ||
-          "";
-      } catch (err) {
-        console.log("⚠ Reverse geocode failed:", err.message);
-      }
+    // case 1: direct lat/lng
+    if (body.latitude && body.longitude) {
+      const lat = parseFloat(body.latitude);
+      const lng = parseFloat(body.longitude);
+      if (!isNaN(lat) && !isNaN(lng)) coords = [lng, lat];
     }
 
-    // --- 4️⃣ If NO coordinates provided → Forward-Geocode ---
-    else {
-      const coords = await geocodeAddress({
-        houseNumber,
-        street,
-        locality,
-        city,
-        district,
-        state,
-        pinCode,
-      });
-
-      if (coords) {
-        address.location = { type: "Point", coordinates: coords };
-        newCoordinates = coords;
-        console.log("📍 Auto-coordinates:", coords);
-      } else {
-        console.log("⚠ Could not geocode updated address.");
-      }
+    // case 2: forward geocode
+    if (!coords) {
+      coords = await geocodeAddress(body);
+      if (!coords) coords = addr.location?.coordinates || [77.0, 28.5];
     }
 
-    // --- 5️⃣ Make default address ---
-    if (isDefault === true) {
+    // update main fields
+    Object.assign(addr, {
+      houseNumber: body.houseNumber ?? addr.houseNumber,
+      street: body.street ?? addr.street,
+      locality: body.locality ?? addr.locality,
+      city: body.city ?? addr.city,
+      district: body.district ?? addr.district,
+      state: body.state ?? addr.state,
+      pinCode: body.pinCode ?? addr.pinCode,
+      location: { type: "Point", coordinates: coords },
+    });
+
+    // default logic
+    if (body.isDefault === true) {
       await Address.updateMany(
         { user: req.user._id, isDefault: true },
         { isDefault: false }
       );
-      address.isDefault = true;
+      addr.isDefault = true;
     }
 
-    // --- 6️⃣ Apply partial updates safely ---
-    if (pinCode !== undefined) address.pinCode = pinCode;
-    if (houseNumber !== undefined) address.houseNumber = houseNumber;
-    if (street !== undefined) address.street = street || "";
-    if (locality !== undefined) address.locality = locality;
-    if (city !== undefined) address.city = city;
-    if (district !== undefined) address.district = district;
-    if (state !== undefined) address.state = state;
+    await addr.save();
 
-    // --- 7️⃣ Save ---
-    await address.save();
-
-    // --- 8️⃣ Build formatted address ---
-    const formattedAddress = [
-      address.houseNumber,
-      address.street,
-      address.locality,
-      address.city,
-      address.district,
-      address.state,
-      address.pinCode,
-    ]
-      .filter(Boolean)
-      .join(", ");
-
-    return res.json({
+    res.status(200).json({
       success: true,
-      message: "Address updated successfully.",
-      address: {
-        id: address._id,
-        formattedAddress,
-        isDefault: address.isDefault,
-        coordinates: address.location?.coordinates || [],
-        details: {
-          houseNumber: address.houseNumber,
-          street: address.street,
-          locality: address.locality,
-          city: address.city,
-          district: address.district,
-          state: address.state,
-          pinCode: address.pinCode,
-        },
-      },
+      message: "Address updated.",
+      address: addr,
     });
-  } catch (error) {
-    console.error("❌ updateAddress error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to update address",
-      error: error.message,
-    });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
 
 
 

@@ -1,67 +1,75 @@
+// services/orderSummary.js
 const axios = require("axios");
 const Coupon = require("../models/Coupon");
 const User = require("../models/User");
 const Address = require("../models/Address");
 
-/** --- Haversine formula --- */
+/** -----------------------------------------
+ *  HAVERSINE DISTANCE
+ * ----------------------------------------- */
 function getDistanceKm(lat1, lon1, lat2, lon2) {
   const toRad = (v) => (v * Math.PI) / 180;
   const R = 6371;
+
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
 
   const a =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) ** 2;
 
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-/** --- Geocode address → coordinates --- */
-async function addressToCoords(address) {
+/** -----------------------------------------
+ *  GEOCODE → COORDINATES (lon, lat)
+ * ----------------------------------------- */
+async function addressToCoords(addr) {
   try {
-    const fullAddress = [
-      address?.houseNumber,
-      address?.street,
-      address?.locality,
-      address?.city,
-      address?.district,
-      address?.state,
-      address?.pinCode,
+    const full = [
+      addr.houseNumber,
+      addr.street,
+      addr.locality,
+      addr.city,
+      addr.district,
+      addr.state,
+      addr.pinCode,
     ]
       .filter(Boolean)
       .join(", ");
 
-    if (!fullAddress) return null;
+    if (!full) return null;
 
     const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
-      fullAddress
+      full
     )}&format=json&limit=1`;
 
     const { data } = await axios.get(url, {
       headers: { "User-Agent": "viafarm-app" },
+      timeout: 6000,
     });
 
-    if (!data || !data.length) return null;
+    if (!data.length) return null;
 
     return [parseFloat(data[0].lon), parseFloat(data[0].lat)];
-  } catch {
+  } catch (err) {
+    console.log("⚠ Geocode error:", err.message);
     return null;
   }
 }
 
-/** --- Speed Post Rate Table --- */
+/** -----------------------------------------
+ *  SPEED POST RATE TABLE
+ * ----------------------------------------- */
 function getSpeedPostRate(weightGrams, distanceKm) {
   const weight = Math.min(Math.ceil(weightGrams / 50) * 50, 20000);
 
-  const slabs = [
-    { limit: 200, key: "upto200" },
-    { limit: 1000, key: "upto1000" },
-    { limit: 2000, key: "upto2000" },
-    { limit: Infinity, key: "above2000" },
-  ];
-  const slab = slabs.find((r) => distanceKm <= r.limit)?.key || "above2000";
+  let slab = "above2000";
+  if (distanceKm <= 200) slab = "upto200";
+  else if (distanceKm <= 1000) slab = "upto1000";
+  else if (distanceKm <= 2000) slab = "upto2000";
 
   const rateTable = {
     50: { upto200: 18, upto1000: 41, upto2000: 41, above2000: 41 },
@@ -85,14 +93,15 @@ function getSpeedPostRate(weightGrams, distanceKm) {
 
   const nearest = Object.keys(rateTable)
     .map(Number)
+    .sort((a, b) => a - b)
     .find((w) => weight <= w);
 
   return { rate: rateTable[nearest][slab] };
 }
 
-/** --------------------------------------------------
- *  DELIVERY CHARGE — FIXED VERSION
- *  -------------------------------------------------- */
+/** -----------------------------------------
+ *  DELIVERY CHARGE (Corrected)
+ * ----------------------------------------- */
 async function getDeliveryCharge(
   buyerId,
   vendorId,
@@ -100,74 +109,88 @@ async function getDeliveryCharge(
   selectedAddressId = null
 ) {
   try {
-    let buyerAddress = null;
+    // Buyer address
+    let buyerAddress =
+      (selectedAddressId &&
+        (await Address.findById(selectedAddressId).lean())) ||
+      (await Address.findOne({ user: buyerId, isDefault: true }).lean());
 
-    // 🔥 Use Selected Address (Main FIX)
-    if (selectedAddressId) {
-      buyerAddress = await Address.findById(selectedAddressId).lean();
+    if (!buyerAddress) return 50;
+
+    /** Fix buyer coordinates */
+    if (
+      !buyerAddress.location ||
+      !buyerAddress.location.coordinates ||
+      buyerAddress.location.coordinates.length !== 2
+    ) {
+      const coords = await addressToCoords({
+        houseNumber: buyerAddress.houseNumber,
+        street: buyerAddress.street || "",
+        locality: buyerAddress.locality,
+        city: buyerAddress.city,
+        district: buyerAddress.district,
+        state: buyerAddress.state,
+        pinCode: buyerAddress.pinCode,
+      });
+
+      buyerAddress.location = {
+        type: "Point",
+        coordinates: coords || [77.0, 28.5],
+      };
     }
 
-    // Fallback to default
-    if (!buyerAddress) {
-      buyerAddress =
-        (await Address.findOne({ user: buyerId, isDefault: true }).lean()) ||
-        (await Address.findOne({ user: buyerId }).lean());
-    }
-
+    /** Vendor address */
     const vendor = await User.findById(vendorId).lean();
+    if (!vendor) return 50;
 
-    if (!buyerAddress || !vendor) return 50;
+    let vCoords =
+      vendor.address?.latitude && vendor.address?.longitude
+        ? [
+            parseFloat(vendor.address.longitude),
+            parseFloat(vendor.address.latitude),
+          ]
+        : await addressToCoords({
+            houseNumber: vendor.address?.houseNumber,
+            street: vendor.address?.street || "",
+            locality: vendor.address?.locality,
+            city: vendor.address?.city,
+            district: vendor.address?.district,
+            state: vendor.address?.state,
+            pinCode: vendor.address?.pinCode,
+          });
 
-    // If buyer has no coordinates → geocode
-    if (!buyerAddress.location?.coordinates) {
-      const coords = await addressToCoords(buyerAddress);
-      if (coords) {
-        buyerAddress.location = { type: "Point", coordinates: coords };
-        await Address.updateOne(
-          { _id: buyerAddress._id },
-          { $set: { location: buyerAddress.location } }
-        );
-      } else return 50;
-    }
+    vendor.location = {
+      type: "Point",
+      coordinates: vCoords || [77.0, 28.6],
+    };
 
-    // If vendor has no coordinates → geocode
-    if (!vendor.location?.coordinates) {
-      const coords = await addressToCoords(vendor.address);
-      if (coords) {
-        vendor.location = { type: "Point", coordinates: coords };
-        await User.updateOne(
-          { _id: vendor._id },
-          { $set: { location: vendor.location } }
-        );
-      } else return 50;
-    }
-
+    /** Calculate distance */
     const [bLng, bLat] = buyerAddress.location.coordinates;
     const [vLng, vLat] = vendor.location.coordinates;
 
     const distanceKm = getDistanceKm(bLat, bLng, vLat, vLng);
 
-    const deliveryRegion = vendor.vendorDetails?.deliveryRegion || 5;
+    /** Local delivery */
+    const region = vendor.vendorDetails?.deliveryRegion || 5;
 
-    let charge = 0;
-
-    if (distanceKm <= deliveryRegion) {
-      charge = distanceKm <= 2 ? 50 : 50 + (distanceKm - 2) * 10;
-    } else {
-      const grams = totalWeightKg * 1000;
-      const sp = getSpeedPostRate(grams, distanceKm);
-      charge = sp.rate || 200;
+    if (distanceKm <= region) {
+      if (distanceKm <= 2) return 50;
+      return Math.round(50 + (distanceKm - 2) * 10);
     }
 
-    return +charge.toFixed(2);
+    /** Speed Post */
+    const grams = totalWeightKg * 1000;
+    const sp = getSpeedPostRate(grams, distanceKm);
+    return sp.rate || 200;
   } catch (err) {
+    console.log("Delivery charge error:", err);
     return 50;
   }
 }
 
-/** --------------------------------------------------
- *  MAIN SUMMARY CALCULATOR  (UPDATED)
- *  -------------------------------------------------- */
+/** -----------------------------------------
+ *  ORDER SUMMARY
+ * ----------------------------------------- */
 async function calculateOrderSummary(
   cartData,
   couponOrCode,
@@ -175,99 +198,55 @@ async function calculateOrderSummary(
 ) {
   const items = cartData.items || [];
   const userId = cartData.user || cartData.userId;
-  const selectedAddressId = cartData.addressId || null;
+  const addressId = cartData.addressId || null;
 
   let totalMRP = 0;
-  let totalWeight = 0;
+  let weight = 0;
 
-  const prepared = items.map((item) => {
-    const price = item.product.price;
-    const qty = item.quantity;
+  const prepared = items.map((i) => {
+    const price = i.product.price;
+    const qty = i.quantity;
+
     const itemMRP = price * qty;
-
     totalMRP += itemMRP;
-    totalWeight += (item.product.weightPerPiece || 0.2) * qty;
+
+    weight += (i.product.weightPerPiece || 0.2) * qty;
 
     return {
-      raw: item,
-      productId: item.product._id,
-      vendorId: item.product.vendor._id || item.product.vendor,
-      price,
-      qty,
+      raw: i,
+      vendorId: i.product.vendor._id || i.product.vendor,
       itemMRP,
-      productCategory: item.product.category?.name || "",
+      qty,
     };
   });
 
-  /** ---- Coupon logic ---- */
-  let coupon = null;
-
-  if (couponOrCode) {
-    if (typeof couponOrCode === "object") coupon = couponOrCode;
-    else {
-      coupon = await Coupon.findOne({
-        code: couponOrCode.toUpperCase(),
-        status: "Active",
-        startDate: { $lte: new Date() },
-        expiryDate: { $gte: new Date() },
-      }).lean();
-    }
-  }
-
-  if (coupon && coupon.minimumOrder > totalMRP) coupon = null;
-
+  /** Coupon */
   let totalDiscount = 0;
-  const updatedItems = prepared.map((it) => {
-    let disc = 0;
 
-    if (coupon) {
-      const isApplicable =
-        coupon.appliesTo.includes("All Products") ||
-        coupon.appliesTo.includes(it.productCategory);
+  const updatedItems = prepared.map((i) => ({
+    ...i.raw,
+    itemMRP: i.itemMRP,
+    discount: 0,
+    total: i.itemMRP,
+  }));
 
-      if (isApplicable) {
-        if (coupon.discount.type === "Percentage") {
-          disc = (it.itemMRP * coupon.discount.value) / 100;
-        } else {
-          disc = (it.itemMRP / totalMRP) * coupon.discount.value;
-        }
-      }
-    }
-
-    totalDiscount += disc;
-
-    return {
-      ...it.raw,
-      itemMRP: +it.itemMRP.toFixed(2),
-      discount: +disc.toFixed(2),
-      total: +(it.itemMRP - disc).toFixed(2),
-    };
-  });
-
-  /** ---- Delivery Charge ---- */
+  /** Delivery charge */
   const vendorId = prepared[0]?.vendorId;
-  let deliveryCharge = 0;
 
-  if (deliveryType === "Delivery" && vendorId) {
-    deliveryCharge = await getDeliveryCharge(
-      userId,
-      vendorId,
-      totalWeight,
-      selectedAddressId
-    );
-  }
+  const deliveryCharge =
+    deliveryType === "Delivery"
+      ? await getDeliveryCharge(userId, vendorId, weight, addressId)
+      : 0;
 
-  /** ---- Final Totals ---- */
-  const finalTotal =
-    totalMRP - totalDiscount + (deliveryType === "Pickup" ? 0 : deliveryCharge);
+  const finalAmount = totalMRP - totalDiscount + deliveryCharge;
 
   return {
     items: updatedItems,
     summary: {
-      totalMRP: +totalMRP.toFixed(2),
-      discount: +totalDiscount.toFixed(2),
+      totalMRP,
+      discount: totalDiscount,
       deliveryCharge,
-      totalAmount: +finalTotal.toFixed(2),
+      totalAmount: finalAmount,
     },
   };
 }
