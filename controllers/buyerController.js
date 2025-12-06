@@ -1996,7 +1996,7 @@ const placeOrder = asyncHandler(async (req, res) => {
 const reviewOrder = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
-  // 1️⃣ Fetch saved preference
+  // 1️⃣ Fetch preference
   const pref = await DeliveryPreference.findOne({ user: userId }).lean();
   if (!pref) {
     return res.status(400).json({
@@ -2005,10 +2005,8 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // Delivery only
   const { addressId, couponCode: prefCoupon } = pref;
 
-  // 2️⃣ Delivery requires address
   if (!addressId) {
     return res.status(400).json({
       success: false,
@@ -2024,7 +2022,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // 3️⃣ Fetch cart
+  // 2️⃣ Fetch cart
   const cart = await Cart.findOne({ user: userId })
     .populate({
       path: "items.product",
@@ -2043,24 +2041,41 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  const validItems = cart.items.filter(i => i.product);
+  // ⭐ NEW: Filter only selected vendor items
+  const selectedVendors = cart.selectedVendors?.map(id => id.toString()) || [];
 
-  // ⭐ FINAL COUPON — CART > PREF
+  if (!selectedVendors.length) {
+    return res.status(400).json({
+      success: false,
+      message: "Please select at least one vendor."
+    });
+  }
+
+  const validItems = cart.items.filter(i =>
+    selectedVendors.includes(i.vendor?.toString()) && i.product
+  );
+
+  if (!validItems.length) {
+    return res.status(400).json({
+      success: false,
+      message: "No products found for selected vendors."
+    });
+  }
+
+  // ⭐ FINAL COUPON
   const finalCouponCode = cart.couponCode || prefCoupon || null;
 
-  // 4️⃣ Calculate summary (VERY IMPORTANT FIX)
-// ⭐ FIX: Pass selected addressId to summary
-const { summary, items: updatedItems } = await calculateOrderSummary(
-  {
-    items: validItems,
-    user: userId,
-    addressId: addressId   // ✅ now delivery charge will change per address
-  },
-  finalCouponCode,
-  "Delivery"
-);
+  const { summary, items: updatedItems } = await calculateOrderSummary(
+    {
+      items: validItems,
+      user: userId,
+      addressId: addressId
+    },
+    finalCouponCode,
+    "Delivery"
+  );
 
-  // 5️⃣ Build response items
+  // 3️⃣ Build response items
   const buyer = await User.findById(userId)
     .select("address location")
     .lean();
@@ -2099,10 +2114,10 @@ const { summary, items: updatedItems } = await calculateOrderSummary(
     };
   });
 
-  // 6️⃣ Similar products
+  // 4️⃣ Similar products
   const similarProductsRaw = await Product.find({
     category: { $in: [...categoryIds] },
-    _id: { $nin: finalItems.map((x) => x.id) },
+    _id: { $nin: finalItems.map(x => x.id) },
   })
     .select("name price images unit rating weightPerPiece vendor")
     .limit(12)
@@ -2120,34 +2135,31 @@ const { summary, items: updatedItems } = await calculateOrderSummary(
     weightPerPiece: p.weightPerPiece,
   }));
 
-  // 7️⃣ FINAL RESPONSE
   return res.json({
     success: true,
     data: {
       items: finalItems,
-
       summary: {
         totalMRP: summary.totalMRP,
         couponDiscount: summary.discount,
         deliveryCharge: summary.deliveryCharge,
         totalAmount: summary.totalAmount,
       },
-
       priceDetails: {
         totalMRP: summary.totalMRP,
         couponDiscount: summary.discount,
         deliveryCharge: summary.deliveryCharge,
         totalAmount: summary.totalAmount,
       },
-
       couponCode: finalCouponCode || "",
       similarProducts,
       deliveryType: "Delivery",
-      address: deliveryAddress, 
+      address: deliveryAddress,
       pickupSlot: null,
     },
   });
 });
+
 
 
 
@@ -2349,7 +2361,6 @@ const getCartItems = asyncHandler(async (req, res) => {
       return res.json({
         success: true,
         data: {
-          items: [],
           vendors: [],
           summary: emptySummary,
           priceDetails: emptySummary,
@@ -2364,77 +2375,75 @@ const getCartItems = asyncHandler(async (req, res) => {
       .select("address location")
       .lean();
 
-    const validItems = [];
     const categoryIds = new Set();
-    const vendorGroups = {}; // 🟢 NEW: vendor-wise grouping
+    const vendorGroups = {}; // vendor-wise grouping
 
-    for (const i of cart.items) {
-      if (!i.product) continue;
+    // ---------------- LOOP CART ITEMS ----------------
+    for (const item of cart.items) {
+      if (!item.product) continue;
 
-      const p = i.product;
-      const vendor = p.vendor || {};
+      const p = item.product;
+      const vendor = p.vendor;
 
-      // track categories
+      // Track categories for similar products
       if (p.category?._id) {
         categoryIds.add(p.category._id.toString());
       }
 
-      // ---------------- ESTIMATED DELIVERY ----------------
+      // Estimated delivery
       const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
 
-      const itemObj = {
+      const itemData = {
         id: p._id,
         name: p.name,
         subtitle: p.variety || "",
         mrp: p.price,
-        imageUrl: p.images?.[0] || "https://placehold.co/100x100",
-        quantity: i.quantity,
-        unit: p.unit || "",
+        imageUrl: p.images?.[0] || "",
+        quantity: item.quantity,
+        unit: p.unit,
         category: p.category?.name || "",
         deliveryText: deliveryInfo.deliveryText,
-
-        vendor: {
-          id: vendor._id,
-          name: vendor.name,
-          mobileNumber: vendor.mobileNumber,
-          email: vendor.email,
-          upiId: vendor.upiId,
-          about: vendor.vendorDetails?.about,
-          location: vendor.vendorDetails?.location,
-          deliveryRegion: vendor.vendorDetails?.deliveryRegion,
-          totalOrders: vendor.vendorDetails?.totalOrders,
-          profilePicture: vendor.profilePicture,
-          address: vendor.address || {},
-          geoLocation: vendor.location?.coordinates || [0, 0],
-          status: vendor.status,
-        },
       };
 
-      validItems.push(itemObj);
+      // ---------------- GROUP BY VENDOR ----------------
+      const vendorId = vendor._id.toString();
 
-      // ---------------- GROUP ITEMS BY VENDOR ----------------
-      const vendorId = vendor._id?.toString() || "unknown";
+      // Check if vendor is selected in DB
+      const isChecked =
+        Array.isArray(cart.selectedVendors) &&
+        cart.selectedVendors.some((id) => id.toString() === vendorId);
 
       if (!vendorGroups[vendorId]) {
         vendorGroups[vendorId] = {
-          vendor: itemObj.vendor,
+          vendor: {
+            id: vendorId,
+            name: vendor.name,
+            mobileNumber: vendor.mobileNumber,
+            email: vendor.email,
+            upiId: vendor.upiId,
+            about: vendor.vendorDetails?.about,
+            profilePicture: vendor.profilePicture,
+            address: vendor.address,
+            location: vendor.location,
+            status: vendor.status,
+          },
           items: [],
           vendorTotal: 0,
+
+          // ⭐ DEFAULT = false
+          // ⭐ If selectedVendors contains vendorId → true
+          checked: isChecked ? true : false,
         };
       }
 
-      vendorGroups[vendorId].items.push(itemObj);
-      vendorGroups[vendorId].vendorTotal += p.price * i.quantity;
+      vendorGroups[vendorId].items.push(itemData);
+      vendorGroups[vendorId].vendorTotal += p.price * item.quantity;
     }
 
-    // Convert vendor groups to array
-    const vendorArray = Object.values(vendorGroups);
+    const vendorsArray = Object.values(vendorGroups);
 
-    // ---------------- SUMMARY ----------------
-    let totalMRP = 0;
-    validItems.forEach((i) => {
-      totalMRP += i.mrp * i.quantity;
-    });
+    // ---------------- SUMMARY (DeliveryCharge = 0) ----------------
+    const totalMRP = vendorsArray.reduce((sum, v) => sum + v.vendorTotal, 0);
 
     let couponDiscount = 0;
 
@@ -2451,19 +2460,17 @@ const getCartItems = asyncHandler(async (req, res) => {
       }
     }
 
-    const totalAmount = totalMRP - couponDiscount;
-
     const summary = {
       totalMRP,
       couponDiscount,
-      deliveryCharge: 0,
-      totalAmount,
+      deliveryCharge: 0, // Default ZERO
+      totalAmount: totalMRP - couponDiscount,
     };
 
     // ---------------- SIMILAR PRODUCTS ----------------
     const similarProducts = await Product.find({
       category: { $in: Array.from(categoryIds) },
-      _id: { $nin: validItems.map((x) => x.id) },
+      _id: { $nin: vendorsArray.flatMap((v) => v.items.map((i) => i.id)) },
     })
       .select("name price images unit rating weightPerPiece vendor")
       .limit(12)
@@ -2485,8 +2492,7 @@ const getCartItems = asyncHandler(async (req, res) => {
     return res.json({
       success: true,
       data: {
-        items: validItems,          // All items
-        vendors: vendorArray,       // 🟢 Vendor-wise grouped items
+        vendors: vendorsArray,
         summary,
         priceDetails: summary,
         couponCode: cart.couponCode || "",
@@ -2501,6 +2507,7 @@ const getCartItems = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
@@ -2674,6 +2681,57 @@ const updateCartItemQuantity = asyncHandler(async (req, res) => {
     await cart.save();
 
     res.json({ success: true, message: 'Cart updated', data: cart });
+});
+
+const selectVendorInCart = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+  const { vendorId, selected } = req.body;
+
+  if (!vendorId) {
+    return res.status(400).json({
+      success: false,
+      message: "Vendor ID is required",
+    });
+  }
+
+  let cart = await Cart.findOne({ user: userId });
+
+  if (!cart) {
+    return res.status(404).json({
+      success: false,
+      message: "Cart not found",
+    });
+  }
+
+  // Ensure array exists
+  if (!Array.isArray(cart.selectedVendors)) {
+    cart.selectedVendors = [];
+  }
+
+  // Convert ObjectIds → string for comparison
+  const selectedVendorIds = cart.selectedVendors.map((id) => id.toString());
+
+  // ---------- SELECT ----------
+  if (selected === true) {
+    if (!selectedVendorIds.includes(vendorId)) {
+      cart.selectedVendors.push(vendorId); // store vendor as string or ObjectId both work
+    }
+  }
+
+  // ---------- UNSELECT ----------
+  else {
+    cart.selectedVendors = cart.selectedVendors.filter(
+      (id) => id.toString() !== vendorId
+    );
+  }
+
+  await cart.save();
+
+  return res.json({
+    success: true,
+    message: selected ? "Vendor selected" : "Vendor unselected",
+    selectedVendors: cart.selectedVendors.map((id) => id.toString()), // clean output
+  });
 });
 
 
@@ -5608,12 +5666,12 @@ const markOrderPaid = asyncHandler(async (req, res) => {
 
 module.exports = {
     getHomePageData, getProductsByVendorId, donateToAdmin, getDonationsReceived, searchProductsByName,
-    getProductDetails, markOrderPaid,setDeliveryType,reviewOrder,
+    getProductDetails, markOrderPaid,setDeliveryType,reviewOrder,selectVendorInCart,
     getFilteredProducts,
     getVendorsNearYou,
     getCartItems,
     addItemToCart,
-    removeItemFromCart,
+    removeItemFromCart,getVendorProfileForBuyer,
     updateCartItemQuantity,
     placeOrder,saveDeliveryAddress,
     getBuyerOrders,

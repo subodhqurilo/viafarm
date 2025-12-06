@@ -4,7 +4,7 @@ const { authMiddleware, authorizeRoles } = require('../middleware/authMiddleware
 
 // Get all exported controllers from the buyerController file
 const { 
-    getBuyerProfile, updateBuyerProfile, updateBuyerLocation, updateBuyerLanguage, getWishlist, addToWishlist, getBuyerOrders, removeFromWishlist, getProductsByVariety ,reviewOrder,
+    getBuyerProfile, updateBuyerProfile, updateBuyerLocation, updateBuyerLanguage, getWishlist, addToWishlist, getBuyerOrders, removeFromWishlist, getProductsByVariety ,reviewOrder,selectVendorInCart,
     getStaticPageContent, writeReview, getCartItems, addItemToCart, removeItemFromCart, updateCartItemQuantity, placeOrder,updateAddress,deleteAddress,getFreshAndPopularVendors,
     reorder, getReviewsForProduct, updateReview, deleteReview, applyCouponToCart,getAllVendors,searchAllProducts,getProductsByVendorId,getProductById,setDeliveryType ,saveDeliveryAddress,
     getOrderDetails, startCheckout, getHighlightedCoupon, getPickupLocationDetails, selectPickupSlot,getProductsByName,getPickupLocationDetailsPost,getCategoriesWithProducts,
@@ -57,6 +57,8 @@ router.get('/static-page/:pageName', getStaticPageContent);
 
 // --- Cart, Checkout & Orders ---
 router.get('/cart', getCartItems);
+router.post('/cart/selectVendor', selectVendorInCart);
+
 router.post('/cart/add', addItemToCart);
 router.delete('/cart/:id', removeItemFromCart);
 router.put('/cart/:id/quantity', updateCartItemQuantity);
