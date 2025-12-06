@@ -2166,7 +2166,6 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // Delivery only
   const { addressId, couponCode: prefCoupon } = pref;
 
   // 2️⃣ Delivery requires address
@@ -2204,16 +2203,32 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  const validItems = cart.items.filter(i => i.product);
+  // ⭐ NEW: Only selected vendor items
+  const selectedVendors = cart.selectedVendors || [];
+
+  let validItems = cart.items.filter(i => i.product);
+
+  if (selectedVendors.length > 0) {
+    validItems = validItems.filter(i =>
+      selectedVendors.includes(i.vendor.toString())
+    );
+  }
+
+  if (!validItems.length) {
+    return res.status(400).json({
+      success: false,
+      message: "No products found for selected vendor.",
+    });
+  }
 
   // ⭐ FINAL COUPON — CART > PREF
   const finalCouponCode = cart.couponCode || prefCoupon || null;
 
-  // 4️⃣ Calculate summary (VERY IMPORTANT FIX)
+  // 4️⃣ Calculate summary
   const { summary, items: updatedItems } = await calculateOrderSummary(
     {
       items: validItems,
-      user: userId   // 🔥 ONLY pass user here
+      user: userId
     },
     finalCouponCode,
     "Delivery"
@@ -2279,7 +2294,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
     weightPerPiece: p.weightPerPiece,
   }));
 
-  // 7️⃣ FINAL RESPONSE
+  // 7️⃣ FINAL RESPONSE (UNCHANGED)
   return res.json({
     success: true,
     data: {
@@ -2307,6 +2322,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
     },
   });
 });
+
 
 
 
@@ -2657,6 +2673,49 @@ const updateCartItemQuantity = asyncHandler(async (req, res) => {
     res.json({ success: true, message: 'Cart updated', data: cart });
 });
 
+const selectVendorInCart = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+  const { vendorId, selected } = req.body;
+
+  if (!vendorId) {
+    return res.status(400).json({
+      success: false,
+      message: "Vendor ID is required",
+    });
+  }
+
+  let cart = await Cart.findOne({ user: userId });
+
+  if (!cart) {
+    return res.status(404).json({
+      success: false,
+      message: "Cart not found",
+    });
+  }
+
+  // Ensure the field exists
+  if (!Array.isArray(cart.selectedVendors)) {
+    cart.selectedVendors = [];
+  }
+
+  // ⭐ Allow ONLY ONE VENDOR to be selected at a time
+  if (selected === true) {
+    cart.selectedVendors = [vendorId];    // <-- overwrite the array
+  } else {
+    // Unselect vendor
+    cart.selectedVendors = cart.selectedVendors.filter(
+      (id) => id.toString() !== vendorId
+    );
+  }
+
+  await cart.save();
+
+  return res.json({
+    success: true,
+    message: selected ? "Vendor selected" : "Vendor deselected",
+    selectedVendors: cart.selectedVendors.map((id) => id.toString()),
+  });
+});
 
 
 const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
@@ -5804,7 +5863,7 @@ module.exports = {
     removeFromWishlist, searchAllProducts,
     reorder,
     getBuyerProfile,placePickupOrder,
-    updateBuyerProfile,
+    updateBuyerProfile,selectVendorInCart,
     logout,getFreshAndPopularVendors,
     getOrderDetails,getProductsByVariety ,
     setDefaultAddress, deleteAddress, getProductById,

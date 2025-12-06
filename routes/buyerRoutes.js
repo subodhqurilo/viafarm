@@ -57,7 +57,7 @@ router.get('/static-page/:pageName', getStaticPageContent);
 
 // --- Cart, Checkout & Orders ---
 router.get('/cart', getCartItems);
-// router.post('/cart/selectVendor', selectVendorInCart);
+ router.post('/cart/selectVendor', selectVendorInCart);
 
 router.post('/cart/add', addItemToCart);
 router.delete('/cart/:id', removeItemFromCart);
