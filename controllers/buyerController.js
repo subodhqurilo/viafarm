@@ -1461,7 +1461,169 @@ const getAllVendors = asyncHandler(async (req, res) => {
 
 // 🛒 GET CART ITEMS
 // GET CART WITHOUT DELIVERY CHARGE
+const getCartItems = asyncHandler(async (req, res) => {
+  try {
+    const userId = req.user._id;
 
+    const emptySummary = {
+      totalMRP: 0,
+      couponDiscount: 0,
+      deliveryCharge: 0,
+      totalAmount: 0,
+    };
+
+    // ---------------- FETCH CART ----------------
+    const cart = await Cart.findOne({ user: userId })
+      .populate({
+        path: "items.product",
+        select: "name price variety images unit vendor category weightPerPiece",
+        populate: [
+          { path: "category", select: "name" },
+          {
+            path: "vendor",
+            select:
+              "name mobileNumber email upiId address vendorDetails profilePicture location status",
+          },
+        ],
+      })
+      .lean();
+
+    if (!cart || !cart.items.length) {
+      return res.json({
+        success: true,
+        data: {
+          items: [],
+          summary: emptySummary,
+          priceDetails: emptySummary,
+          couponCode: "",
+          similarProducts: [],  // <--- added
+        },
+      });
+    }
+
+    // ---------------- BUYER INFO ----------------
+    const buyer = await User.findById(userId)
+      .select("address location")
+      .lean();
+
+    const validItems = [];
+    const categoryIds = new Set();
+
+    for (const i of cart.items) {
+      if (!i.product) continue;
+
+      const p = i.product;
+      const vendor = p.vendor || {};
+
+      // track category for similar products
+      if (p.category?._id) {
+        categoryIds.add(p.category._id.toString());
+      }
+
+      // ---------------- ESTIMATED DELIVERY ----------------
+      const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
+
+      validItems.push({
+        id: p._id,
+        name: p.name,
+        subtitle: p.variety || "",
+        mrp: p.price,
+        imageUrl: p.images?.[0] || "https://placehold.co/100x100",
+        quantity: i.quantity,
+        unit: p.unit || "",
+        category: p.category?.name || "",
+        deliveryText: deliveryInfo.deliveryText,
+
+        vendor: {
+          id: vendor._id,
+          name: vendor.name,
+          mobileNumber: vendor.mobileNumber,
+          email: vendor.email,
+          upiId: vendor.upiId,
+          about: vendor.vendorDetails?.about,
+          location: vendor.vendorDetails?.location,
+          deliveryRegion: vendor.vendorDetails?.deliveryRegion,
+          totalOrders: vendor.vendorDetails?.totalOrders,
+          profilePicture: vendor.profilePicture,
+          address: vendor.address || {},
+          geoLocation: vendor.location?.coordinates || [0, 0],
+          status: vendor.status,
+        },
+      });
+    }
+
+    // ---------------- SUMMARY ----------------
+    let totalMRP = 0;
+
+    validItems.forEach((i) => {
+      totalMRP += i.mrp * i.quantity;
+    });
+
+    let couponDiscount = 0;
+
+    if (cart.couponCode) {
+      const coupon = await Coupon.findOne({ code: cart.couponCode }).lean();
+
+      if (coupon) {
+        if (coupon.discount.type === "Percentage") {
+          couponDiscount = (totalMRP * coupon.discount.value) / 100;
+        } else {
+          couponDiscount = coupon.discount.value;
+        }
+
+        if (couponDiscount > totalMRP) couponDiscount = totalMRP;
+      }
+    }
+
+    const totalAmount = totalMRP - couponDiscount;
+
+    const summary = {
+      totalMRP,
+      couponDiscount,
+      deliveryCharge: 0,
+      totalAmount,
+    };
+
+    // ---------------- FIND SIMILAR PRODUCTS (BOTTOM OF RESPONSE) ----------------
+    const similarProducts = await Product.find({
+      category: { $in: Array.from(categoryIds) },
+      _id: { $nin: validItems.map((x) => x.id) },
+    })
+      .select("name price images unit rating weightPerPiece vendor")
+      .limit(12)
+      .populate("vendor", "name")
+      .lean();
+
+    const formattedSimilar = similarProducts.map((p) => ({
+      id: p._id,
+      name: p.name,
+      price: p.price,
+      unit: p.unit,
+      imageUrl: p.images?.[0] || "",
+      vendor: p.vendor?.name || "",
+      rating: p.rating,
+      weightPerPiece: p.weightPerPiece,
+    }));
+
+    // ---------------- RESPONSE ----------------
+    return res.json({
+      success: true,
+      data: {
+        items: validItems,
+        summary,
+        priceDetails: summary,
+        couponCode: cart.couponCode || "",
+        similarProducts: formattedSimilar, // <--- ADDED HERE
+      },
+    });
+  } catch (error) {
+    console.error("❌ getCartItems error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to load cart details.",
+    });
+  }
+});
 
 
 
@@ -1992,11 +2154,10 @@ const placeOrder = asyncHandler(async (req, res) => {
 
 
 
- 
 const reviewOrder = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
-  // 1️⃣ Fetch preference
+  // 1️⃣ Fetch saved preference
   const pref = await DeliveryPreference.findOne({ user: userId }).lean();
   if (!pref) {
     return res.status(400).json({
@@ -2005,8 +2166,10 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
+  // Delivery only
   const { addressId, couponCode: prefCoupon } = pref;
 
+  // 2️⃣ Delivery requires address
   if (!addressId) {
     return res.status(400).json({
       success: false,
@@ -2022,7 +2185,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // 2️⃣ Fetch cart
+  // 3️⃣ Fetch cart
   const cart = await Cart.findOne({ user: userId })
     .populate({
       path: "items.product",
@@ -2041,41 +2204,22 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // ⭐ NEW: Filter only selected vendor items
-  const selectedVendors = cart.selectedVendors?.map(id => id.toString()) || [];
+  const validItems = cart.items.filter(i => i.product);
 
-  if (!selectedVendors.length) {
-    return res.status(400).json({
-      success: false,
-      message: "Please select at least one vendor."
-    });
-  }
-
-  const validItems = cart.items.filter(i =>
-    selectedVendors.includes(i.vendor?.toString()) && i.product
-  );
-
-  if (!validItems.length) {
-    return res.status(400).json({
-      success: false,
-      message: "No products found for selected vendors."
-    });
-  }
-
-  // ⭐ FINAL COUPON
+  // ⭐ FINAL COUPON — CART > PREF
   const finalCouponCode = cart.couponCode || prefCoupon || null;
 
+  // 4️⃣ Calculate summary (VERY IMPORTANT FIX)
   const { summary, items: updatedItems } = await calculateOrderSummary(
     {
       items: validItems,
-      user: userId,
-      addressId: addressId
+      user: userId   // 🔥 ONLY pass user here
     },
     finalCouponCode,
     "Delivery"
   );
 
-  // 3️⃣ Build response items
+  // 5️⃣ Build response items
   const buyer = await User.findById(userId)
     .select("address location")
     .lean();
@@ -2114,10 +2258,10 @@ const reviewOrder = asyncHandler(async (req, res) => {
     };
   });
 
-  // 4️⃣ Similar products
+  // 6️⃣ Similar products
   const similarProductsRaw = await Product.find({
     category: { $in: [...categoryIds] },
-    _id: { $nin: finalItems.map(x => x.id) },
+    _id: { $nin: finalItems.map((x) => x.id) },
   })
     .select("name price images unit rating weightPerPiece vendor")
     .limit(12)
@@ -2135,22 +2279,26 @@ const reviewOrder = asyncHandler(async (req, res) => {
     weightPerPiece: p.weightPerPiece,
   }));
 
+  // 7️⃣ FINAL RESPONSE
   return res.json({
     success: true,
     data: {
       items: finalItems,
+
       summary: {
         totalMRP: summary.totalMRP,
         couponDiscount: summary.discount,
         deliveryCharge: summary.deliveryCharge,
         totalAmount: summary.totalAmount,
       },
+
       priceDetails: {
         totalMRP: summary.totalMRP,
         couponDiscount: summary.discount,
         deliveryCharge: summary.deliveryCharge,
         totalAmount: summary.totalAmount,
       },
+
       couponCode: finalCouponCode || "",
       similarProducts,
       deliveryType: "Delivery",
@@ -2159,7 +2307,6 @@ const reviewOrder = asyncHandler(async (req, res) => {
     },
   });
 });
-
 
 
 
@@ -2330,146 +2477,6 @@ const applyCouponToCart = asyncHandler(async (req, res) => {
 });
 
 
-const getCartItems = asyncHandler(async (req, res) => {
-  try {
-    const userId = req.user._id;
-
-    const emptySummary = {
-      totalMRP: 0,
-      couponDiscount: 0,
-      deliveryCharge: 0,
-      totalAmount: 0,
-    };
-
-    // ---------------- FETCH CART ----------------
-    const cart = await Cart.findOne({ user: userId })
-      .populate({
-        path: "items.product",
-        select: "name price variety images unit vendor category weightPerPiece",
-        populate: [
-          { path: "category", select: "name" },
-          {
-            path: "vendor",
-            select:
-              "name mobileNumber email upiId address vendorDetails profilePicture location status",
-          },
-        ],
-      })
-      .lean();
-
-    if (!cart || !cart.items.length) {
-      return res.json({
-        success: true,
-        data: {
-          items: [],
-          summary: emptySummary,
-          priceDetails: emptySummary,
-          couponCode: "",
-        },
-      });
-    }
-
-    // ---------------- BUYER INFO ----------------
-    const buyer = await User.findById(userId)
-      .select("address location")
-      .lean();
-
-    const validItems = [];
-
-    for (const i of cart.items) {
-      if (!i.product) continue;
-
-      const p = i.product;
-      const vendor = p.vendor || {};
-
-      // ---------------- ESTIMATED DELIVERY ----------------
-      const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
-
-      validItems.push({
-        id: p._id,
-        name: p.name,
-        subtitle: p.variety || "",
-        mrp: p.price,   // ⭐ FIXED: price now correctly included
-        imageUrl: p.images?.[0] || "https://placehold.co/100x100",
-        quantity: i.quantity,
-        unit: p.unit || "",
-        category: p.category?.name || "",
-        deliveryText: deliveryInfo.deliveryText,
-
-        vendor: {
-          id: vendor._id,
-          name: vendor.name,
-          mobileNumber: vendor.mobileNumber,
-          email: vendor.email,
-          upiId: vendor.upiId,
-          contactNo: vendor.vendorDetails?.contactNo,
-          about: vendor.vendorDetails?.about,
-          location: vendor.vendorDetails?.location,
-          deliveryRegion: vendor.vendorDetails?.deliveryRegion,
-          totalOrders: vendor.vendorDetails?.totalOrders,
-          profilePicture: vendor.profilePicture,
-          address: vendor.address || {},
-          geoLocation: vendor.location?.coordinates || [0, 0],
-          status: vendor.status,
-        },
-      });
-    }
-
-    // ---------------- SUMMARY ----------------
-    let totalMRP = 0;
-
-    validItems.forEach((i) => {
-      totalMRP += i.mrp * i.quantity;  // ⭐ FIXED: summary now correct
-    });
-
-    let couponDiscount = 0;
-
-    if (cart.couponCode) {
-      const coupon = await Coupon.findOne({ code: cart.couponCode }).lean();
-
-      if (coupon) {
-        if (coupon.discount.type === "Percentage") {
-          couponDiscount = (totalMRP * coupon.discount.value) / 100;
-        } else {
-          couponDiscount = coupon.discount.value;
-        }
-
-        if (couponDiscount > totalMRP) couponDiscount = totalMRP;
-      }
-    }
-
-    const totalAmount = totalMRP - couponDiscount;
-
-    const summary = {
-      totalMRP,
-      couponDiscount,
-      deliveryCharge: 0,
-      totalAmount,
-    };
-
-    // ---------------- RESPONSE ----------------
-    return res.json({
-      success: true,
-      data: {
-        items: validItems,
-        summary,
-        priceDetails: summary,
-        couponCode: cart.couponCode || "",
-      },
-    });
-
-  } catch (error) {
-    console.error("❌ getCartItems error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to load cart details.",
-    });
-  }
-});
-
-
-
-
 
 
 
@@ -2482,74 +2489,100 @@ const addItemToCart = asyncHandler(async (req, res) => {
     if (!productId || quantity <= 0) {
         return res.status(400).json({
             success: false,
-            message: "Product ID and valid quantity are required."
+            message: 'Product ID and valid quantity are required.'
         });
     }
 
     // 1️⃣ Fetch product
     const product = await Product.findById(productId)
-        .select("name price vendor images unit variety status");
+        .select('name price weightPerPiece vendor status images unit variety');
 
     if (!product) {
-        return res.status(404).json({
-            success: false,
-            message: "Product not found."
-        });
+        return res.status(404).json({ success: false, message: 'Product not found.' });
     }
 
-    if (product.status !== "In Stock") {
-        return res.status(400).json({
-            success: false,
-            message: "Product is out of stock or invalid."
-        });
+    if (product.status !== 'In Stock' || product.price == null) {
+        return res.status(400).json({ success: false, message: 'Product is out of stock or invalid.' });
     }
 
     // 2️⃣ Find or create cart
     let cart = await Cart.findOne({ user: userId });
     if (!cart) {
-        cart = await Cart.create({
-            user: userId,
-            items: []
+        cart = await Cart.create({ user: userId, items: [] });
+    }
+
+    // 3️⃣ Vendor restriction
+    const existingVendors = cart.items.map(i => i.vendor?.toString()).filter(Boolean);
+
+    if (
+        existingVendors.length > 0 &&
+        existingVendors[0] !== product.vendor.toString()
+    ) {
+        return res.status(400).json({
+            success: false,
+            message: 'You can only add products from one vendor. Please choose products from the same vendor.'
         });
     }
 
-    // 3️⃣ Update or Insert item
-    const existingIndex = cart.items.findIndex(
-        (i) => i.product.toString() === productId
+    // 4️⃣ Add or update product
+    const existingItemIndex = cart.items.findIndex(
+        i => i.product && i.product.toString() === productId
     );
 
-    if (existingIndex > -1) {
-        cart.items[existingIndex].quantity += Number(quantity);
+    if (existingItemIndex > -1) {
+        cart.items[existingItemIndex].quantity += Number(quantity);
+        cart.items[existingItemIndex].price = product.price;
     } else {
         cart.items.push({
             product: product._id,
-            vendor: product.vendor,  // ✅ ALWAYS REQUIRED
-            quantity: Number(quantity)
+            vendor: product.vendor,
+            quantity: Number(quantity),
+            price: product.price
         });
     }
 
     await cart.save();
 
-    // 4️⃣ Get clean formatted response
-    const populatedCart = await Cart.findById(cart._id)
-        .populate("items.product", "name images unit variety vendor")
+    // 5️⃣ Populate cart BEFORE summary (IMPORTANT FIX)
+    const populatedForSummary = await Cart.findById(cart._id)
+        .populate({
+            path: "items.product",
+            select: "name price weightPerPiece vendor category"
+        })
         .lean();
 
-    const items = populatedCart.items.map((i) => ({
+    const summary = await calculateOrderSummary(
+        {
+            items: populatedForSummary.items,
+            user: userId,
+            addressId: null
+        },
+        cart.couponCode,
+        "Delivery"
+    );
+
+    // 6️⃣ Populate again for client response
+    const populatedCart = await Cart.findById(cart._id)
+        .populate("items.product", "name price variety images unit vendor")
+        .lean();
+
+    const items = populatedCart.items.map(i => ({
         id: i.product._id,
         name: i.product.name,
-        subtitle: i.product.variety || "",
-        imageUrl: i.product.images?.[0] || "",
+        subtitle: i.product.variety || '',
+        mrp: i.price,
+        imageUrl: i.product.images?.[0] || null,
         quantity: i.quantity,
-        unit: i.product.unit || "",
-        vendorId: i.vendor.toString()
+        unit: i.product.unit,
+        vendorId: i.vendor
     }));
 
-    return res.json({
+    res.status(200).json({
         success: true,
-        message: "Item added successfully.",
+        message: 'Item added successfully.',
         data: {
-            items
+            items,
+            summary
         }
     });
 });
@@ -2557,181 +2590,72 @@ const addItemToCart = asyncHandler(async (req, res) => {
 
 
 
-
-
-
-
-
-
 const removeItemFromCart = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+    const { id } = req.params;
 
-  const cart = await Cart.findOne({ user: req.user._id })
-    .populate('items.product');
+    const cart = await Cart.findOne({ user: req.user._id })
+        .populate('items.product');
 
-  if (!cart) {
-    return res.status(404).json({ success: false, message: 'Cart not found' });
-  }
+    if (!cart) {
+        return res.status(404).json({ success: false, message: 'Cart not found' });
+    }
 
-  // Find the product before removing (to get vendor)
-  const itemToRemove = cart.items.find(
-    item => item.product && item.product._id.toString() === id
-  );
+    const initialLength = cart.items.length;
 
-  if (!itemToRemove) {
-    return res.status(404).json({ success: false, message: 'Item not found in cart' });
-  }
+    // 🛡 Remove missing products + remove requested product
+    cart.items = cart.items.filter((item) => {
+        // ❌ If product is null → REMOVE item
+        if (!item.product) return false;
 
-  const vendorId = itemToRemove.vendor?.toString();
+        // ❌ If this is the product to remove → REMOVE
+        return item.product._id.toString() !== id;
+    });
 
-  // Remove item
-  cart.items = cart.items.filter(
-    item => item.product && item.product._id.toString() !== id
-  );
+    if (cart.items.length === initialLength) {
+        return res.status(404).json({ success: false, message: 'Item not found in cart' });
+    }
 
-  // Auto-remove vendor from selectedVendors if no more items left from that vendor
-  if (vendorId) {
-    const hasVendorItems = cart.items.some(
-      item => item.vendor?.toString() === vendorId
+    // 🧮 Recalculate total (all items guaranteed valid now)
+    cart.totalPrice = cart.items.reduce(
+        (total, item) => total + item.price * item.quantity,
+        0
     );
 
-    if (!hasVendorItems) {
-      cart.selectedVendors = cart.selectedVendors.filter(
-        vid => vid.toString() !== vendorId
-      );
-    }
-  }
+    await cart.save();
 
-  // Recalculate price
-  cart.totalPrice = cart.items.reduce(
-    (total, item) => total + item.price * item.quantity,
-    0
-  );
-
-  await cart.save();
-
-  // Populate again for clean UI response
-  const populatedCart = await Cart.findById(cart._id)
-    .populate('items.product');
-
-  return res.json({
-    success: true,
-    message: "Item removed from cart",
-    data: populatedCart,
-  });
+    res.json({
+        success: true,
+        message: "Item removed from cart",
+        data: cart,
+    });
 });
-
 
 
 
 const updateCartItemQuantity = asyncHandler(async (req, res) => {
-  const { quantity } = req.body;
-  const { id } = req.params;
+    const { quantity } = req.body;
+    const { id } = req.params;
 
-  const cart = await Cart.findOne({ user: req.user._id }).populate("items.product");
-
-  if (!cart) {
-    return res.status(404).json({ success: false, message: "Cart not found" });
-  }
-
-  const itemIndex = cart.items.findIndex(
-    (i) => i.product && i.product._id.toString() === id
-  );
-
-  if (itemIndex === -1) {
-    return res.status(404).json({ success: false, message: "Item not found in cart" });
-  }
-
-  const item = cart.items[itemIndex];
-  const vendorId = item.vendor?.toString();
-
-  // ⭐ If quantity becomes 0 → remove the item
-  if (quantity <= 0) {
-    cart.items.splice(itemIndex, 1);
-
-    // Check if vendor has no more items → auto unselect vendor
-    const hasVendorItems = cart.items.some(
-      (it) => it.vendor?.toString() === vendorId
-    );
-
-    if (!hasVendorItems) {
-      cart.selectedVendors = cart.selectedVendors.filter(
-        (v) => v.toString() !== vendorId
-      );
+    if (!quantity || quantity < 1) {
+        return res.status(400).json({ success: false, message: 'Quantity must be at least 1.' });
     }
-  } else {
-    // ⭐ Normal quantity update
+
+    const cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
+    if (!cart) {
+        return res.status(404).json({ success: false, message: 'Cart not found' });
+    }
+
+    const itemIndex = cart.items.findIndex((i) => i.product._id.toString() === id);
+    if (itemIndex === -1) {
+        return res.status(404).json({ success: false, message: 'Item not found in cart' });
+    }
+
     cart.items[itemIndex].quantity = quantity;
-  }
+    cart.totalPrice = cart.items.reduce((t, i) => t + i.price * i.quantity, 0);
 
-  // Recalculate price
-  cart.totalPrice = cart.items.reduce(
-    (t, i) => t + i.price * i.quantity,
-    0
-  );
+    await cart.save();
 
-  await cart.save();
-
-  // Populate clean response
-  const updatedCart = await Cart.findById(cart._id).populate("items.product");
-
-  return res.json({
-    success: true,
-    message: "Cart updated",
-    data: updatedCart,
-  });
-});
-
-
-
-const selectVendorInCart = asyncHandler(async (req, res) => {
-  const userId = req.user._id;
-  const { vendorId, selected } = req.body;
-
-  if (!vendorId) {
-    return res.status(400).json({
-      success: false,
-      message: "Vendor ID is required",
-    });
-  }
-
-  let cart = await Cart.findOne({ user: userId });
-
-  if (!cart) {
-    return res.status(404).json({
-      success: false,
-      message: "Cart not found",
-    });
-  }
-
-  // Ensure array exists
-  if (!Array.isArray(cart.selectedVendors)) {
-    cart.selectedVendors = [];
-  }
-
-  // Convert ObjectIds to string
-  const selectedVendorIds = cart.selectedVendors.map((id) => id.toString());
-
-  // ---------- SELECT ----------
-  if (selected === true) {
-    // ⭐ ONE VENDOR RULE: overwrite entire array
-    cart.selectedVendors = [vendorId];  
-  }
-
-  // ---------- UNSELECT ----------
-  else {
-    cart.selectedVendors = cart.selectedVendors.filter(
-      (id) => id.toString() !== vendorId
-    );
-  }
-
-  await cart.save();
-
-  return res.json({
-    success: true,
-    message: selected ? "Vendor selected" : "Vendor unselected",
-    selectedVendors: cart.selectedVendors.map((id) => id.toString()),
-  });
+    res.json({ success: true, message: 'Cart updated', data: cart });
 });
 
 
@@ -3798,7 +3722,7 @@ const writeReview = asyncHandler(async (req, res) => {
 
 
 
-
+// oioihoihoiioh
 
 
 
@@ -4409,14 +4333,58 @@ const logout = asyncHandler(async (_req, res) => {
 
 
 const getAddresses = asyncHandler(async (req, res) => {
-  const addresses = await Address.find({ user: req.user._id }).lean();
+  // 1️⃣ Fetch all addresses for this user
+  const addresses = await Address.find({ user: req.user._id })
+    .select("-name -mobileNumber") // exclude unnecessary fields
+    .lean();
 
-  return res.json({
+  // 2️⃣ If no addresses found
+  if (!addresses || addresses.length === 0) {
+    return res.status(200).json({
+      success: true,
+      message: "No addresses found.",
+      addresses: []
+    });
+  }
+
+  // 3️⃣ Format response
+  const formattedAddresses = addresses.map(addr => {
+    const formattedAddress = [
+      addr.houseNumber,
+      addr.street,
+      addr.locality,
+      addr.city,
+      addr.district,
+      addr.state,
+      addr.pinCode
+    ]
+      .filter(Boolean)
+      .join(", ");
+
+    return {
+      id: addr._id.toString(),
+      isDefault: addr.isDefault,
+      formattedAddress,
+      pinCode: addr.pinCode,
+      houseNumber: addr.houseNumber,
+      street: addr.street || "",
+      locality: addr.locality || "",
+      city: addr.city || "",
+      district: addr.district || "",
+      state: addr.state || "",
+      location: addr.location || { type: "Point", coordinates: [] },
+      createdAt: addr.createdAt,
+      updatedAt: addr.updatedAt
+    };
+  });
+
+  // 4️⃣ Send response
+  res.status(200).json({
     success: true,
-    addresses,
+    message: "All addresses retrieved successfully.",
+    addresses: formattedAddresses
   });
 });
-
 
 
 
@@ -4508,20 +4476,34 @@ const addAddress = asyncHandler(async (req, res) => {
       });
     }
 
-    let coords = null;
+    let geoJsonLocation = null;
 
+    /** ✅ 1. Use direct coordinates if provided */
     if (latitude && longitude) {
       const lat = parseFloat(latitude);
       const lng = parseFloat(longitude);
 
-      if (!isNaN(lat) && !isNaN(lng)) {
-        coords = [lng, lat];
+      if (
+        !isNaN(lat) &&
+        !isNaN(lng) &&
+        lat >= -90 &&
+        lat <= 90 &&
+        lng >= -180 &&
+        lng <= 180
+      ) {
+        geoJsonLocation = {
+          type: "Point",
+          coordinates: [lng, lat],
+        };
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid latitude or longitude.",
+        });
       }
-    }
-
-    // Auto geocode if not provided
-    if (!coords) {
-      coords = await geocodeAddress({
+    } else {
+      /** 🌍 2. Auto-GeoCoding if lat/lng missing */
+      const coords = await geocodeAddress({
         houseNumber,
         street,
         locality,
@@ -4531,17 +4513,24 @@ const addAddress = asyncHandler(async (req, res) => {
         pinCode,
       });
 
-      if (!coords) {
-        // fallback coordinates
-        coords = [77.0, 28.5];
+      if (coords) {
+        geoJsonLocation = {
+          type: "Point",
+          coordinates: coords,
+        };
+        console.log("📍 Auto-Geocoded:", coords);
+      } else {
+        console.log("⚠ Geocoding failed → saving without coordinates");
       }
     }
 
-    // Set default logic
+    /** ⭐ 3. Default Address Logic */
     const existing = await Address.find({ user: req.user._id });
     let makeDefault = isDefault;
 
-    if (existing.length === 0) makeDefault = true;
+    if (existing.length === 0) {
+      makeDefault = true; // first address is always default
+    }
 
     if (makeDefault) {
       await Address.updateMany(
@@ -4550,30 +4539,62 @@ const addAddress = asyncHandler(async (req, res) => {
       );
     }
 
+    /** 🏠 4. Create Address */
     const newAddress = await Address.create({
       user: req.user._id,
-      pinCode,
+      pinCode: pinCode || "",
       houseNumber,
-      street,
-      locality,
-      city,
-      district,
-      state,
+      street: street || "",
+      locality: locality || "",
+      city: city || "",
+      district: district || "",
+      state: state || "",
       isDefault: makeDefault,
-      location: { type: "Point", coordinates: coords },
+      location: geoJsonLocation, // 🌍 Saved correctly
     });
+
+    /** 🧩 Build formattedAddress */
+    const formattedAddress = [
+      newAddress.houseNumber,
+      newAddress.street,
+      newAddress.locality,
+      newAddress.city,
+      newAddress.district,
+      newAddress.state,
+      newAddress.pinCode,
+    ]
+      .filter(Boolean)
+      .join(", ");
 
     return res.status(201).json({
       success: true,
       message: "Address added successfully.",
-      address: newAddress,
+      address: {
+        id: newAddress._id,
+        user: newAddress.user,
+        formattedAddress,
+        isDefault: newAddress.isDefault,
+        coordinates: newAddress.location?.coordinates || [],
+        details: {
+          houseNumber: newAddress.houseNumber,
+          street: newAddress.street,
+          locality: newAddress.locality,
+          city: newAddress.city,
+          district: newAddress.district,
+          state: newAddress.state,
+          pinCode: newAddress.pinCode,
+        },
+      },
     });
-  } catch (err) {
-    console.log(err);
-    res.status(500).json({ success: false, message: "Server error" });
+  } catch (error) {
+    console.error("❌ Error adding address:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error while adding address.",
+      error: error.message,
+    });
   }
 });
-
 
 
 
@@ -4614,70 +4635,174 @@ async function geocodeAddress(addr) {
 const updateAddress = asyncHandler(async (req, res) => {
   try {
     const { id } = req.params;
+    let {
+      pinCode,
+      houseNumber,
+      street,
+      locality,
+      city,
+      district,
+      state,
+      isDefault,
+      latitude,
+      longitude,
+    } = req.body;
 
+    // --- 1️⃣ Validate ID ---
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ success: false, message: "Invalid ID" });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid address ID.",
+      });
     }
 
-    let addr = await Address.findOne({ _id: id, user: req.user._id });
-
-    if (!addr) {
+    // --- 2️⃣ Find the address ---
+    const address = await Address.findOne({ _id: id, user: req.user._id });
+    if (!address) {
       return res.status(404).json({
         success: false,
         message: "Address not found.",
       });
     }
 
-    const body = req.body;
-    let coords = null;
+    let newCoordinates = null;
 
-    // case 1: direct lat/lng
-    if (body.latitude && body.longitude) {
-      const lat = parseFloat(body.latitude);
-      const lng = parseFloat(body.longitude);
-      if (!isNaN(lat) && !isNaN(lng)) coords = [lng, lat];
+    // --- 3️⃣ If coordinates provided → update + reverse-geocode missing fields ---
+    if (latitude && longitude) {
+      const lat = parseFloat(latitude);
+      const lng = parseFloat(longitude);
+
+      if (
+        isNaN(lat) ||
+        isNaN(lng) ||
+        lat < -90 ||
+        lat > 90 ||
+        lng < -180 ||
+        lng > 180
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid latitude or longitude.",
+        });
+      }
+
+      newCoordinates = [lng, lat];
+
+      address.location = {
+        type: "Point",
+        coordinates: newCoordinates,
+      };
+
+      // 🌍 Reverse Geocode → fill missing details
+      try {
+        const resp = await axios.get(
+          "https://nominatim.openstreetmap.org/reverse",
+          {
+            params: { lat, lon: lng, format: "json", addressdetails: 1 },
+            headers: { "User-Agent": "ViaFarm-GeoCoder" },
+          }
+        );
+
+        const addr = resp.data.address || {};
+        pinCode = pinCode || addr.postcode || "";
+        city = city || addr.city || addr.town || addr.village || "";
+        district = district || addr.state_district || addr.county || "";
+        state = state || addr.state || "";
+        locality =
+          locality ||
+          addr.suburb ||
+          addr.road ||
+          addr.neighbourhood ||
+          addr.hamlet ||
+          "";
+      } catch (err) {
+        console.log("⚠ Reverse geocode failed:", err.message);
+      }
     }
 
-    // case 2: forward geocode
-    if (!coords) {
-      coords = await geocodeAddress(body);
-      if (!coords) coords = addr.location?.coordinates || [77.0, 28.5];
+    // --- 4️⃣ If NO coordinates provided → Forward-Geocode ---
+    else {
+      const coords = await geocodeAddress({
+        houseNumber,
+        street,
+        locality,
+        city,
+        district,
+        state,
+        pinCode,
+      });
+
+      if (coords) {
+        address.location = { type: "Point", coordinates: coords };
+        newCoordinates = coords;
+        console.log("📍 Auto-coordinates:", coords);
+      } else {
+        console.log("⚠ Could not geocode updated address.");
+      }
     }
 
-    // update main fields
-    Object.assign(addr, {
-      houseNumber: body.houseNumber ?? addr.houseNumber,
-      street: body.street ?? addr.street,
-      locality: body.locality ?? addr.locality,
-      city: body.city ?? addr.city,
-      district: body.district ?? addr.district,
-      state: body.state ?? addr.state,
-      pinCode: body.pinCode ?? addr.pinCode,
-      location: { type: "Point", coordinates: coords },
-    });
-
-    // default logic
-    if (body.isDefault === true) {
+    // --- 5️⃣ Make default address ---
+    if (isDefault === true) {
       await Address.updateMany(
         { user: req.user._id, isDefault: true },
         { isDefault: false }
       );
-      addr.isDefault = true;
+      address.isDefault = true;
     }
 
-    await addr.save();
+    // --- 6️⃣ Apply partial updates safely ---
+    if (pinCode !== undefined) address.pinCode = pinCode;
+    if (houseNumber !== undefined) address.houseNumber = houseNumber;
+    if (street !== undefined) address.street = street || "";
+    if (locality !== undefined) address.locality = locality;
+    if (city !== undefined) address.city = city;
+    if (district !== undefined) address.district = district;
+    if (state !== undefined) address.state = state;
 
-    res.status(200).json({
+    // --- 7️⃣ Save ---
+    await address.save();
+
+    // --- 8️⃣ Build formatted address ---
+    const formattedAddress = [
+      address.houseNumber,
+      address.street,
+      address.locality,
+      address.city,
+      address.district,
+      address.state,
+      address.pinCode,
+    ]
+      .filter(Boolean)
+      .join(", ");
+
+    return res.json({
       success: true,
-      message: "Address updated.",
-      address: addr,
+      message: "Address updated successfully.",
+      address: {
+        id: address._id,
+        formattedAddress,
+        isDefault: address.isDefault,
+        coordinates: address.location?.coordinates || [],
+        details: {
+          houseNumber: address.houseNumber,
+          street: address.street,
+          locality: address.locality,
+          city: address.city,
+          district: address.district,
+          state: address.state,
+          pinCode: address.pinCode,
+        },
+      },
     });
-  } catch (err) {
-    console.log(err);
-    res.status(500).json({ success: false, message: "Server error" });
+  } catch (error) {
+    console.error("❌ updateAddress error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update address",
+      error: error.message,
+    });
   }
 });
-
 
 
 
@@ -5666,12 +5791,12 @@ const markOrderPaid = asyncHandler(async (req, res) => {
 
 module.exports = {
     getHomePageData, getProductsByVendorId, donateToAdmin, getDonationsReceived, searchProductsByName,
-    getProductDetails, markOrderPaid,setDeliveryType,reviewOrder,selectVendorInCart,
+    getProductDetails, markOrderPaid,setDeliveryType,reviewOrder,
     getFilteredProducts,
     getVendorsNearYou,
     getCartItems,
     addItemToCart,
-    removeItemFromCart,getVendorProfileForBuyer,
+    removeItemFromCart,
     updateCartItemQuantity,
     placeOrder,saveDeliveryAddress,
     getBuyerOrders,
