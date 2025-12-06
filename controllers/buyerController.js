@@ -2539,15 +2539,11 @@ const addItemToCart = asyncHandler(async (req, res) => {
     // 2️⃣ Find or create cart
     let cart = await Cart.findOne({ user: userId });
     if (!cart) {
-        cart = await Cart.create({ user: userId, items: [] });
+        cart = await Cart.create({ user: userId, items: [], selectedVendors: [] });
     }
 
-    // ❌❌ Vendor restriction removed — now multi vendor allowed
-    // --------------------------------------------------------
-    // OLD CODE DELETED:
-    // const existingVendors = cart.items.map(i => i.vendor?.toString()).filter(Boolean);
-    // if (...) return error;
-    // --------------------------------------------------------
+    // ⭐ Multi-vendor allowed (no restriction)
+    // Nothing to do with selectedVendors here
 
     // 3️⃣ Add or update item
     const existingItemIndex = cart.items.findIndex(
@@ -2555,12 +2551,14 @@ const addItemToCart = asyncHandler(async (req, res) => {
     );
 
     if (existingItemIndex > -1) {
+        // Update existing item quantity
         cart.items[existingItemIndex].quantity += Number(quantity);
         cart.items[existingItemIndex].price = product.price;
     } else {
+        // Add new item
         cart.items.push({
             product: product._id,
-            vendor: product.vendor,  // stored for later vendor-wise grouping
+            vendor: product.vendor,  // used for vendor-wise grouping later
             quantity: Number(quantity),
             price: product.price
         });
@@ -2586,7 +2584,7 @@ const addItemToCart = asyncHandler(async (req, res) => {
         "Delivery"
     );
 
-    // 5️⃣ Populate again for send to client
+    // 5️⃣ Populate again for sending response
     const populatedCart = await Cart.findById(cart._id)
         .populate("items.product", "name price variety images unit vendor")
         .lean();
@@ -2615,73 +2613,127 @@ const addItemToCart = asyncHandler(async (req, res) => {
 
 
 
+
 const removeItemFromCart = asyncHandler(async (req, res) => {
-    const { id } = req.params;
+  const { id } = req.params;
 
-    const cart = await Cart.findOne({ user: req.user._id })
-        .populate('items.product');
+  const cart = await Cart.findOne({ user: req.user._id })
+    .populate('items.product');
 
-    if (!cart) {
-        return res.status(404).json({ success: false, message: 'Cart not found' });
-    }
+  if (!cart) {
+    return res.status(404).json({ success: false, message: 'Cart not found' });
+  }
 
-    const initialLength = cart.items.length;
+  // Find the product before removing (to get vendor)
+  const itemToRemove = cart.items.find(
+    item => item.product && item.product._id.toString() === id
+  );
 
-    // 🛡 Remove missing products + remove requested product
-    cart.items = cart.items.filter((item) => {
-        // ❌ If product is null → REMOVE item
-        if (!item.product) return false;
+  if (!itemToRemove) {
+    return res.status(404).json({ success: false, message: 'Item not found in cart' });
+  }
 
-        // ❌ If this is the product to remove → REMOVE
-        return item.product._id.toString() !== id;
-    });
+  const vendorId = itemToRemove.vendor?.toString();
 
-    if (cart.items.length === initialLength) {
-        return res.status(404).json({ success: false, message: 'Item not found in cart' });
-    }
+  // Remove item
+  cart.items = cart.items.filter(
+    item => item.product && item.product._id.toString() !== id
+  );
 
-    // 🧮 Recalculate total (all items guaranteed valid now)
-    cart.totalPrice = cart.items.reduce(
-        (total, item) => total + item.price * item.quantity,
-        0
+  // Auto-remove vendor from selectedVendors if no more items left from that vendor
+  if (vendorId) {
+    const hasVendorItems = cart.items.some(
+      item => item.vendor?.toString() === vendorId
     );
 
-    await cart.save();
+    if (!hasVendorItems) {
+      cart.selectedVendors = cart.selectedVendors.filter(
+        vid => vid.toString() !== vendorId
+      );
+    }
+  }
 
-    res.json({
-        success: true,
-        message: "Item removed from cart",
-        data: cart,
-    });
+  // Recalculate price
+  cart.totalPrice = cart.items.reduce(
+    (total, item) => total + item.price * item.quantity,
+    0
+  );
+
+  await cart.save();
+
+  // Populate again for clean UI response
+  const populatedCart = await Cart.findById(cart._id)
+    .populate('items.product');
+
+  return res.json({
+    success: true,
+    message: "Item removed from cart",
+    data: populatedCart,
+  });
 });
+
 
 
 
 const updateCartItemQuantity = asyncHandler(async (req, res) => {
-    const { quantity } = req.body;
-    const { id } = req.params;
+  const { quantity } = req.body;
+  const { id } = req.params;
 
-    if (!quantity || quantity < 1) {
-        return res.status(400).json({ success: false, message: 'Quantity must be at least 1.' });
+  const cart = await Cart.findOne({ user: req.user._id }).populate("items.product");
+
+  if (!cart) {
+    return res.status(404).json({ success: false, message: "Cart not found" });
+  }
+
+  const itemIndex = cart.items.findIndex(
+    (i) => i.product && i.product._id.toString() === id
+  );
+
+  if (itemIndex === -1) {
+    return res.status(404).json({ success: false, message: "Item not found in cart" });
+  }
+
+  const item = cart.items[itemIndex];
+  const vendorId = item.vendor?.toString();
+
+  // ⭐ If quantity becomes 0 → remove the item
+  if (quantity <= 0) {
+    cart.items.splice(itemIndex, 1);
+
+    // Check if vendor has no more items → auto unselect vendor
+    const hasVendorItems = cart.items.some(
+      (it) => it.vendor?.toString() === vendorId
+    );
+
+    if (!hasVendorItems) {
+      cart.selectedVendors = cart.selectedVendors.filter(
+        (v) => v.toString() !== vendorId
+      );
     }
-
-    const cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
-    if (!cart) {
-        return res.status(404).json({ success: false, message: 'Cart not found' });
-    }
-
-    const itemIndex = cart.items.findIndex((i) => i.product._id.toString() === id);
-    if (itemIndex === -1) {
-        return res.status(404).json({ success: false, message: 'Item not found in cart' });
-    }
-
+  } else {
+    // ⭐ Normal quantity update
     cart.items[itemIndex].quantity = quantity;
-    cart.totalPrice = cart.items.reduce((t, i) => t + i.price * i.quantity, 0);
+  }
 
-    await cart.save();
+  // Recalculate price
+  cart.totalPrice = cart.items.reduce(
+    (t, i) => t + i.price * i.quantity,
+    0
+  );
 
-    res.json({ success: true, message: 'Cart updated', data: cart });
+  await cart.save();
+
+  // Populate clean response
+  const updatedCart = await Cart.findById(cart._id).populate("items.product");
+
+  return res.json({
+    success: true,
+    message: "Cart updated",
+    data: updatedCart,
+  });
 });
+
+
 
 const selectVendorInCart = asyncHandler(async (req, res) => {
   const userId = req.user._id;
@@ -2708,14 +2760,13 @@ const selectVendorInCart = asyncHandler(async (req, res) => {
     cart.selectedVendors = [];
   }
 
-  // Convert ObjectIds → string for comparison
+  // Convert ObjectIds to string
   const selectedVendorIds = cart.selectedVendors.map((id) => id.toString());
 
   // ---------- SELECT ----------
   if (selected === true) {
-    if (!selectedVendorIds.includes(vendorId)) {
-      cart.selectedVendors.push(vendorId); // store vendor as string or ObjectId both work
-    }
+    // ⭐ ONE VENDOR RULE: overwrite entire array
+    cart.selectedVendors = [vendorId];  
   }
 
   // ---------- UNSELECT ----------
@@ -2730,7 +2781,7 @@ const selectVendorInCart = asyncHandler(async (req, res) => {
   return res.json({
     success: true,
     message: selected ? "Vendor selected" : "Vendor unselected",
-    selectedVendors: cart.selectedVendors.map((id) => id.toString()), // clean output
+    selectedVendors: cart.selectedVendors.map((id) => id.toString()),
   });
 });
 
