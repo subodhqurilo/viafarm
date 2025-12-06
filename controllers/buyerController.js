@@ -2502,7 +2502,10 @@ const addItemToCart = asyncHandler(async (req, res) => {
     }
 
     if (product.status !== 'In Stock' || product.price == null) {
-        return res.status(400).json({ success: false, message: 'Product is out of stock or invalid.' });
+        return res.status(400).json({
+            success: false,
+            message: 'Product is out of stock or invalid.'
+        });
     }
 
     // 2️⃣ Find or create cart
@@ -2511,20 +2514,15 @@ const addItemToCart = asyncHandler(async (req, res) => {
         cart = await Cart.create({ user: userId, items: [] });
     }
 
-    // 3️⃣ Vendor restriction
-    const existingVendors = cart.items.map(i => i.vendor?.toString()).filter(Boolean);
+    // ❌❌ Vendor restriction REMOVED completely
+    // ----------------------------------------------------
+    // const existingVendors = cart.items.map(i => i.vendor?.toString()).filter(Boolean);
+    // if (existingVendors.length > 0 && existingVendors[0] !== product.vendor.toString()) {
+    //     return res.status(400).json({ message: 'Only one vendor allowed' });
+    // }
+    // ----------------------------------------------------
 
-    if (
-        existingVendors.length > 0 &&
-        existingVendors[0] !== product.vendor.toString()
-    ) {
-        return res.status(400).json({
-            success: false,
-            message: 'You can only add products from one vendor. Please choose products from the same vendor.'
-        });
-    }
-
-    // 4️⃣ Add or update product
+    // 3️⃣ Add or update product
     const existingItemIndex = cart.items.findIndex(
         i => i.product && i.product.toString() === productId
     );
@@ -2543,7 +2541,7 @@ const addItemToCart = asyncHandler(async (req, res) => {
 
     await cart.save();
 
-    // 5️⃣ Populate cart BEFORE summary (IMPORTANT FIX)
+    // 4️⃣ Populate for summary (unchanged)
     const populatedForSummary = await Cart.findById(cart._id)
         .populate({
             path: "items.product",
@@ -2561,7 +2559,7 @@ const addItemToCart = asyncHandler(async (req, res) => {
         "Delivery"
     );
 
-    // 6️⃣ Populate again for client response
+    // 5️⃣ Final client response
     const populatedCart = await Cart.findById(cart._id)
         .populate("items.product", "name price variety images unit vendor")
         .lean();
@@ -2586,6 +2584,7 @@ const addItemToCart = asyncHandler(async (req, res) => {
         }
     });
 });
+
 
 
 
