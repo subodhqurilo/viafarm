@@ -2336,20 +2336,24 @@ const getCartItems = asyncHandler(async (req, res) => {
 
     const emptySummary = {
       totalMRP: 0,
-      totalAmount: 0,
       couponDiscount: 0,
-      deliveryCharge: 0
+      deliveryCharge: 0,
+      totalAmount: 0,
     };
 
-    // 1️⃣ Fetch cart
+    // ---------------- FETCH CART ----------------
     const cart = await Cart.findOne({ user: userId })
       .populate({
         path: "items.product",
-        select: "name price variety images unit vendor",
-        populate: {
-          path: "vendor",
-          select: "name"
-        }
+        select: "name price variety images unit vendor category weightPerPiece",
+        populate: [
+          { path: "category", select: "name" },
+          {
+            path: "vendor",
+            select:
+              "name mobileNumber email upiId address vendorDetails profilePicture location status",
+          },
+        ],
       })
       .lean();
 
@@ -2360,57 +2364,109 @@ const getCartItems = asyncHandler(async (req, res) => {
           items: [],
           summary: emptySummary,
           priceDetails: emptySummary,
-          couponCode: ""
-        }
+          couponCode: "",
+        },
       });
     }
 
-    // 2️⃣ Format clean items + ADD PRICE (important)
-    const items = cart.items
-      .filter(i => i.product)
-      .map(i => ({
-        id: i.product._id,
-        name: i.product.name,
-        subtitle: i.product.variety || "",
-        mrp: i.price || i.product.price || 0,     // ✅ FIX: PRICE ADDED
-        imageUrl: i.product.images?.[0] || "",
-        quantity: i.quantity,
-        unit: i.product.unit || "",
-        vendorId: i.product.vendor?._id
-      }));
+    // ---------------- BUYER INFO ----------------
+    const buyer = await User.findById(userId)
+      .select("address location")
+      .lean();
 
-    // 3️⃣ Calculate simple totals
+    const validItems = [];
+
+    for (const i of cart.items) {
+      if (!i.product) continue;
+
+      const p = i.product;
+      const vendor = p.vendor || {};
+
+      // ---------------- ESTIMATED DELIVERY ----------------
+      const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
+
+      validItems.push({
+        id: p._id,
+        name: p.name,
+        subtitle: p.variety || "",
+        mrp: p.price,   // ⭐ FIXED: price now correctly included
+        imageUrl: p.images?.[0] || "https://placehold.co/100x100",
+        quantity: i.quantity,
+        unit: p.unit || "",
+        category: p.category?.name || "",
+        deliveryText: deliveryInfo.deliveryText,
+
+        vendor: {
+          id: vendor._id,
+          name: vendor.name,
+          mobileNumber: vendor.mobileNumber,
+          email: vendor.email,
+          upiId: vendor.upiId,
+          contactNo: vendor.vendorDetails?.contactNo,
+          about: vendor.vendorDetails?.about,
+          location: vendor.vendorDetails?.location,
+          deliveryRegion: vendor.vendorDetails?.deliveryRegion,
+          totalOrders: vendor.vendorDetails?.totalOrders,
+          profilePicture: vendor.profilePicture,
+          address: vendor.address || {},
+          geoLocation: vendor.location?.coordinates || [0, 0],
+          status: vendor.status,
+        },
+      });
+    }
+
+    // ---------------- SUMMARY ----------------
     let totalMRP = 0;
-    items.forEach(i => {
-      totalMRP += i.quantity * i.mrp;   // ✅ FIX: now using correct price
+
+    validItems.forEach((i) => {
+      totalMRP += i.mrp * i.quantity;  // ⭐ FIXED: summary now correct
     });
+
+    let couponDiscount = 0;
+
+    if (cart.couponCode) {
+      const coupon = await Coupon.findOne({ code: cart.couponCode }).lean();
+
+      if (coupon) {
+        if (coupon.discount.type === "Percentage") {
+          couponDiscount = (totalMRP * coupon.discount.value) / 100;
+        } else {
+          couponDiscount = coupon.discount.value;
+        }
+
+        if (couponDiscount > totalMRP) couponDiscount = totalMRP;
+      }
+    }
+
+    const totalAmount = totalMRP - couponDiscount;
 
     const summary = {
       totalMRP,
-      couponDiscount: 0,
+      couponDiscount,
       deliveryCharge: 0,
-      totalAmount: totalMRP
+      totalAmount,
     };
 
-    // 4️⃣ Final response
+    // ---------------- RESPONSE ----------------
     return res.json({
       success: true,
       data: {
-        items,
+        items: validItems,
         summary,
         priceDetails: summary,
-        couponCode: cart.couponCode || ""
-      }
+        couponCode: cart.couponCode || "",
+      },
     });
 
   } catch (error) {
-    console.error("getCartItems Error:", error);
-    return res.status(500).json({
+    console.error("❌ getCartItems error:", error);
+    res.status(500).json({
       success: false,
-      message: "Failed to load cart items."
+      message: "Failed to load cart details.",
     });
   }
 });
+
 
 
 
