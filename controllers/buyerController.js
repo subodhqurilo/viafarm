@@ -2336,24 +2336,20 @@ const getCartItems = asyncHandler(async (req, res) => {
 
     const emptySummary = {
       totalMRP: 0,
-      couponDiscount: 0,
-      deliveryCharge: 0,
       totalAmount: 0,
+      couponDiscount: 0,
+      deliveryCharge: 0
     };
 
-    // ---------------- FETCH CART ----------------
+    // 1️⃣ Fetch cart
     const cart = await Cart.findOne({ user: userId })
       .populate({
         path: "items.product",
-        select: "name price variety images unit vendor category weightPerPiece",
-        populate: [
-          { path: "category", select: "name" },
-          {
-            path: "vendor",
-            select:
-              "name mobileNumber email upiId address vendorDetails profilePicture location status",
-          },
-        ],
+        select: "name price variety images unit vendor",
+        populate: {
+          path: "vendor",
+          select: "name"
+        }
       })
       .lean();
 
@@ -2361,152 +2357,60 @@ const getCartItems = asyncHandler(async (req, res) => {
       return res.json({
         success: true,
         data: {
-          vendors: [],
+          items: [],
           summary: emptySummary,
           priceDetails: emptySummary,
-          couponCode: "",
-          similarProducts: [],
-        },
+          couponCode: ""
+        }
       });
     }
 
-    // ---------------- BUYER INFO ----------------
-    const buyer = await User.findById(userId)
-      .select("address location")
-      .lean();
+    // 2️⃣ Format clean items
+    const items = cart.items
+      .filter(i => i.product) // remove missing products
+      .map(i => ({
+        id: i.product._id,
+        name: i.product.name,
+        subtitle: i.product.variety || "",
+        imageUrl: i.product.images?.[0] || "",
+        quantity: i.quantity,
+        unit: i.product.unit || "",
+        vendorId: i.product.vendor?._id
+      }));
 
-    const categoryIds = new Set();
-    const vendorGroups = {}; // vendor-wise grouping
-
-    // ---------------- LOOP CART ITEMS ----------------
-    for (const item of cart.items) {
-      if (!item.product) continue;
-
-      const p = item.product;
-      const vendor = p.vendor;
-
-      // Track categories for similar products
-      if (p.category?._id) {
-        categoryIds.add(p.category._id.toString());
-      }
-
-      // Estimated delivery
-      const deliveryInfo = calculateEstimatedDelivery(vendor, buyer);
-
-      const itemData = {
-        id: p._id,
-        name: p.name,
-        subtitle: p.variety || "",
-        mrp: p.price,
-        imageUrl: p.images?.[0] || "",
-        quantity: item.quantity,
-        unit: p.unit,
-        category: p.category?.name || "",
-        deliveryText: deliveryInfo.deliveryText,
-      };
-
-      // ---------------- GROUP BY VENDOR ----------------
-      const vendorId = vendor._id.toString();
-
-      // Check if vendor is selected in DB
-      const isChecked =
-        Array.isArray(cart.selectedVendors) &&
-        cart.selectedVendors.some((id) => id.toString() === vendorId);
-
-      if (!vendorGroups[vendorId]) {
-        vendorGroups[vendorId] = {
-          vendor: {
-            id: vendorId,
-            name: vendor.name,
-            mobileNumber: vendor.mobileNumber,
-            email: vendor.email,
-            upiId: vendor.upiId,
-            about: vendor.vendorDetails?.about,
-            profilePicture: vendor.profilePicture,
-            address: vendor.address,
-            location: vendor.location,
-            status: vendor.status,
-          },
-          items: [],
-          vendorTotal: 0,
-
-          // ⭐ DEFAULT = false
-          // ⭐ If selectedVendors contains vendorId → true
-          checked: isChecked ? true : false,
-        };
-      }
-
-      vendorGroups[vendorId].items.push(itemData);
-      vendorGroups[vendorId].vendorTotal += p.price * item.quantity;
-    }
-
-    const vendorsArray = Object.values(vendorGroups);
-
-    // ---------------- SUMMARY (DeliveryCharge = 0) ----------------
-    const totalMRP = vendorsArray.reduce((sum, v) => sum + v.vendorTotal, 0);
-
-    let couponDiscount = 0;
-
-    if (cart.couponCode) {
-      const coupon = await Coupon.findOne({ code: cart.couponCode }).lean();
-
-      if (coupon) {
-        if (coupon.discount.type === "Percentage") {
-          couponDiscount = (totalMRP * coupon.discount.value) / 100;
-        } else {
-          couponDiscount = coupon.discount.value;
-        }
-        if (couponDiscount > totalMRP) couponDiscount = totalMRP;
-      }
-    }
+    // 3️⃣ Calculate simple totals
+    let totalMRP = 0;
+    items.forEach(i => {
+      totalMRP += i.quantity * (i.mrp || i.product?.price || 0);
+    });
 
     const summary = {
       totalMRP,
-      couponDiscount,
-      deliveryCharge: 0, // Default ZERO
-      totalAmount: totalMRP - couponDiscount,
+      couponDiscount: 0,
+      deliveryCharge: 0,
+      totalAmount: totalMRP
     };
 
-    // ---------------- SIMILAR PRODUCTS ----------------
-    const similarProducts = await Product.find({
-      category: { $in: Array.from(categoryIds) },
-      _id: { $nin: vendorsArray.flatMap((v) => v.items.map((i) => i.id)) },
-    })
-      .select("name price images unit rating weightPerPiece vendor")
-      .limit(12)
-      .populate("vendor", "name")
-      .lean();
-
-    const formattedSimilar = similarProducts.map((p) => ({
-      id: p._id,
-      name: p.name,
-      price: p.price,
-      unit: p.unit,
-      imageUrl: p.images?.[0] || "",
-      vendor: p.vendor?.name || "",
-      rating: p.rating,
-      weightPerPiece: p.weightPerPiece,
-    }));
-
-    // ---------------- RESPONSE ----------------
+    // 4️⃣ Final response
     return res.json({
       success: true,
       data: {
-        vendors: vendorsArray,
+        items,
         summary,
         priceDetails: summary,
-        couponCode: cart.couponCode || "",
-        similarProducts: formattedSimilar,
-      },
+        couponCode: cart.couponCode || ""
+      }
     });
+
   } catch (error) {
-    console.error("❌ getCartItems error:", error);
-    res.status(500).json({
+    console.error("getCartItems Error:", error);
+    return res.status(500).json({
       success: false,
-      message: "Failed to load cart details.",
+      message: "Failed to load cart items."
     });
   }
 });
+
 
 
 
