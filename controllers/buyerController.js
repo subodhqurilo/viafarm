@@ -2430,7 +2430,7 @@ const addItemToCart = asyncHandler(async (req, res) => {
 
     // 1️⃣ Fetch product
     const product = await Product.findById(productId)
-        .select("name price status images unit variety vendor");
+        .select("name price vendor images unit variety status");
 
     if (!product) {
         return res.status(404).json({
@@ -2449,44 +2449,53 @@ const addItemToCart = asyncHandler(async (req, res) => {
     // 2️⃣ Find or create cart
     let cart = await Cart.findOne({ user: userId });
     if (!cart) {
-        cart = await Cart.create({ user: userId, items: [] });
+        cart = await Cart.create({
+            user: userId,
+            items: []
+        });
     }
 
-    // 3️⃣ Add or update quantity
-    const index = cart.items.findIndex(i => i.product.toString() === productId);
+    // 3️⃣ Update or Insert item
+    const existingIndex = cart.items.findIndex(
+        (i) => i.product.toString() === productId
+    );
 
-    if (index >= 0) {
-        cart.items[index].quantity += Number(quantity);
+    if (existingIndex > -1) {
+        cart.items[existingIndex].quantity += Number(quantity);
     } else {
         cart.items.push({
-            product: productId,
+            product: product._id,
+            vendor: product.vendor,  // ✅ ALWAYS REQUIRED
             quantity: Number(quantity)
         });
     }
 
     await cart.save();
 
-    // 4️⃣ Populate for response
-    const populated = await Cart.findById(cart._id)
+    // 4️⃣ Get clean formatted response
+    const populatedCart = await Cart.findById(cart._id)
         .populate("items.product", "name images unit variety vendor")
         .lean();
 
-    const items = populated.items.map(i => ({
+    const items = populatedCart.items.map((i) => ({
         id: i.product._id,
         name: i.product.name,
         subtitle: i.product.variety || "",
         imageUrl: i.product.images?.[0] || "",
         quantity: i.quantity,
-        unit: i.product.unit,
-        vendorId: i.product.vendor   // vendor coming from product
+        unit: i.product.unit || "",
+        vendorId: i.vendor.toString()
     }));
 
     return res.json({
         success: true,
         message: "Item added successfully.",
-        data: { items }
+        data: {
+            items
+        }
     });
 });
+
 
 
 
