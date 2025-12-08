@@ -1735,16 +1735,30 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ⭐ AUTO APPLY COUPON (CART → INPUT)
-    const appliedCouponCode = cart.couponCode || inputCoupon || null;
+    // ⭐ Selected vendor fetch
+    const selectedVendorId = cart.selectedVendors?.[0];
 
-    const validItems = cart.items.filter(i => i.product);
-    if (!validItems.length) {
+    if (!selectedVendorId) {
       return res.status(400).json({
         success: false,
-        message: "Cart contains invalid products.",
+        message: "Please select a vendor first.",
       });
     }
+
+    // ⭐ Filter cart items ONLY belonging to selected vendor
+    const selectedItems = cart.items.filter(
+      (i) => i.product?.vendor?.toString() === selectedVendorId.toString()
+    );
+
+    if (!selectedItems.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Selected vendor has no items in cart."
+      });
+    }
+
+    // AUTO APPLY COUPON
+    const appliedCouponCode = cart.couponCode || inputCoupon || null;
 
     // ------------------ 4️⃣ COUPON VALIDATION ------------------
     let coupon = null;
@@ -1764,7 +1778,9 @@ const placePickupOrder = asyncHandler(async (req, res) => {
         });
       }
 
-      const used = coupon.usedBy.find(u => u.user.toString() === userId.toString());
+      const used = coupon.usedBy.find(
+        (u) => u.user.toString() === userId.toString()
+      );
 
       if (coupon.usageLimitPerUser && used && used.count >= coupon.usageLimitPerUser) {
         return res.status(400).json({
@@ -1781,100 +1797,84 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       }
     }
 
-    // ------------------ 5️⃣ GROUP ITEMS BY VENDOR ------------------
-    const itemsByVendor = {};
-    validItems.forEach(i => {
-      const vendorId = i.product.vendor.toString();
-      if (!itemsByVendor[vendorId]) itemsByVendor[vendorId] = [];
-      itemsByVendor[vendorId].push(i);
-    });
-
-    const createdOrderIds = [];
-    const payments = [];
     let totalPay = 0;
     let totalDiscount = 0;
 
-    // ------------------ 6️⃣ PROCESS EACH VENDOR ORDER ------------------
-    for (const vendorId in itemsByVendor) {
-      const vendorItems = itemsByVendor[vendorId];
+    // ⭐ Summary for only selected vendor items
+    const { summary } = await calculateOrderSummary(
+      { items: selectedItems, user: userId },
+      appliedCouponCode,
+      "Pickup"
+    );
 
-      // ⭐ FIX: use updated calculateOrderSummary (same as reviewOrder)
-      const { summary } = await calculateOrderSummary(
-        { items: vendorItems, user: userId },
-        appliedCouponCode,
-        "Pickup" // no delivery charge
-      );
+    const vendor = await User.findById(selectedVendorId).select("name upiId").lean();
 
-      const vendor = await User.findById(vendorId).select("name upiId").lean();
+    totalPay = summary.totalAmount;
+    totalDiscount = summary.discount || 0;
 
-      totalPay += summary.totalAmount;
-      totalDiscount += summary.discount || 0;
+    // ------------------ CREATE ORDER ------------------
+    const newOrder = await Order.create({
+      orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
+      buyer: userId,
+      vendor: selectedVendorId,
+      products: selectedItems.map(i => ({
+        product: i.product._id,
+        quantity: i.quantity,
+        price: i.product.price,
+      })),
+      totalPrice: summary.totalAmount,
+      discount: summary.discount,
+      couponCode: appliedCouponCode,
+      orderType: "Pickup",
+      pickupSlot,
+      comments: comments || "",
+      paymentMethod,
+      isPaid,
+      orderStatus,
+    });
 
-      // ------------------ CREATE ORDER ------------------
-      const newOrder = await Order.create({
-        orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
-        buyer: userId,
-        vendor: vendorId,
-        products: vendorItems.map(i => ({
-          product: i.product._id,
-          quantity: i.quantity,
-          price: i.product.price,
-        })),
-        totalPrice: summary.totalAmount,
-        discount: summary.discount,
-        couponCode: appliedCouponCode,
-        orderType: "Pickup",
-        pickupSlot,
-        comments: comments || "",
-        paymentMethod,
-        isPaid,
-        orderStatus,
+    // ------------------ 🔔 NOTIFICATIONS ------------------
+    await createAndSendNotification(
+      req,
+      "📦 New Pickup Order",
+      `You received a new pickup order (${newOrder.orderId}).`,
+      { orderId: newOrder._id, total: newOrder.totalPrice },
+      "Vendor",
+      selectedVendorId
+    );
+
+    await createAndSendNotification(
+      req,
+      "🛍️ Pickup Order Placed",
+      `Your order (${newOrder.orderId}) has been placed successfully.`,
+      { orderId: newOrder._id, amount: summary.totalAmount },
+      "Buyer",
+      userId
+    );
+
+    let payments = [];
+    
+    if (isOnlinePayment && vendor?.upiId) {
+      const ref = `TXN-${newOrder.orderId.replace("#", "-")}-${Date.now()}`;
+      const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=${newOrder.orderId}&tr=${ref}&cu=INR`;
+      const qrCode = await QRCode.toDataURL(upiUrl);
+
+      payments.push({
+        orderId: newOrder._id,
+        vendorName: vendor.name,
+        upiId: vendor.upiId,
+        amount: summary.totalAmount,
+        qrCode,
+        upiUrl,
+        comments,
+        pickupSlot
       });
-
-      createdOrderIds.push(newOrder._id);
-
-      // ------------------ 🔔 SEND NOTIFICATIONS ------------------
-      await createAndSendNotification(
-        req,
-        "📦 New Pickup Order",
-        `You received a new pickup order (${newOrder.orderId}).`,
-        { orderId: newOrder._id, total: newOrder.totalPrice },
-        "Vendor",
-        vendorId
-      );
-
-      await createAndSendNotification(
-        req,
-        "🛍️ Pickup Order Placed",
-        `Your order (${newOrder.orderId}) has been placed successfully.`,
-        { orderId: newOrder._id, amount: summary.totalAmount },
-        "Buyer",
-        userId
-      );
-
-      // ------------------ 💳 UPI QR ------------------
-      if (isOnlinePayment && vendor?.upiId) {
-        const ref = `TXN-${newOrder.orderId.replace("#", "-")}-${Date.now()}`;
-        const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=${newOrder.orderId}&tr=${ref}&cu=INR`;
-        const qrCode = await QRCode.toDataURL(upiUrl);
-
-        payments.push({
-          orderId: newOrder._id,
-          vendorName: vendor.name,
-          upiId: vendor.upiId,
-          amount: summary.totalAmount,
-          qrCode,
-          upiUrl,
-          comments,
-          pickupSlot
-        });
-      }
     }
 
-    // ------------------ 7️⃣ UPDATE COUPON USAGE ------------------
+    // ------------------ 7️⃣ UPDATE COUPON ------------------
     if (coupon) {
       coupon.usedCount++;
-      const used = coupon.usedBy.find(u => u.user.toString() === userId.toString());
+      const used = coupon.usedBy.find((u) => u.user.toString() === userId.toString());
 
       if (used) used.count++;
       else coupon.usedBy.push({ user: userId, count: 1 });
@@ -1885,19 +1885,11 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       await coupon.save();
     }
 
-    // ------------------ 8️⃣ CLEAR CART ------------------
-// Remove ONLY selected vendor items
-await Cart.updateOne(
-  { user: userId },
-  {
-    $pull: {
-      items: {
-        vendor: { $in: selectedVendors }
-      }
-    }
-  }
-);
-
+    // ------------------ 8️⃣ REMOVE ONLY selected vendor items ------------------
+    await Cart.updateOne(
+      { user: userId },
+      { $pull: { items: { vendor: selectedVendorId } } }
+    );
 
     // ------------------ 9️⃣ FINAL RESPONSE ------------------
     return res.json({
@@ -1905,7 +1897,7 @@ await Cart.updateOne(
       message: isOnlinePayment
         ? "Orders created. Complete UPI payment to confirm."
         : "Pickup order confirmed (Cash).",
-      orderIds: createdOrderIds,
+      orderIds: [newOrder._id],
       amountToPay: totalPay,
       discount: totalDiscount,
       paymentMethod,
@@ -1918,10 +1910,12 @@ await Cart.updateOne(
     return res.status(500).json({
       success: false,
       message: "Failed to place order",
-      error: error.message
+      error: error.message,
     });
   }
 });
+
+
 
 
 
@@ -1930,7 +1924,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     const userId = req.user._id;
     const { comments, paymentMethod } = req.body;
 
-    // ------------------ 1️⃣ VALIDATE PAYMENT (Delivery = UPI only) ------------------
+    // ------------------ 1️⃣ VALIDATE PAYMENT ------------------
     if (paymentMethod !== "UPI") {
       return res.status(400).json({
         success: false,
@@ -1951,7 +1945,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // coupon priority (same as reviewOrder)
+    // Coupon from preference
     const appliedCouponCode = pref.couponCode || null;
 
     // ------------------ 3️⃣ VALIDATE SHIPPING ADDRESS ------------------
@@ -1978,11 +1972,25 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    const validItems = cart.items.filter(i => i.product);
-    if (!validItems.length) {
+    // ⭐ GET SELECTED VENDOR
+    const selectedVendorId = cart.selectedVendors?.[0];
+
+    if (!selectedVendorId) {
       return res.status(400).json({
         success: false,
-        message: "Cart contains invalid products.",
+        message: "Please select a vendor first.",
+      });
+    }
+
+    // ⭐ FILTER ITEMS OF ONLY SELECTED VENDOR
+    const selectedItems = cart.items.filter(
+      (i) => i.product?.vendor?.toString() === selectedVendorId.toString()
+    );
+
+    if (!selectedItems.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Selected vendor has no items in cart.",
       });
     }
 
@@ -2004,7 +2012,10 @@ const placeOrder = asyncHandler(async (req, res) => {
         });
       }
 
-      const used = coupon.usedBy.find(u => u.user.toString() === userId.toString());
+      const used = coupon.usedBy.find(
+        (u) => u.user.toString() === userId.toString()
+      );
+
       if (coupon.usageLimitPerUser && used && used.count >= coupon.usageLimitPerUser) {
         return res.status(400).json({
           success: false,
@@ -2020,108 +2031,91 @@ const placeOrder = asyncHandler(async (req, res) => {
       }
     }
 
-    // ------------------ 6️⃣ GROUP ITEMS BY VENDOR ------------------
-    const itemsByVendor = {};
-    validItems.forEach(i => {
-      const vId = i.product.vendor.toString();
-      if (!itemsByVendor[vId]) itemsByVendor[vId] = [];
-      itemsByVendor[vId].push(i);
+    // ------------------ 6️⃣ PROCESS ONLY SELECTED VENDOR ORDER ------------------
+    const { summary } = await calculateOrderSummary(
+      {
+        items: selectedItems,
+        user: userId,
+        addressId: pref.addressId,
+      },
+      appliedCouponCode,
+      "Delivery"
+    );
+
+    const vendor = await User.findById(selectedVendorId).select("name upiId").lean();
+    if (!vendor?.upiId) {
+      return res.status(400).json({
+        success: false,
+        message: `Vendor ${vendor?.name || ""} UPI ID missing.`,
+      });
+    }
+
+    let grandTotal = summary.totalAmount;
+    let totalDiscount = summary.discount || 0;
+
+    // ------------------ CREATE ORDER ------------------
+    const newOrder = await Order.create({
+      orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
+      buyer: userId,
+      vendor: selectedVendorId,
+      products: selectedItems.map(i => ({
+        product: i.product._id,
+        quantity: i.quantity,
+        price: i.product.price,
+      })),
+      totalPrice: summary.totalAmount,
+      discount: summary.discount,
+      couponCode: appliedCouponCode,
+      orderType: "Delivery",
+      shippingAddress,
+      pickupSlot: null,
+      comments: comments || "",
+      paymentMethod,
+      isPaid,
+      orderStatus,
     });
 
-    const createdOrderIds = [];
-    const payments = [];
-    let grandTotal = 0;
-    let totalDiscount = 0;
+    // ------------------ 🔔 NOTIFICATIONS ------------------
+    await createAndSendNotification(
+      req,
+      "📦 New Delivery Order",
+      `You received a new delivery order (${newOrder.orderId}).`,
+      { orderId: newOrder._id, amount: summary.totalAmount },
+      "Vendor",
+      selectedVendorId
+    );
 
-    // ------------------ 7️⃣ PROCESS VENDOR-WISE ORDER ------------------
-    for (const vendorId in itemsByVendor) {
-      const vendorItems = itemsByVendor[vendorId];
+    await createAndSendNotification(
+      req,
+      "🛍️ Order Placed",
+      `Your delivery order (${newOrder.orderId}) has been placed.`,
+      { orderId: newOrder._id, amount: summary.totalAmount },
+      "Buyer",
+      userId
+    );
 
-      // ⭐ FIX: Use same delivery summary as reviewOrder
-      const { summary } = await calculateOrderSummary(
-        {
-          items: vendorItems,
-          user: userId,
-          addressId: pref.addressId
-        },
-        appliedCouponCode,
-        "Delivery"
-      );
+    // ------------------ 💳 PAYMENT QR ------------------
+    const ref = `TXN-${newOrder.orderId.replace("#", "-")}-${Date.now()}`;
+    const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=${newOrder.orderId}&tr=${ref}&cu=INR`;
+    const qrCode = await QRCode.toDataURL(upiUrl);
 
-      const vendor = await User.findById(vendorId).select("name upiId").lean();
-      if (!vendor?.upiId) {
-        return res.status(400).json({
-          success: false,
-          message: `Vendor ${vendor?.name || ""} UPI ID missing.`,
-        });
-      }
-
-      grandTotal += summary.totalAmount;
-      totalDiscount += summary.discount || 0;
-
-      // ------------------ CREATE ORDER ------------------
-      const newOrder = await Order.create({
-        orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
-        buyer: userId,
-        vendor: vendorId,
-        products: vendorItems.map(i => ({
-          product: i.product._id,
-          quantity: i.quantity,
-          price: i.product.price,
-        })),
-        totalPrice: summary.totalAmount,
-        discount: summary.discount,
-        couponCode: appliedCouponCode,
-        orderType: "Delivery",
-        shippingAddress,
-        pickupSlot: null,
-        comments: comments || "",
-        paymentMethod,
-        isPaid,
-        orderStatus,
-      });
-
-      createdOrderIds.push(newOrder._id);
-
-      // ------------------ 🔔 NOTIFICATIONS ------------------
-      await createAndSendNotification(
-        req,
-        "📦 New Delivery Order",
-        `You received a new delivery order (${newOrder.orderId}).`,
-        { orderId: newOrder._id, amount: summary.totalAmount },
-        "Vendor",
-        vendorId
-      );
-
-      await createAndSendNotification(
-        req,
-        "🛍️ Order Placed",
-        `Your delivery order (${newOrder.orderId}) has been placed.`,
-        { orderId: newOrder._id, amount: summary.totalAmount },
-        "Buyer",
-        userId
-      );
-
-      // ------------------ 💳 PAYMENT QR ------------------
-      const ref = `TXN-${newOrder.orderId.replace("#", "-")}-${Date.now()}`;
-      const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=${newOrder.orderId}&tr=${ref}&cu=INR`;
-      const qrCode = await QRCode.toDataURL(upiUrl);
-
-      payments.push({
+    const payments = [
+      {
         orderId: newOrder._id,
         vendorName: vendor.name,
         upiId: vendor.upiId,
         amount: summary.totalAmount,
         upiUrl,
         qrCode,
-        comments
-      });
-    }
+        comments,
+      },
+    ];
 
-    // ------------------ 8️⃣ UPDATE COUPON USAGE ------------------
+    // ------------------ 7️⃣ UPDATE COUPON ------------------
     if (coupon) {
       coupon.usedCount++;
-      const used = coupon.usedBy.find(u => u.user.toString() === userId.toString());
+      const used = coupon.usedBy.find((u) => u.user.toString() === userId.toString());
+
       if (used) used.count++;
       else coupon.usedBy.push({ user: userId, count: 1 });
 
@@ -2131,30 +2125,28 @@ const placeOrder = asyncHandler(async (req, res) => {
       await coupon.save();
     }
 
-    // ------------------ 9️⃣ CLEAR CART ------------------
-// Remove ONLY selected vendor items
-await Cart.updateOne(
-  { user: userId },
-  {
-    $pull: {
-      items: {
-        vendor: { $in: selectedVendors }
+    // ------------------ 8️⃣ CLEAR ONLY SELECTED VENDOR ITEMS ------------------
+    await Cart.updateOne(
+      { user: userId },
+      {
+        $pull: {
+          items: {
+            vendor: selectedVendorId,
+          },
+        },
       }
-    }
-  }
-);
-
+    );
 
     // ------------------ 🔟 FINAL RESPONSE ------------------
     return res.json({
       success: true,
-      message: "Delivery orders created. Complete UPI payment to confirm.",
-      orderIds: createdOrderIds,
+      message: "Delivery order created. Complete UPI payment to confirm.",
+      orderIds: [newOrder._id],
       totalAmount: grandTotal,
       discount: totalDiscount,
       paymentMethod,
       address: shippingAddress,
-      payments
+      payments,
     });
 
   } catch (error) {
@@ -2162,10 +2154,11 @@ await Cart.updateOne(
     return res.status(500).json({
       success: false,
       message: "Failed to place delivery order",
-      error: error.message
+      error: error.message,
     });
   }
 });
+
 
 
 
@@ -2725,7 +2718,7 @@ const selectVendorInCart = asyncHandler(async (req, res) => {
 
   await cart.save();
 
-  // ⭐ Fetch vendor name only
+  // ⭐ Fetch vendor name
   const vendor = await User.findById(vendorId).select("name");
 
   const vendorName = vendor?.name || "Unknown Vendor";
@@ -2733,9 +2726,15 @@ const selectVendorInCart = asyncHandler(async (req, res) => {
   return res.json({
     success: true,
     message: selected ? "Vendor selected" : "Vendor deselected",
-    selectedVendors: [vendorName],
+    
+    // ⭐ Final response: ID + Name दोनों भेजेंगे
+    selectedVendors: cart.selectedVendors.map(id => ({
+      id: id.toString(),
+      name: vendorName   // हमेशा सही vendor ka name आएगा
+    }))
   });
 });
+
 
 
 
