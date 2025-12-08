@@ -2710,16 +2710,14 @@ const selectVendorInCart = asyncHandler(async (req, res) => {
     });
   }
 
-  // Ensure the field exists
   if (!Array.isArray(cart.selectedVendors)) {
     cart.selectedVendors = [];
   }
 
-  // ⭐ Allow ONLY ONE VENDOR to be selected at a time
+  // Select / Deselect vendor
   if (selected === true) {
-    cart.selectedVendors = [vendorId];    // <-- overwrite the array
+    cart.selectedVendors = [vendorId];
   } else {
-    // Unselect vendor
     cart.selectedVendors = cart.selectedVendors.filter(
       (id) => id.toString() !== vendorId
     );
@@ -2727,12 +2725,19 @@ const selectVendorInCart = asyncHandler(async (req, res) => {
 
   await cart.save();
 
+  // ⭐ Fetch vendor name only
+  const vendor = await User.findById(vendorId).select("name");
+
+  const vendorName = vendor?.name || "Unknown Vendor";
+
   return res.json({
     success: true,
     message: selected ? "Vendor selected" : "Vendor deselected",
-    selectedVendors: cart.selectedVendors.map((id) => id.toString()),
+    selectedVendors: [vendorName],
   });
 });
+
+
 
 
 const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
