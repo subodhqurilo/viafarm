@@ -3438,35 +3438,18 @@ const getCouponsByProductId = asyncHandler(async (req, res) => {
 
 const getHighlightedCoupon = asyncHandler(async (req, res) => {
   try {
-    const userId = req.user._id;
     const now = new Date();
 
-    // ⭐ Fetch user's cart vendors
-    const cart = await Cart.findOne({ user: userId })
-      .populate("items.product", "vendor")
-      .lean();
-
-    let cartVendors = [];
-    if (cart?.items?.length) {
-      cartVendors = [
-        ...new Set(
-          cart.items
-            .filter(i => i.product?.vendor)
-            .map(i => i.product.vendor.toString())
-        )
-      ];
-    }
-
-    // ⭐ Fetch all active coupons
-    let allCoupons = await Coupon.find({
+    // ⭐ ALL ACTIVE COUPONS (Admin + Vendor)
+    let coupons = await Coupon.find({
       status: "Active",
       startDate: { $lte: now },
       expiryDate: { $gte: now }
     })
-      .populate("createdBy", "role")
+      .populate("createdBy", "role _id")
       .lean();
 
-    if (!allCoupons.length) {
+    if (!coupons.length) {
       return res.json({
         success: true,
         message: "No active coupons available.",
@@ -3474,12 +3457,12 @@ const getHighlightedCoupon = asyncHandler(async (req, res) => {
       });
     }
 
-    // ⭐ Populate category names + product names
-    for (const coupon of allCoupons) {
+    // ⭐ Convert category + product details
+    for (const c of coupons) {
 
       // ---- Convert appliesTo IDs → Category Names ----
       try {
-        const validIds = (coupon.appliesTo || []).filter(id =>
+        const validIds = (c.appliesTo || []).filter(id =>
           mongoose.Types.ObjectId.isValid(id)
         );
 
@@ -3487,57 +3470,44 @@ const getHighlightedCoupon = asyncHandler(async (req, res) => {
           _id: { $in: validIds }
         }).select("name");
 
-        coupon.appliesTo =
-          categories.length > 0 ? categories.map(c => c.name) : ["All Products"];
-
+        c.appliesTo =
+          categories.length > 0 ? categories.map(cat => cat.name) : ["All Products"];
       } catch {
-        coupon.appliesTo = ["All Products"];
+        c.appliesTo = ["All Products"];
       }
 
       // ---- Convert applicableProducts IDs → Product Names ----
       try {
-        if (coupon.applicableProducts?.length > 0) {
+        if (c.applicableProducts?.length > 0) {
           const products = await Product.find({
-            _id: { $in: coupon.applicableProducts }
+            _id: { $in: c.applicableProducts }
           }).select("name");
 
-          coupon.applicableProducts = products.map(p => p.name);
+          c.applicableProducts = products.map(p => p.name);
         } else {
-          coupon.applicableProducts = [];
+          c.applicableProducts = [];
         }
       } catch {
-        coupon.applicableProducts = [];
+        c.applicableProducts = [];
       }
     }
 
-    // ⭐ Filter: Admin coupons OR vendor coupons in cart
-    const eligible = allCoupons.filter(c => {
-      if (!c.createdBy) return false;
-
-      if (c.createdBy.role === "Admin") return true;
-
-      if (c.createdBy.role === "vendor" &&
-        cartVendors.includes(c.createdBy._id.toString())) {
-        return true;
-      }
-
-      return false;
-    });
-
+    // ⭐ NO FILTERING — RETURN ALL ACTIVE COUPONS
     return res.json({
       success: true,
       message: "Eligible coupons retrieved successfully.",
-      data: eligible
+      data: coupons
     });
 
   } catch (error) {
-    console.error("❌ Buyer Highlighted Coupon Error:", error.message);
+    console.error("❌ Highlight Coupon Error:", error.message);
     return res.status(500).json({
       success: false,
       message: "Failed to load coupons."
     });
   }
 });
+
 
 
 
