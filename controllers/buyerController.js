@@ -3336,81 +3336,51 @@ const getOrderDetails = asyncHandler(async (req, res) => {
 
 
 const getAvailableCouponsForBuyer = asyncHandler(async (req, res) => {
-  const userId = req.user._id;
-  const now = new Date();
+  try {
+    const now = new Date();
 
-  // 1️⃣ Fetch buyer cart + product categories
-  const cart = await Cart.findOne({ user: userId })
-    .populate({
-      path: "items.product",
-      select: "category"
+    // Fetch only active & valid coupons
+    const coupons = await Coupon.find({
+      status: "Active",
+      startDate: { $lte: now },
+      expiryDate: { $gte: now }
     })
-    .lean();
+      .select("code discount minimumOrder usageLimitPerUser totalUsageLimit startDate expiryDate appliesTo")
+      .populate("appliesTo", "name")
+      .sort({ createdAt: -1 })
+      .lean();
 
-  if (!cart || !cart.items.length) {
+    // Convert appliesTo → category names (fallback: "All Products")
+    const formattedCoupons = coupons.map(c => ({
+      id: c._id,
+      code: c.code,
+      discount: c.discount,
+      minimumOrder: c.minimumOrder,
+      usageLimitPerUser: c.usageLimitPerUser,
+      totalUsageLimit: c.totalUsageLimit,
+      startDate: c.startDate,
+      expiryDate: c.expiryDate,
+      appliesTo:
+        c.appliesTo?.length > 0
+          ? c.appliesTo.map(cat => cat.name)
+          : ["All Products"]
+    }));
+
     return res.status(200).json({
       success: true,
-      message: "Cart is empty.",
-      data: []
+      count: formattedCoupons.length,
+      data: formattedCoupons
+    });
+
+  } catch (error) {
+    console.error("❌ Error fetching coupons:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load coupons."
     });
   }
-
-  // 2️⃣ Extract unique category IDs from cart items
-  const cartCategoryIds = [
-    ...new Set(
-      cart.items
-        .filter(i => i.product?.category)
-        .map(i => i.product.category.toString())
-    )
-  ];
-
-  // 3️⃣ Fetch Active + Valid Coupons
-  const coupons = await Coupon.find({
-    status: "Active",
-    expiryDate: { $gte: now },
-    startDate: { $lte: now }
-  })
-    .populate("appliesTo", "name")
-    .select("code discount appliesTo minimumOrder usageLimitPerUser startDate expiryDate applicableProducts")
-    .lean();
-
-  if (!coupons.length) {
-    return res.status(200).json({
-      success: true,
-      message: "No available coupons.",
-      data: []
-    });
-  }
-
-  // 4️⃣ Filter coupons based on buyer cart categories
-  const finalCoupons = [];
-
-  for (const c of coupons) {
-    // If appliesTo = empty → means All Products
-    if (!c.appliesTo || c.appliesTo.length === 0) {
-      finalCoupons.push(c);
-      continue;
-    }
-
-    // Convert appliesTo category ObjectIds to string array
-    const couponCategoryIds = c.appliesTo.map(cat => cat._id.toString());
-
-    // Check if any category matches cart categories
-    const matches = couponCategoryIds.some(catId =>
-      cartCategoryIds.includes(catId)
-    );
-
-    if (matches) {
-      finalCoupons.push(c);
-    }
-  }
-
-  return res.status(200).json({
-    success: true,
-    count: finalCoupons.length,
-    data: finalCoupons
-  });
 });
+
 
 
 
@@ -3467,38 +3437,89 @@ const getCouponsByProductId = asyncHandler(async (req, res) => {
 
 
 const getHighlightedCoupon = asyncHandler(async (req, res) => {
+  try {
+    const userId = req.user._id;
     const now = new Date();
 
-    // 1️⃣ Find the best active coupon
-    // Sort by highest discount first, then lowest minimum order
-    const bestCoupon = await Coupon.findOne({
-        status: 'Active',
-        startDate: { $lte: now },
-        expiryDate: { $gte: now }
-    })
-        .sort({ 'discount.value': -1, minimumOrder: 1 })
-        .select('code discount minimumOrder appliesTo applicableId')
-        .lean();
+    // Fetch user's cart vendors
+    const cart = await Cart.findOne({ user: userId })
+      .populate("items.product", "vendor")
+      .lean();
 
-    // 2️⃣ Handle no coupon case
-    if (!bestCoupon) {
-        return res.status(200).json({
-            success: true,
-            message: 'No active coupons available at this time.',
-            data: null
-        });
+    let cartVendors = [];
+    if (cart?.items?.length) {
+      cartVendors = [
+        ...new Set(
+          cart.items
+            .filter(i => i.product?.vendor)
+            .map(i => i.product.vendor.toString())
+        )
+      ];
     }
 
-    // 3️⃣ Log the type of coupon for debugging
-    if (bestCoupon.applicableId) console.log(`Applicable ID: ${bestCoupon.applicableId}`);
+    // ⭐ FETCH ACTIVE COUPONS (NO POPULATE ERROR)
+    let allCoupons = await Coupon.find({
+      status: "Active",
+      startDate: { $lte: now },
+      expiryDate: { $gte: now }
+    })
+      .populate("createdBy", "role")
+      .lean();
 
-    // 4️⃣ Return response
-    res.status(200).json({
+    if (!allCoupons.length) {
+      return res.json({
         success: true,
-        message: 'Best active coupon retrieved successfully.',
-        data: bestCoupon
+        message: "No active coupons.",
+        data: []
+      });
+    }
+
+    // ⭐ SAFELY POPULATE appliesTo CATEGORY NAMES
+    for (const coupon of allCoupons) {
+      try {
+        const catIds = (coupon.appliesTo || []).filter(id =>
+          mongoose.Types.ObjectId.isValid(id)
+        );
+
+        const cats = await Category.find({ _id: { $in: catIds } }).select("name");
+
+        coupon.appliesTo =
+          cats.length > 0 ? cats.map(c => c.name) : ["All Products"];
+      } catch (err) {
+        coupon.appliesTo = ["All Products"]; // fallback
+      }
+    }
+
+    // Filter coupons: admin OR vendor in cart
+    const eligible = allCoupons.filter(c => {
+      if (!c.createdBy) return false;
+
+      if (c.createdBy.role === "Admin") return true;
+
+      if (c.createdBy.role === "vendor" &&
+          cartVendors.includes(c.createdBy._id.toString())) {
+        return true;
+      }
+
+      return false;
     });
+
+    return res.json({
+      success: true,
+      message: "Eligible coupons retrieved successfully.",
+      data: eligible
+    });
+
+  } catch (error) {
+    console.error("❌ Buyer Highlighted Coupon Error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load coupons."
+    });
+  }
 });
+
+
 
 
 
