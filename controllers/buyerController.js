@@ -2203,14 +2203,14 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // ⭐ NEW: Only selected vendor items
-  const selectedVendors = cart.selectedVendors || [];
+  // ⭐ NEW: Only selected vendor items (FIXED)
+  const selectedVendors = cart.selectedVendors?.map(v => v.toString()) || [];
 
   let validItems = cart.items.filter(i => i.product);
 
   if (selectedVendors.length > 0) {
     validItems = validItems.filter(i =>
-      selectedVendors.includes(i.vendor.toString())
+      selectedVendors.includes(i.product.vendor._id.toString())
     );
   }
 
@@ -2322,6 +2322,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
     },
   });
 });
+
 
 
 
