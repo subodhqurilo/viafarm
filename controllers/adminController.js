@@ -1746,10 +1746,9 @@ const createCoupon = asyncHandler(async (req, res) => {
       totalUsageLimit = 0,
       startDate,
       expiryDate,
-      appliesTo = [],
+      appliesTo = [],   // category names or IDs
     } = req.body;
 
-    // Required fields
     if (!code || !discount?.value || !discount?.type || !startDate || !expiryDate) {
       return res.status(400).json({
         success: false,
@@ -1757,7 +1756,6 @@ const createCoupon = asyncHandler(async (req, res) => {
       });
     }
 
-    // Duplicate code check
     const existingCoupon = await Coupon.findOne({ code: code.toUpperCase() });
     if (existingCoupon) {
       return res.status(400).json({
@@ -1766,7 +1764,6 @@ const createCoupon = asyncHandler(async (req, res) => {
       });
     }
 
-    // Date validation
     if (new Date(expiryDate) <= new Date(startDate)) {
       return res.status(400).json({
         success: false,
@@ -1774,9 +1771,9 @@ const createCoupon = asyncHandler(async (req, res) => {
       });
     }
 
-    // ------------------------------------------------------------
-    // ✔ Convert Category Names / IDs to ObjectIds
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // ⭐ Convert appliesTo → Category IDs
+    // --------------------------------------------------------
     let finalCategoryIds = [];
 
     if (Array.isArray(appliesTo) && appliesTo.length > 0) {
@@ -1787,7 +1784,7 @@ const createCoupon = asyncHandler(async (req, res) => {
         ]
       }).select("_id");
 
-      if (categories.length === 0) {
+      if (!categories.length) {
         return res.status(400).json({
           success: false,
           message: "Invalid category names or IDs in appliesTo.",
@@ -1797,22 +1794,21 @@ const createCoupon = asyncHandler(async (req, res) => {
       finalCategoryIds = categories.map(c => c._id);
     }
 
-    // ------------------------------------------------------------
-    // 🔥 Fetch all products from selected categories
-    // ------------------------------------------------------------
-    let allProducts = [];
+    // --------------------------------------------------------
+    // ⭐ Fetch all products under selected categories
+    // --------------------------------------------------------
+    const productQuery =
+      finalCategoryIds.length > 0
+        ? { category: { $in: finalCategoryIds } }
+        : {}; // all products
 
-    if (finalCategoryIds.length > 0) {
-      allProducts = await Product.find({ category: { $in: finalCategoryIds } }).select("_id");
-    } else {
-      allProducts = await Product.find().select("_id"); // All products
-    }
+    const allProducts = await Product.find(productQuery).select("_id");
 
     const productIds = allProducts.map(p => p._id);
 
-    // ------------------------------------------------------------
-    // 🔥 Create Coupon
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // ⭐ Create Coupon
+    // --------------------------------------------------------
     const newCoupon = await Coupon.create({
       code: code.toUpperCase(),
       discount,
@@ -1827,24 +1823,23 @@ const createCoupon = asyncHandler(async (req, res) => {
       createdBy: adminId,
     });
 
-    // ------------------------------------------------------------
-    // ⭐ Populate category names BEFORE sending response
-    // ------------------------------------------------------------
-    const populatedCoupon = await Coupon.findById(newCoupon._id)
-      .populate({
-        path: "appliesTo",
-        select: "name"
-      });
+    // --------------------------------------------------------
+    // ⭐ Populate category names for response
+    // --------------------------------------------------------
+    const populated = await Coupon.findById(newCoupon._id)
+      .populate("appliesTo", "name");
+
+    const categoryNames =
+      populated.appliesTo.length > 0
+        ? populated.appliesTo.map(c => c.name)
+        : ["All Products"];
 
     return res.status(201).json({
       success: true,
       message: "Coupon created successfully.",
       data: {
-        ...populatedCoupon._doc,
-        appliesTo:
-          populatedCoupon.appliesTo.length > 0
-            ? populatedCoupon.appliesTo.map(c => c.name)
-            : ["All Products"],
+        ...populated._doc,
+        appliesTo: categoryNames,
       },
     });
 
@@ -1859,6 +1854,7 @@ const createCoupon = asyncHandler(async (req, res) => {
 });
 
 
+
 // ============================================================
 // 🔥 GET ALL COUPONS — Admin/Vendor
 // ============================================================
@@ -1868,41 +1864,22 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
 
   const query = {};
 
-  // Search filter
-  if (q.trim()) {
-    query.code = { $regex: q.trim(), $options: "i" };
-  }
+  if (q.trim()) query.code = { $regex: q.trim(), $options: "i" };
+  if (status) query.status = status;
+  if (user.role === "vendor") query.createdBy = user._id;
 
-  // Status filter
-  if (status) {
-    query.status = status;
-  }
-
-  // Vendor restriction
-  if (user.role === "vendor") {
-    query.createdBy = user._id;
-  }
-
-  // Fetch coupons
   const coupons = await Coupon.find(query)
     .sort({ createdAt: -1 })
-    .populate({
-      path: "appliesTo",
-      model: "Category",
-      select: "name",
-    })
+    .populate("appliesTo", "name")
     .populate({
       path: "applicableProducts",
       select: "name price images category vendor",
       populate: [
         { path: "category", select: "name" },
-        { path: "vendor", select: "name" },
+        { path: "vendor", select: "name" }
       ],
     })
-    .populate({
-      path: "createdBy",
-      select: "name email role",
-    });
+    .populate("createdBy", "name email role");
 
   const now = new Date();
 
@@ -1910,20 +1887,13 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
     coupons.map(async (c) => {
       let updatedStatus = c.status;
 
-      // Auto-expire logic
-      if (c.expiryDate && c.expiryDate < now && c.status !== "Expired") {
+      if (c.expiryDate < now && c.status !== "Expired") {
         updatedStatus = "Expired";
         await Coupon.findByIdAndUpdate(c._id, { status: "Expired" });
       }
 
-      // ⭐ Correct appliesTo format (Category Names)
-      let appliesToResult = [];
-
-      if (c.appliesTo && c.appliesTo.length > 0) {
-        appliesToResult = c.appliesTo.map((cat) => cat.name);
-      } else {
-        appliesToResult = ["All Products"];
-      }
+      // ⭐ SAFE FIX — undefined error removed
+      const appliesToArray = Array.isArray(c.appliesTo) ? c.appliesTo : [];
 
       return {
         id: c._id,
@@ -1937,7 +1907,10 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
         startDate: c.startDate,
         expiryDate: c.expiryDate,
 
-        appliesTo: appliesToResult,
+        appliesTo:
+          appliesToArray.length > 0
+            ? appliesToArray.map(cat => cat.name)
+            : ["All Products"],
 
         createdBy: {
           id: c.createdBy?._id,
@@ -1964,6 +1937,8 @@ const getAdminCoupons = asyncHandler(async (req, res) => {
     data: formatted,
   });
 });
+
+
 
 
 // EXPORT

@@ -1886,10 +1886,18 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     }
 
     // ------------------ 8️⃣ CLEAR CART ------------------
-    await Cart.updateOne(
-      { user: userId },
-      { $set: { items: [], couponCode: null } }
-    );
+// Remove ONLY selected vendor items
+await Cart.updateOne(
+  { user: userId },
+  {
+    $pull: {
+      items: {
+        vendor: { $in: selectedVendors }
+      }
+    }
+  }
+);
+
 
     // ------------------ 9️⃣ FINAL RESPONSE ------------------
     return res.json({
@@ -2124,10 +2132,18 @@ const placeOrder = asyncHandler(async (req, res) => {
     }
 
     // ------------------ 9️⃣ CLEAR CART ------------------
-    await Cart.updateOne(
-      { user: userId },
-      { $set: { items: [], couponCode: null } }
-    );
+// Remove ONLY selected vendor items
+await Cart.updateOne(
+  { user: userId },
+  {
+    $pull: {
+      items: {
+        vendor: { $in: selectedVendors }
+      }
+    }
+  }
+);
+
 
     // ------------------ 🔟 FINAL RESPONSE ------------------
     return res.json({
@@ -3320,34 +3336,82 @@ const getOrderDetails = asyncHandler(async (req, res) => {
 
 
 const getAvailableCouponsForBuyer = asyncHandler(async (req, res) => {
-    const now = new Date();
+  const userId = req.user._id;
+  const now = new Date();
 
-    // The query filters for coupons that are:
-    // 1. Currently marked as 'Active'
-    // 2. Not yet expired (validTill > now)
-    // 3. Already valid (validFrom <= now)
-    const availableCoupons = await Coupon.find({
-        status: 'Active',
-        validTill: { $gte: now },
-        validFrom: { $lte: now }
+  // 1️⃣ Fetch buyer cart + product categories
+  const cart = await Cart.findOne({ user: userId })
+    .populate({
+      path: "items.product",
+      select: "category"
     })
-        .select('code discount appliesTo minimumOrder usageLimitPerUser startDate expiryDate applicableId')
-        .sort({ discount: -1, minimumOrder: 1 }); // Sort by highest discount, lowest minimum order
+    .lean();
 
-    if (!availableCoupons || availableCoupons.length === 0) {
-        return res.status(200).json({
-            success: true,
-            message: 'No available coupons at this time.',
-            data: []
-        });
+  if (!cart || !cart.items.length) {
+    return res.status(200).json({
+      success: true,
+      message: "Cart is empty.",
+      data: []
+    });
+  }
+
+  // 2️⃣ Extract unique category IDs from cart items
+  const cartCategoryIds = [
+    ...new Set(
+      cart.items
+        .filter(i => i.product?.category)
+        .map(i => i.product.category.toString())
+    )
+  ];
+
+  // 3️⃣ Fetch Active + Valid Coupons
+  const coupons = await Coupon.find({
+    status: "Active",
+    expiryDate: { $gte: now },
+    startDate: { $lte: now }
+  })
+    .populate("appliesTo", "name")
+    .select("code discount appliesTo minimumOrder usageLimitPerUser startDate expiryDate applicableProducts")
+    .lean();
+
+  if (!coupons.length) {
+    return res.status(200).json({
+      success: true,
+      message: "No available coupons.",
+      data: []
+    });
+  }
+
+  // 4️⃣ Filter coupons based on buyer cart categories
+  const finalCoupons = [];
+
+  for (const c of coupons) {
+    // If appliesTo = empty → means All Products
+    if (!c.appliesTo || c.appliesTo.length === 0) {
+      finalCoupons.push(c);
+      continue;
     }
 
-    res.status(200).json({
-        success: true,
-        count: availableCoupons.length,
-        data: availableCoupons
-    });
+    // Convert appliesTo category ObjectIds to string array
+    const couponCategoryIds = c.appliesTo.map(cat => cat._id.toString());
+
+    // Check if any category matches cart categories
+    const matches = couponCategoryIds.some(catId =>
+      cartCategoryIds.includes(catId)
+    );
+
+    if (matches) {
+      finalCoupons.push(c);
+    }
+  }
+
+  return res.status(200).json({
+    success: true,
+    count: finalCoupons.length,
+    data: finalCoupons
+  });
 });
+
 
 
 const getCouponsByProductId = asyncHandler(async (req, res) => {
