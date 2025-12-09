@@ -1735,18 +1735,9 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ------------------ ⭐ AUTO SELECT VENDOR IF ONLY ONE EXISTS ------------------
-    const uniqueVendors = [
-      ...new Set(cart.items.map((i) => i.product?.vendor?.toString())),
-    ];
+    // ⭐ Selected vendor fetch
+    const selectedVendorId = cart.selectedVendors?.[0];
 
-    let selectedVendorId = cart.selectedVendors?.[0];
-
-    if (uniqueVendors.length === 1) {
-      selectedVendorId = uniqueVendors[0]; // ⭐ AUTO SELECT
-    }
-
-    // ------------------ ⭐ IF STILL NO VENDOR SELECTED ------------------
     if (!selectedVendorId) {
       return res.status(400).json({
         success: false,
@@ -1754,7 +1745,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ------------------ ⭐ FILTER ITEMS OF SELECTED VENDOR ------------------
+    // ⭐ Filter cart items ONLY belonging to selected vendor
     const selectedItems = cart.items.filter(
       (i) => i.product?.vendor?.toString() === selectedVendorId.toString()
     );
@@ -1762,22 +1753,19 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     if (!selectedItems.length) {
       return res.status(400).json({
         success: false,
-        message: "Selected vendor has no items in cart.",
+        message: "Selected vendor has no items in cart."
       });
     }
 
-    // ------------------ 4️⃣ AUTO APPLY COUPON ------------------
-    const appliedCouponCode =
-      (cart.couponCode ? cart.couponCode.trim().toUpperCase() : null) ||
-      (inputCoupon ? inputCoupon.trim().toUpperCase() : null) ||
-      null;
+    // AUTO APPLY COUPON
+    const appliedCouponCode = cart.couponCode || inputCoupon || null;
 
-    // ------------------ 5️⃣ COUPON VALIDATION ------------------
+    // ------------------ 4️⃣ COUPON VALIDATION ------------------
     let coupon = null;
 
     if (appliedCouponCode) {
       coupon = await Coupon.findOne({
-        code: appliedCouponCode,
+        code: appliedCouponCode.toUpperCase(),
         status: "Active",
         startDate: { $lte: new Date() },
         expiryDate: { $gte: new Date() },
@@ -1809,28 +1797,32 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       }
     }
 
-    // ------------------ 6️⃣ CALCULATE SUMMARY ------------------
-    const { summary } = await calculateOrderSummary(
-      {
-        items: selectedItems,
-        user: userId,
-        couponCode: appliedCouponCode,
-      },
-      appliedCouponCode,
-      "Pickup"
-    );
+    let totalPay = 0;
+    let totalDiscount = 0;
+
+    // ⭐ Summary for only selected vendor items
+// ⭐ Summary for only selected vendor items
+const { summary } = await calculateOrderSummary(
+  {
+    items: selectedItems,
+    user: userId,
+    couponCode: appliedCouponCode    // 🔥 FIX: Pass coupon here
+  },
+  appliedCouponCode,
+  "Pickup"
+);
 
     const vendor = await User.findById(selectedVendorId).select("name upiId").lean();
 
-    const totalPay = summary.totalAmount;
-    const totalDiscount = summary.discount || 0;
+    totalPay = summary.totalAmount;
+    totalDiscount = summary.discount || 0;
 
-    // ------------------ 7️⃣ CREATE ORDER ------------------
+    // ------------------ CREATE ORDER ------------------
     const newOrder = await Order.create({
       orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
       buyer: userId,
       vendor: selectedVendorId,
-      products: selectedItems.map((i) => ({
+      products: selectedItems.map(i => ({
         product: i.product._id,
         quantity: i.quantity,
         price: i.product.price,
@@ -1846,7 +1838,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       orderStatus,
     });
 
-    // ------------------ 8️⃣ SEND NOTIFICATIONS ------------------
+    // ------------------ 🔔 NOTIFICATIONS ------------------
     await createAndSendNotification(
       req,
       "📦 New Pickup Order",
@@ -1865,9 +1857,8 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       userId
     );
 
-    // ------------------ 9️⃣ GENERATE QR PAYMENT (IF UPI) ------------------
     let payments = [];
-
+    
     if (isOnlinePayment && vendor?.upiId) {
       const ref = `TXN-${newOrder.orderId.replace("#", "-")}-${Date.now()}`;
       const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=${newOrder.orderId}&tr=${ref}&cu=INR`;
@@ -1885,13 +1876,10 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ------------------ 🔟 UPDATE COUPON USAGE ------------------
+    // ------------------ 7️⃣ UPDATE COUPON ------------------
     if (coupon) {
       coupon.usedCount++;
-
-      const used = coupon.usedBy.find(
-        (u) => u.user.toString() === userId.toString()
-      );
+      const used = coupon.usedBy.find((u) => u.user.toString() === userId.toString());
 
       if (used) used.count++;
       else coupon.usedBy.push({ user: userId, count: 1 });
@@ -1902,13 +1890,13 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       await coupon.save();
     }
 
-    // ------------------ 1️⃣1️⃣ REMOVE ONLY SELECTED VENDOR ITEMS ------------------
+    // ------------------ 8️⃣ REMOVE ONLY selected vendor items ------------------
     await Cart.updateOne(
       { user: userId },
       { $pull: { items: { vendor: selectedVendorId } } }
     );
 
-    // ------------------ 1️⃣2️⃣ FINAL RESPONSE ------------------
+    // ------------------ 9️⃣ FINAL RESPONSE ------------------
     return res.json({
       success: true,
       message: isOnlinePayment
@@ -1931,7 +1919,6 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     });
   }
 });
-
 
 
 
