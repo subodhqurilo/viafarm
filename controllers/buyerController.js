@@ -3443,74 +3443,68 @@ const getCouponsByProductId = asyncHandler(async (req, res) => {
 const getHighlightedCoupon = asyncHandler(async (req, res) => {
   try {
     const now = new Date();
+    const userId = req.user._id;
 
-    // ⭐ ALL ACTIVE COUPONS (Admin + Vendor)
+    // ⭐ Fetch selected vendor from Cart
+    const cart = await Cart.findOne({ user: userId }).lean();
+    const selectedVendor = cart?.selectedVendors?.[0] || null;
+
+    // ⭐ Step 1: Get ALL active coupons (Admin + Vendor)
     let coupons = await Coupon.find({
       status: "Active",
       startDate: { $lte: now },
       expiryDate: { $gte: now }
     })
-      .populate("createdBy", "role _id")
+      .populate("vendor", "name")
       .lean();
 
-    if (!coupons.length) {
-      return res.json({
-        success: true,
-        message: "No active coupons available.",
-        data: []
-      });
-    }
+    // ⭐ Step 2: Filtering logic
+    const filteredCoupons = coupons.filter(c => {
+      // Admin coupon (vendor null) → always include
+      if (!c.vendor) return true;
 
-    // ⭐ Convert category + product details
-    for (const c of coupons) {
+      // Vendor coupon → include ONLY if selected vendor matches
+      return selectedVendor && c.vendor._id.toString() === selectedVendor.toString();
+    });
 
-      // ---- Convert appliesTo IDs → Category Names ----
-      try {
-        const validIds = (c.appliesTo || []).filter(id =>
-          mongoose.Types.ObjectId.isValid(id)
-        );
+    // ⭐ Step 3: Convert appliesTo & products to names
+    for (const c of filteredCoupons) {
 
-        const categories = await Category.find({
-          _id: { $in: validIds }
-        }).select("name");
-
-        c.appliesTo =
-          categories.length > 0 ? categories.map(cat => cat.name) : ["All Products"];
-      } catch {
+      // Category Names
+      if (Array.isArray(c.appliesTo) && c.appliesTo.length > 0) {
+        const cats = await Category.find({ _id: { $in: c.appliesTo } })
+          .select("name");
+        c.appliesTo = cats.map(x => x.name);
+      } else {
         c.appliesTo = ["All Products"];
       }
 
-      // ---- Convert applicableProducts IDs → Product Names ----
-      try {
-        if (c.applicableProducts?.length > 0) {
-          const products = await Product.find({
-            _id: { $in: c.applicableProducts }
-          }).select("name");
-
-          c.applicableProducts = products.map(p => p.name);
-        } else {
-          c.applicableProducts = [];
-        }
-      } catch {
+      // Product Names
+      if (c.applicableProducts?.length > 0) {
+        const prods = await Product.find({
+          _id: { $in: c.applicableProducts }
+        }).select("name");
+        c.applicableProducts = prods.map(p => p.name);
+      } else {
         c.applicableProducts = [];
       }
     }
 
-    // ⭐ NO FILTERING — RETURN ALL ACTIVE COUPONS
     return res.json({
       success: true,
       message: "Eligible coupons retrieved successfully.",
-      data: coupons
+      data: filteredCoupons
     });
 
   } catch (error) {
-    console.error("❌ Highlight Coupon Error:", error.message);
+    console.error("Coupon Error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to load coupons."
     });
   }
 });
+
 
 
 

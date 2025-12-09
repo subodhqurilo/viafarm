@@ -191,11 +191,7 @@ async function getDeliveryCharge(
 /** -----------------------------------------
  *  ORDER SUMMARY
  * ----------------------------------------- */
-async function calculateOrderSummary(
-  cartData,
-  couponOrCode,
-  deliveryType = "Delivery"
-) {
+async function calculateOrderSummary(cartData, couponOrCode, deliveryType = "Delivery") {
   const items = cartData.items || [];
   const userId = cartData.user || cartData.userId;
   const addressId = cartData.addressId || null;
@@ -215,20 +211,85 @@ async function calculateOrderSummary(
     return {
       raw: i,
       vendorId: i.product.vendor._id || i.product.vendor,
+      productId: i.product._id,
+      categoryId: i.product.category?._id,
       itemMRP,
-      qty,
+      qty
     };
   });
 
-  /** Coupon */
-  let totalDiscount = 0;
-
-  const updatedItems = prepared.map((i) => ({
+  let updatedItems = prepared.map((i) => ({
     ...i.raw,
     itemMRP: i.itemMRP,
     discount: 0,
-    total: i.itemMRP,
+    total: i.itemMRP
   }));
+
+  /** -----------------------------
+   *  COUPON LOGIC START
+   * ----------------------------- */
+  let totalDiscount = 0;
+
+  if (couponOrCode) {
+    const coupon = await Coupon.findOne({
+      code: couponOrCode.toUpperCase(),
+      status: "Active",
+      startDate: { $lte: new Date() },
+      expiryDate: { $gte: new Date() }
+    })
+      .populate("createdBy", "role _id")
+      .lean();
+
+    if (coupon) {
+      const isAdminCoupon = coupon.createdBy?.role === "Admin";
+      const isVendorCoupon = coupon.createdBy?.role === "Vendor";
+
+      let applicableItems = [];
+
+      // ⭐ ADMIN coupon = APPLY on ALL ITEMS
+      if (isAdminCoupon) {
+        applicableItems = prepared;
+      }
+
+      // ⭐ VENDOR coupon = APPLY only for that vendor
+      if (isVendorCoupon) {
+        applicableItems = prepared.filter(
+          (i) => i.vendorId.toString() === coupon.createdBy._id.toString()
+        );
+      }
+
+      // Minimum order check
+      const applicableMRP = applicableItems.reduce((a, b) => a + b.itemMRP, 0);
+      if (applicableMRP >= coupon.minimumOrder) {
+        
+        // discount calculate
+        let discount = 0;
+
+        if (coupon.discount.type === "Percentage") {
+          discount = (applicableMRP * coupon.discount.value) / 100;
+        } else {
+          discount = coupon.discount.value;
+        }
+
+        totalDiscount = discount;
+
+        // spread discount to items
+        applicableItems.forEach((appItem) => {
+          updatedItems = updatedItems.map((u) => {
+            if (u.product._id.toString() === appItem.raw.product._id.toString()) {
+              return {
+                ...u,
+                discount: (u.discount || 0) + totalDiscount,
+                total: u.itemMRP - totalDiscount
+              };
+            }
+            return u;
+          });
+        });
+
+      }
+    }
+  }
 
   /** Delivery charge */
   const vendorId = prepared[0]?.vendorId;
@@ -246,9 +307,10 @@ async function calculateOrderSummary(
       totalMRP,
       discount: totalDiscount,
       deliveryCharge,
-      totalAmount: finalAmount,
-    },
+      totalAmount: finalAmount
+    }
   };
 }
+
 
 module.exports = { calculateOrderSummary, getDeliveryCharge };
