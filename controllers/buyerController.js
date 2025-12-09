@@ -1735,9 +1735,18 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ⭐ Selected vendor fetch
-    const selectedVendorId = cart.selectedVendors?.[0];
+    // ------------------ ⭐ AUTO SELECT VENDOR IF ONLY ONE EXISTS ------------------
+    const uniqueVendors = [
+      ...new Set(cart.items.map((i) => i.product?.vendor?.toString())),
+    ];
 
+    let selectedVendorId = cart.selectedVendors?.[0];
+
+    if (uniqueVendors.length === 1) {
+      selectedVendorId = uniqueVendors[0]; // ⭐ AUTO SELECT
+    }
+
+    // ------------------ ⭐ IF STILL NO VENDOR SELECTED ------------------
     if (!selectedVendorId) {
       return res.status(400).json({
         success: false,
@@ -1745,7 +1754,7 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ⭐ Filter cart items ONLY belonging to selected vendor
+    // ------------------ ⭐ FILTER ITEMS OF SELECTED VENDOR ------------------
     const selectedItems = cart.items.filter(
       (i) => i.product?.vendor?.toString() === selectedVendorId.toString()
     );
@@ -1753,19 +1762,22 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     if (!selectedItems.length) {
       return res.status(400).json({
         success: false,
-        message: "Selected vendor has no items in cart."
+        message: "Selected vendor has no items in cart.",
       });
     }
 
-    // AUTO APPLY COUPON
-    const appliedCouponCode = cart.couponCode || inputCoupon || null;
+    // ------------------ 4️⃣ AUTO APPLY COUPON ------------------
+    const appliedCouponCode =
+      (cart.couponCode ? cart.couponCode.trim().toUpperCase() : null) ||
+      (inputCoupon ? inputCoupon.trim().toUpperCase() : null) ||
+      null;
 
-    // ------------------ 4️⃣ COUPON VALIDATION ------------------
+    // ------------------ 5️⃣ COUPON VALIDATION ------------------
     let coupon = null;
 
     if (appliedCouponCode) {
       coupon = await Coupon.findOne({
-        code: appliedCouponCode.toUpperCase(),
+        code: appliedCouponCode,
         status: "Active",
         startDate: { $lte: new Date() },
         expiryDate: { $gte: new Date() },
@@ -1797,32 +1809,28 @@ const placePickupOrder = asyncHandler(async (req, res) => {
       }
     }
 
-    let totalPay = 0;
-    let totalDiscount = 0;
-
-    // ⭐ Summary for only selected vendor items
-// ⭐ Summary for only selected vendor items
-const { summary } = await calculateOrderSummary(
-  {
-    items: selectedItems,
-    user: userId,
-    couponCode: appliedCouponCode    // 🔥 FIX: Pass coupon here
-  },
-  appliedCouponCode,
-  "Pickup"
-);
+    // ------------------ 6️⃣ CALCULATE SUMMARY ------------------
+    const { summary } = await calculateOrderSummary(
+      {
+        items: selectedItems,
+        user: userId,
+        couponCode: appliedCouponCode,
+      },
+      appliedCouponCode,
+      "Pickup"
+    );
 
     const vendor = await User.findById(selectedVendorId).select("name upiId").lean();
 
-    totalPay = summary.totalAmount;
-    totalDiscount = summary.discount || 0;
+    const totalPay = summary.totalAmount;
+    const totalDiscount = summary.discount || 0;
 
-    // ------------------ CREATE ORDER ------------------
+    // ------------------ 7️⃣ CREATE ORDER ------------------
     const newOrder = await Order.create({
       orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
       buyer: userId,
       vendor: selectedVendorId,
-      products: selectedItems.map(i => ({
+      products: selectedItems.map((i) => ({
         product: i.product._id,
         quantity: i.quantity,
         price: i.product.price,
@@ -1838,7 +1846,7 @@ const { summary } = await calculateOrderSummary(
       orderStatus,
     });
 
-    // ------------------ 🔔 NOTIFICATIONS ------------------
+    // ------------------ 8️⃣ SEND NOTIFICATIONS ------------------
     await createAndSendNotification(
       req,
       "📦 New Pickup Order",
@@ -1857,8 +1865,9 @@ const { summary } = await calculateOrderSummary(
       userId
     );
 
+    // ------------------ 9️⃣ GENERATE QR PAYMENT (IF UPI) ------------------
     let payments = [];
-    
+
     if (isOnlinePayment && vendor?.upiId) {
       const ref = `TXN-${newOrder.orderId.replace("#", "-")}-${Date.now()}`;
       const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=${newOrder.orderId}&tr=${ref}&cu=INR`;
@@ -1876,10 +1885,13 @@ const { summary } = await calculateOrderSummary(
       });
     }
 
-    // ------------------ 7️⃣ UPDATE COUPON ------------------
+    // ------------------ 🔟 UPDATE COUPON USAGE ------------------
     if (coupon) {
       coupon.usedCount++;
-      const used = coupon.usedBy.find((u) => u.user.toString() === userId.toString());
+
+      const used = coupon.usedBy.find(
+        (u) => u.user.toString() === userId.toString()
+      );
 
       if (used) used.count++;
       else coupon.usedBy.push({ user: userId, count: 1 });
@@ -1890,13 +1902,13 @@ const { summary } = await calculateOrderSummary(
       await coupon.save();
     }
 
-    // ------------------ 8️⃣ REMOVE ONLY selected vendor items ------------------
+    // ------------------ 1️⃣1️⃣ REMOVE ONLY SELECTED VENDOR ITEMS ------------------
     await Cart.updateOne(
       { user: userId },
       { $pull: { items: { vendor: selectedVendorId } } }
     );
 
-    // ------------------ 9️⃣ FINAL RESPONSE ------------------
+    // ------------------ 1️⃣2️⃣ FINAL RESPONSE ------------------
     return res.json({
       success: true,
       message: isOnlinePayment
@@ -1919,6 +1931,7 @@ const { summary } = await calculateOrderSummary(
     });
   }
 });
+
 
 
 
@@ -1973,8 +1986,18 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
+    // ⭐ AUTO SELECT VENDOR (IF CART HAS ONLY ONE VENDOR)
+    const uniqueVendors = [
+      ...new Set(cart.items.map((i) => i.product?.vendor?.toString())),
+    ];
+
+    let selectedVendorId = cart.selectedVendors?.[0];
+
+    if (uniqueVendors.length === 1) {
+      selectedVendorId = uniqueVendors[0];  // AUTO SELECT
+    }
+
     // ⭐ SELECTED VENDOR CHECK
-    const selectedVendorId = cart.selectedVendors?.[0];
     if (!selectedVendorId) {
       return res.status(400).json({
         success: false,
@@ -1994,7 +2017,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ⭐⭐⭐ FIX: FORMAT ITEMS LIKE REVIEW ORDER ⭐⭐⭐
+    // ⭐⭐⭐ FORMAT ITEMS (REVIEW ORDER STYLE)
     const formattedItems = selectedItems.map((i) => ({
       product: {
         _id: i.product._id,
@@ -2009,7 +2032,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       quantity: i.quantity,
     }));
 
-    // ⭐⭐⭐ FIXED: SAME LOGIC AS REVIEW ORDER ⭐⭐⭐
+    // ⭐⭐⭐ COUPON LOGIC (Same as Review Order)
     const appliedCouponCode =
       (cart?.couponCode ? cart.couponCode.trim().toUpperCase() : null) ||
       (pref?.couponCode ? pref.couponCode.trim().toUpperCase() : null) ||
@@ -2052,7 +2075,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       }
     }
 
-    // 6️⃣ SUMMARY (SAME AS REVIEW ORDER)
+    // 6️⃣ SUMMARY CALCULATION
     const { summary } = await calculateOrderSummary(
       {
         items: formattedItems,
@@ -2185,6 +2208,7 @@ const placeOrder = asyncHandler(async (req, res) => {
 
 
 
+
 const reviewOrder = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
@@ -2234,9 +2258,18 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // ⭐ NEW: Only selected vendor items (FIXED)
-  const selectedVendors = cart.selectedVendors?.map(v => v.toString()) || [];
+  // ⭐ AUTO SELECT WHEN CART HAS ONLY ONE VENDOR
+  const uniqueVendors = [
+    ...new Set(cart.items.map(i => i.product?.vendor?._id.toString()))
+  ];
 
+  let selectedVendors = cart.selectedVendors?.map(v => v.toString()) || [];
+
+  if (uniqueVendors.length === 1) {
+    selectedVendors = [uniqueVendors[0]]; // Auto selected vendor
+  }
+
+  // ⭐ FILTER ITEMS FOR SELECTED VENDOR
   let validItems = cart.items.filter(i => i.product);
 
   if (selectedVendors.length > 0) {
@@ -2325,7 +2358,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
     weightPerPiece: p.weightPerPiece,
   }));
 
-  // 7️⃣ FINAL RESPONSE (UNCHANGED)
+  // 7️⃣ FINAL RESPONSE
   return res.json({
     success: true,
     data: {
@@ -2346,6 +2379,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
       },
 
       couponCode: finalCouponCode || "",
+      selectedVendors,
       similarProducts,
       deliveryType: "Delivery",
       address: deliveryAddress,
@@ -2353,6 +2387,7 @@ const reviewOrder = asyncHandler(async (req, res) => {
     },
   });
 });
+
 
 
 
@@ -2709,14 +2744,7 @@ const selectVendorInCart = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const { vendorId, selected } = req.body;
 
-  if (!vendorId) {
-    return res.status(400).json({
-      success: false,
-      message: "Vendor ID is required",
-    });
-  }
-
-  let cart = await Cart.findOne({ user: userId });
+  let cart = await Cart.findOne({ user: userId }).populate("items.product");
 
   if (!cart) {
     return res.status(404).json({
@@ -2725,11 +2753,44 @@ const selectVendorInCart = asyncHandler(async (req, res) => {
     });
   }
 
+  // Ensure array exists
   if (!Array.isArray(cart.selectedVendors)) {
     cart.selectedVendors = [];
   }
 
-  // Select / Deselect vendor
+  // ⭐ AUTO SELECT LOGIC — If cart has only ONE vendor, auto-select
+  const uniqueVendors = [
+    ...new Set(cart.items.map((i) => i.product?.vendor?.toString())),
+  ];
+
+  if (uniqueVendors.length === 1) {
+    const onlyVendorId = uniqueVendors[0];
+
+    cart.selectedVendors = [onlyVendorId];
+    await cart.save();
+
+    const vendor = await User.findById(onlyVendorId).select("name");
+
+    return res.json({
+      success: true,
+      message: "Vendor auto-selected because only one vendor exists in cart.",
+      selectedVendors: [
+        {
+          id: onlyVendorId,
+          name: vendor?.name || "Unknown Vendor",
+        },
+      ],
+    });
+  }
+
+  // ⭐ MANUAL SELECT IF MULTIPLE VENDORS
+  if (!vendorId) {
+    return res.status(400).json({
+      success: false,
+      message: "Vendor ID is required",
+    });
+  }
+
   if (selected === true) {
     cart.selectedVendors = [vendorId];
   } else {
@@ -2740,22 +2801,19 @@ const selectVendorInCart = asyncHandler(async (req, res) => {
 
   await cart.save();
 
-  // ⭐ Fetch vendor name
+  // Fetch vendor name
   const vendor = await User.findById(vendorId).select("name");
-
-  const vendorName = vendor?.name || "Unknown Vendor";
 
   return res.json({
     success: true,
     message: selected ? "Vendor selected" : "Vendor deselected",
-    
-    // ⭐ Final response: ID + Name दोनों भेजेंगे
-    selectedVendors: cart.selectedVendors.map(id => ({
+    selectedVendors: cart.selectedVendors.map((id) => ({
       id: id.toString(),
-      name: vendorName   // हमेशा सही vendor ka name आएगा
-    }))
+      name: vendor?.name || "Unknown Vendor",
+    })),
   });
 });
+
 
 
 
