@@ -1801,11 +1801,16 @@ const placePickupOrder = asyncHandler(async (req, res) => {
     let totalDiscount = 0;
 
     // ⭐ Summary for only selected vendor items
-    const { summary } = await calculateOrderSummary(
-      { items: selectedItems, user: userId },
-      appliedCouponCode,
-      "Pickup"
-    );
+// ⭐ Summary for only selected vendor items
+const { summary } = await calculateOrderSummary(
+  {
+    items: selectedItems,
+    user: userId,
+    couponCode: appliedCouponCode    // 🔥 FIX: Pass coupon here
+  },
+  appliedCouponCode,
+  "Pickup"
+);
 
     const vendor = await User.findById(selectedVendorId).select("name upiId").lean();
 
@@ -1924,7 +1929,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     const userId = req.user._id;
     const { comments, paymentMethod } = req.body;
 
-    // ------------------ 1️⃣ VALIDATE PAYMENT ------------------
+    // 1️⃣ VALIDATE PAYMENT
     if (paymentMethod !== "UPI") {
       return res.status(400).json({
         success: false,
@@ -1932,11 +1937,10 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    const isOnlinePayment = true;
-    const isPaid = false;
     const orderStatus = "In-process";
+    const isPaid = false;
 
-    // ------------------ 2️⃣ GET SAVED DELIVERY PREFERENCE ------------------
+    // 2️⃣ CHECK DELIVERY PREF
     const pref = await DeliveryPreference.findOne({ user: userId }).lean();
     if (!pref || !pref.addressId) {
       return res.status(400).json({
@@ -1945,10 +1949,9 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // Coupon from preference
     const appliedCouponCode = pref.couponCode || null;
 
-    // ------------------ 3️⃣ VALIDATE SHIPPING ADDRESS ------------------
+    // 3️⃣ ADDRESS FETCH
     const shippingAddress = await Address.findById(pref.addressId).lean();
     if (!shippingAddress) {
       return res.status(404).json({
@@ -1957,11 +1960,11 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ------------------ 4️⃣ FETCH CART ------------------
+    // 4️⃣ FETCH CART
     const cart = await Cart.findOne({ user: userId })
       .populate({
         path: "items.product",
-        select: "name price vendor images unit",
+        select: "name price vendor images unit weightPerPiece category",
       })
       .lean();
 
@@ -1972,9 +1975,8 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ⭐ GET SELECTED VENDOR
+    // ⭐ SELECTED VENDOR CHECK
     const selectedVendorId = cart.selectedVendors?.[0];
-
     if (!selectedVendorId) {
       return res.status(400).json({
         success: false,
@@ -1982,7 +1984,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ⭐ FILTER ITEMS OF ONLY SELECTED VENDOR
+    // ⭐ FILTER ITEMS OF SELECTED VENDOR
     const selectedItems = cart.items.filter(
       (i) => i.product?.vendor?.toString() === selectedVendorId.toString()
     );
@@ -1994,7 +1996,22 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ------------------ 5️⃣ VALIDATE COUPON ------------------
+    // ⭐⭐⭐ FIXED: FORMAT ITEMS LIKE REVIEW ORDER ⭐⭐⭐
+    const formattedItems = selectedItems.map((i) => ({
+      product: {
+        _id: i.product._id,
+        name: i.product.name,
+        price: i.product.price,
+        vendor: i.product.vendor,
+        images: i.product.images,
+        unit: i.product.unit,
+        weightPerPiece: i.product.weightPerPiece || 0.2,
+        category: i.product.category || null,
+      },
+      quantity: i.quantity,
+    }));
+
+    // 5️⃣ VALIDATE COUPON
     let coupon = null;
 
     if (appliedCouponCode) {
@@ -2031,10 +2048,10 @@ const placeOrder = asyncHandler(async (req, res) => {
       }
     }
 
-    // ------------------ 6️⃣ PROCESS ONLY SELECTED VENDOR ORDER ------------------
+    // 6️⃣ SUMMARY (FIXED - SAME AS REVIEW ORDER)
     const { summary } = await calculateOrderSummary(
       {
-        items: selectedItems,
+        items: formattedItems,
         user: userId,
         addressId: pref.addressId,
       },
@@ -2050,15 +2067,16 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
+    // SUMMARY TOTALS
     let grandTotal = summary.totalAmount;
     let totalDiscount = summary.discount || 0;
 
-    // ------------------ CREATE ORDER ------------------
+    // 7️⃣ CREATE ORDER
     const newOrder = await Order.create({
       orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
       buyer: userId,
       vendor: selectedVendorId,
-      products: selectedItems.map(i => ({
+      products: selectedItems.map((i) => ({
         product: i.product._id,
         quantity: i.quantity,
         price: i.product.price,
@@ -2068,14 +2086,13 @@ const placeOrder = asyncHandler(async (req, res) => {
       couponCode: appliedCouponCode,
       orderType: "Delivery",
       shippingAddress,
-      pickupSlot: null,
       comments: comments || "",
       paymentMethod,
       isPaid,
       orderStatus,
     });
 
-    // ------------------ 🔔 NOTIFICATIONS ------------------
+    // 8️⃣ NOTIFICATION
     await createAndSendNotification(
       req,
       "📦 New Delivery Order",
@@ -2094,7 +2111,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       userId
     );
 
-    // ------------------ 💳 PAYMENT QR ------------------
+    // 9️⃣ PAYMENT QR
     const ref = `TXN-${newOrder.orderId.replace("#", "-")}-${Date.now()}`;
     const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=${newOrder.orderId}&tr=${ref}&cu=INR`;
     const qrCode = await QRCode.toDataURL(upiUrl);
@@ -2111,7 +2128,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       },
     ];
 
-    // ------------------ 7️⃣ UPDATE COUPON ------------------
+    // 🔟 UPDATE COUPON USAGE
     if (coupon) {
       coupon.usedCount++;
       const used = coupon.usedBy.find((u) => u.user.toString() === userId.toString());
@@ -2125,7 +2142,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       await coupon.save();
     }
 
-    // ------------------ 8️⃣ CLEAR ONLY SELECTED VENDOR ITEMS ------------------
+    // 1️⃣1️⃣ REMOVE ONLY SELECTED VENDOR ITEMS
     await Cart.updateOne(
       { user: userId },
       {
@@ -2137,7 +2154,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       }
     );
 
-    // ------------------ 🔟 FINAL RESPONSE ------------------
+    // 1️⃣2️⃣ RESPONSE
     return res.json({
       success: true,
       message: "Delivery order created. Complete UPI payment to confirm.",
@@ -2148,7 +2165,6 @@ const placeOrder = asyncHandler(async (req, res) => {
       address: shippingAddress,
       payments,
     });
-
   } catch (error) {
     console.error("Delivery Order Error:", error);
     return res.status(500).json({
@@ -2158,6 +2174,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
