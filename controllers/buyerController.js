@@ -1949,8 +1949,6 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    const appliedCouponCode = pref.couponCode || null;
-
     // 3️⃣ ADDRESS FETCH
     const shippingAddress = await Address.findById(pref.addressId).lean();
     if (!shippingAddress) {
@@ -1996,7 +1994,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ⭐⭐⭐ FIXED: FORMAT ITEMS LIKE REVIEW ORDER ⭐⭐⭐
+    // ⭐⭐⭐ FIX: FORMAT ITEMS LIKE REVIEW ORDER ⭐⭐⭐
     const formattedItems = selectedItems.map((i) => ({
       product: {
         _id: i.product._id,
@@ -2010,6 +2008,12 @@ const placeOrder = asyncHandler(async (req, res) => {
       },
       quantity: i.quantity,
     }));
+
+    // ⭐⭐⭐ FIXED: SAME LOGIC AS REVIEW ORDER ⭐⭐⭐
+    const appliedCouponCode =
+      (cart?.couponCode ? cart.couponCode.trim().toUpperCase() : null) ||
+      (pref?.couponCode ? pref.couponCode.trim().toUpperCase() : null) ||
+      null;
 
     // 5️⃣ VALIDATE COUPON
     let coupon = null;
@@ -2048,7 +2052,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       }
     }
 
-    // 6️⃣ SUMMARY (FIXED - SAME AS REVIEW ORDER)
+    // 6️⃣ SUMMARY (SAME AS REVIEW ORDER)
     const { summary } = await calculateOrderSummary(
       {
         items: formattedItems,
@@ -2059,7 +2063,10 @@ const placeOrder = asyncHandler(async (req, res) => {
       "Delivery"
     );
 
-    const vendor = await User.findById(selectedVendorId).select("name upiId").lean();
+    const vendor = await User.findById(selectedVendorId)
+      .select("name upiId")
+      .lean();
+
     if (!vendor?.upiId) {
       return res.status(400).json({
         success: false,
@@ -2067,7 +2074,6 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // SUMMARY TOTALS
     let grandTotal = summary.totalAmount;
     let totalDiscount = summary.discount || 0;
 
@@ -2092,7 +2098,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       orderStatus,
     });
 
-    // 8️⃣ NOTIFICATION
+    // 8️⃣ NOTIFICATIONS
     await createAndSendNotification(
       req,
       "📦 New Delivery Order",
@@ -2142,14 +2148,12 @@ const placeOrder = asyncHandler(async (req, res) => {
       await coupon.save();
     }
 
-    // 1️⃣1️⃣ REMOVE ONLY SELECTED VENDOR ITEMS
+    // 1️⃣1️⃣ REMOVE ITEMS OF SELECTED VENDOR
     await Cart.updateOne(
       { user: userId },
       {
         $pull: {
-          items: {
-            vendor: selectedVendorId,
-          },
+          items: { vendor: selectedVendorId },
         },
       }
     );
@@ -2174,6 +2178,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
