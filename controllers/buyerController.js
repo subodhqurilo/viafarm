@@ -991,7 +991,7 @@ const getSmartPicks = asyncHandler(async (req, res) => {
         .sort({ rating: -1, createdAt: -1 })
         .limit(20)
         .populate("vendor", "name profilePicture location status")
-        .populate("category", "name image"); // ⭐ ADDED
+        .populate("category", "name image weightPerPiece"); // ⭐ ADDED
 
     if (!products.length) {
         return res.status(404).json({
@@ -1021,7 +1021,7 @@ const getSmartPicks = asyncHandler(async (req, res) => {
             unit: p.unit,
             rating: p.rating || 0,
             quantity: p.quantity,
-
+             weightPerPiece: p.weightPerPiece,
             // ⭐ CATEGORY INFO ADDED
             // categoryId: p.category?._id || null,
             category: p.category?.name || null,
