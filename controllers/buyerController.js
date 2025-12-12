@@ -5837,87 +5837,46 @@ const getDonationsReceived = asyncHandler(async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to retrieve donation data.' });
     }
 });
+
+
+
 const searchProductsByName = asyncHandler(async (req, res) => {
-  const { name } = req.query;
-  const buyerId = req.user?._id;
+  const rawQ = req.query.q || "";
+  const q = decodeURIComponent(rawQ).trim().toLowerCase();
 
-  // ✅ Get buyer default address (location)
-  let buyerLat = null, buyerLng = null;
-  const buyerAddress = await Address.findOne({ user: buyerId, isDefault: true }).lean();
-  if (buyerAddress?.location?.coordinates?.length === 2) {
-    buyerLng = buyerAddress.location.coordinates[0];
-    buyerLat = buyerAddress.location.coordinates[1];
+  console.log("SEARCH RECEIVED:", q);
+
+  if (!q) {
+    return res.json({ success: true, count: 0, data: [] });
   }
 
-  let query = {};
-
-  if (name?.trim()) {
-    const text = name.trim();
-
-    // ✅ Vendors matching name
-    const vendors = await User.find({
-      role: "Vendor",
-      name: { $regex: text, $options: "i" }
-    }).select("_id");
-
-    const vendorIds = vendors.map((v) => v._id);
-
-    query.$or = [
-      { name: { $regex: text, $options: "i" } },        // Product Name
-      { category: { $regex: text, $options: "i" } },    // Category Name
-      { vendor: { $in: vendorIds } }                    // Vendor Name
-    ];
-  }
-
-  const products = await Product.find(query)
-    .populate("vendor", "name profilePicture mobileNumber location address")
+  // ❤️ 1) GET ALL PRODUCTS (NO FILTER)
+  const allProducts = await Product.find()
+    .populate("vendor", "name profilePicture")
+    .populate("category", "name image")
     .lean();
 
-  // ✅ Add distance to each product
-  const data = products.map((p) => {
-    let distanceInKm = null;
-    let distanceText = null;
+  console.log("TOTAL PRODUCTS:", allProducts.length);
 
-    // Ensure vendor has location
-    if (
-      buyerLat && buyerLng &&
-      p.vendor?.location?.coordinates?.length === 2
-    ) {
-      const vendorLng = p.vendor.location.coordinates[0];
-      const vendorLat = p.vendor.location.coordinates[1];
-
-      const toRad = (v) => (v * Math.PI) / 180;
-      const R = 6371;
-      const dLat = toRad(vendorLat - buyerLat);
-      const dLon = toRad(vendorLng - buyerLng);
-
-      const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(toRad(buyerLat)) *
-          Math.cos(toRad(vendorLat)) *
-          Math.sin(dLon / 2) ** 2;
-
-      const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      distanceInKm = Number(dist.toFixed(2));
-      distanceText = `${distanceInKm} km away`;
-    }
-
-    return {
-      ...p,
-      distanceInKm,
-      distanceText,
-    };
+  // ❤️ 2) JS-LEVEL FILTERING (CANNOT FAIL)
+  const results = allProducts.filter((p) => {
+    return (
+      (p.name && p.name.toLowerCase().includes(q)) ||
+      (p.variety && p.variety.toLowerCase().includes(q)) ||
+      (p.description && p.description.toLowerCase().includes(q)) ||
+      (p.vendor?.name && p.vendor.name.toLowerCase().includes(q)) ||
+      (p.category?.name && p.category.name.toLowerCase().includes(q))
+    );
   });
+console.log("🔥 TOTAL PRODUCTS FROM DB:", allProducts.length);
+console.log("🔥 FIRST PRODUCT SAMPLE:", allProducts[0]);
 
-  // ✅ Sort nearest vendors first if buyer location available
-  if (buyerLat && buyerLng) {
-    data.sort((a, b) => (a.distanceInKm ?? Infinity) - (b.distanceInKm ?? Infinity));
-  }
+  console.log("MATCHED:", results.length);
 
-  return res.status(200).json({
+  return res.json({
     success: true,
-    count: data.length,
-    data
+    count: results.length,
+    data: results
   });
 });
 

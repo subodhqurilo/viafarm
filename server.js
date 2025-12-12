@@ -90,6 +90,11 @@ global.onlineUsers = onlineUsers;
 
 
 
+app.use((req, res, next) => {
+  console.log("🔥 FULL REQUEST URL:", req.originalUrl);
+  console.log("🔥 QUERY RECEIVED:", req.query);
+  next();
+});
 
 // ROUTES
 app.use("/api/auth", require("./routes/authRoutes"));
@@ -104,6 +109,7 @@ app.use((err, req, res, next) => {
   console.error("🔥 GLOBAL ERROR:", err.stack);
   res.status(500).json({ success: false, message: err.message });
 });
+
 
 // DEFAULT
 app.get("/", (req, res) => res.send("🚀 ViaFarm API running successfully!"));

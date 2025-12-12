@@ -16,7 +16,7 @@ const {
 const { upload } = require('../services/cloudinaryService');
 
 
-router.get('/products/search', searchProducts); 
+
 router.get('/donation', getDonationsReceived);
 
 router.use(authMiddleware); 
