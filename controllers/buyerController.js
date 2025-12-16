@@ -2386,36 +2386,66 @@ const reviewOrder = asyncHandler(async (req, res) => {
 
 const saveDeliveryAddress = asyncHandler(async (req, res) => {
   const userId = req.user._id;
-  const { addressId } = req.body;
+  let { addressId } = req.body;
 
+  /** ⭐ 1️⃣ addressId nahi aaya → auto select */
   if (!addressId) {
-    return res.status(400).json({
-      success: false,
-      message: "addressId is required"
-    });
+    // 🔹 pehle DEFAULT address lo
+    let address = await Address.findOne({
+      user: userId,
+      isDefault: true,
+    }).lean();
+
+    // 🔹 agar default nahi mila → latest uploaded address
+    if (!address) {
+      address = await Address.findOne({ user: userId })
+        .sort({ createdAt: -1 })
+        .lean();
+    }
+
+    // ❌ agar user ke paas koi address hi nahi
+    if (!address) {
+      return res.status(400).json({
+        success: false,
+        message: "No address found. Please add address first.",
+      });
+    }
+
+    addressId = address._id; // ✅ auto picked
   }
 
-  // validate address
-  const address = await Address.findById(addressId).lean();
-  if (!address) {
+  /** ✅ 2️⃣ validate address (safety check) */
+  const addressExists = await Address.findOne({
+    _id: addressId,
+    user: userId,
+  }).lean();
+
+  if (!addressExists) {
     return res.status(404).json({
       success: false,
-      message: "Address not found"
+      message: "Address not found",
     });
   }
 
+  /** ✅ 3️⃣ Save delivery preference */
   const pref = await DeliveryPreference.findOneAndUpdate(
     { user: userId },
-    { $set: { deliveryType: "Delivery", addressId } },
+    {
+      $set: {
+        deliveryType: "Delivery",
+        addressId,
+      },
+    },
     { new: true, upsert: true }
   );
 
   return res.json({
     success: true,
-    message: "Delivery address saved",
-    data: pref
+    message: "Delivery address saved (auto selected if not provided)",
+    data: pref,
   });
 });
+
 
 
 
