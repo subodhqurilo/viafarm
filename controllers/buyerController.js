@@ -3647,7 +3647,7 @@ const getWishlist = asyncHandler(async (req, res) => {
                     buyer.location.coordinates[0],
                     vendor.location.coordinates[1],
                     vendor.location.coordinates[0]
-                ).toFixed(1)} kms away`;
+                ).toFixed(1)} km away`;
             }
 
             return {
