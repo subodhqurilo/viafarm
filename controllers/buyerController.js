@@ -314,6 +314,74 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
 
 
 
+ const getDeliveryChargeController = asyncHandler(async (req, res) => {
+  const buyerId = req.user._id;
+
+  /** 1️⃣ CART + SELECTED VENDOR */
+  const cart = await Cart.findOne({ user: buyerId })
+    .populate("items.product");
+
+  if (!cart || cart.items.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: "Cart is empty",
+    });
+  }
+
+  if (!cart.selectedVendors || cart.selectedVendors.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: "No vendor selected in cart",
+    });
+  }
+
+  const vendorId = cart.selectedVendors[0];
+
+  /** 2️⃣ BUYER ADDRESS → default → latest */
+  const buyerAddress =
+    (await Address.findOne({ user: buyerId, isDefault: true }).lean()) ||
+    (await Address.findOne({ user: buyerId }).sort({ createdAt: -1 }).lean());
+
+  if (!buyerAddress) {
+    return res.status(400).json({
+      success: false,
+      message: "Buyer address not found",
+    });
+  }
+
+  /** 3️⃣ TOTAL WEIGHT */
+  let totalWeightKg = 0;
+
+  cart.items.forEach((item) => {
+    const weight = item.product.weightPerPiece || 0.2;
+    totalWeightKg += weight * item.quantity;
+  });
+
+  /** 4️⃣ DELIVERY CHARGE (SERVICE) */
+  const deliveryCharge = await getDeliveryCharge(
+    buyerId,
+    vendorId,
+    totalWeightKg,
+    buyerAddress._id
+  );
+
+  /** 5️⃣ OPTIONAL INFO (UI purpose) */
+  const vendor = await User.findById(vendorId).select("name").lean();
+
+  return res.json({
+    success: true,
+    message: "Delivery charge calculated automatically",
+    data: {
+      buyerAddressId: buyerAddress._id,
+      vendor: {
+        id: vendorId,
+        name: vendor?.name || "Vendor",
+      },
+      totalWeightKg: Number(totalWeightKg.toFixed(2)),
+      deliveryCharge,
+    },
+  });
+});
 
 const getProductDetails = asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -5993,7 +6061,7 @@ module.exports = {
     addToWishlist,getCategoriesWithProducts,
     removeFromWishlist, searchAllProducts,
     reorder,
-    getBuyerProfile,placePickupOrder,
+    getBuyerProfile,placePickupOrder,getDeliveryChargeController,
     updateBuyerProfile,selectVendorInCart,
     logout,getFreshAndPopularVendors,
     getOrderDetails,getProductsByVariety ,
