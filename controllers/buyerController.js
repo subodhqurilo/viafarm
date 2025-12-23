@@ -2931,7 +2931,7 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
   if (category) productFilter.category = category;
 
   const listedProductsRaw = await Product.find(productFilter)
-    .select("name category variety price quantity unit images rating")
+    .select("name category variety price quantity unit images rating weightPerPiece")
     .populate("category", "name image") // ⭐ ADD CATEGORY NAME + IMAGE
     .sort({ rating: -1 })
     .limit(20);
@@ -2946,7 +2946,7 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     quantity: p.quantity,
     images: p.images,
     variety: p.variety,
-
+weightPerPiece: p.weightPerPiece,
     // ⭐ CATEGORY DETAILS
     categoryId: p.category?._id || null,
     categoryName: p.category?.name || null,
