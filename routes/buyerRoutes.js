@@ -80,7 +80,7 @@ router.post('/delivery/address', saveDeliveryAddress);
 router.get('/coupons/available', getAvailableCouponsForBuyer);
 router.get('/coupons/product/:productId', getCouponsByProductId);
 router.get('/coupons/highlighted', getHighlightedCoupon);
-router.post("/cart/delivery-charge", getDeliveryChargeController);
+router.get("/cart/delivery-charge", getDeliveryChargeController);
 
 // --- Wishlist (RESTful path) ---
 router.get('/wishlist', getWishlist);

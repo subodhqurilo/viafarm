@@ -314,21 +314,21 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
 
 
 
- const getDeliveryChargeController = asyncHandler(async (req, res) => {
+const getDeliveryChargeController = asyncHandler(async (req, res) => {
   const buyerId = req.user._id;
 
-  /** 1️⃣ CART + SELECTED VENDOR */
+  /* 1️⃣ CART + SELECTED VENDOR */
   const cart = await Cart.findOne({ user: buyerId })
     .populate("items.product");
 
-  if (!cart || cart.items.length === 0) {
+  if (!cart || !cart.items || cart.items.length === 0) {
     return res.status(400).json({
       success: false,
       message: "Cart is empty",
     });
   }
 
-  if (!cart.selectedVendors || cart.selectedVendors.length === 0) {
+  if (!Array.isArray(cart.selectedVendors) || cart.selectedVendors.length === 0) {
     return res.status(400).json({
       success: false,
       message: "No vendor selected in cart",
@@ -337,7 +337,7 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
 
   const vendorId = cart.selectedVendors[0];
 
-  /** 2️⃣ BUYER ADDRESS → default → latest */
+  /* 2️⃣ BUYER ADDRESS (default → latest) */
   const buyerAddress =
     (await Address.findOne({ user: buyerId, isDefault: true }).lean()) ||
     (await Address.findOne({ user: buyerId }).sort({ createdAt: -1 }).lean());
@@ -349,15 +349,18 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
     });
   }
 
-  /** 3️⃣ TOTAL WEIGHT */
+  /* 3️⃣ TOTAL WEIGHT (kg) */
   let totalWeightKg = 0;
 
   cart.items.forEach((item) => {
-    const weight = item.product.weightPerPiece || 0.2;
-    totalWeightKg += weight * item.quantity;
+    const weightPerPiece = Number(item.product?.weightPerPiece) || 0.2;
+    const qty = Number(item.quantity) || 1;
+    totalWeightKg += weightPerPiece * qty;
   });
 
-  /** 4️⃣ DELIVERY CHARGE (SERVICE) */
+  totalWeightKg = Number(totalWeightKg.toFixed(2));
+
+  /* 4️⃣ DELIVERY CHARGE */
   const deliveryCharge = await getDeliveryCharge(
     buyerId,
     vendorId,
@@ -365,8 +368,15 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
     buyerAddress._id
   );
 
-  /** 5️⃣ OPTIONAL INFO (UI purpose) */
+  /* 5️⃣ VENDOR INFO (UI use) */
   const vendor = await User.findById(vendorId).select("name").lean();
+
+  if (!vendor) {
+    return res.status(404).json({
+      success: false,
+      message: "Vendor not found",
+    });
+  }
 
   return res.json({
     success: true,
@@ -375,13 +385,14 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
       buyerAddressId: buyerAddress._id,
       vendor: {
         id: vendorId,
-        name: vendor?.name || "Vendor",
+        name: vendor.name,
       },
-      totalWeightKg: Number(totalWeightKg.toFixed(2)),
+      totalWeightKg,
       deliveryCharge,
     },
   });
 });
+
 
 const getProductDetails = asyncHandler(async (req, res) => {
   const { id } = req.params;
