@@ -5958,7 +5958,7 @@ const searchProductsByName = asyncHandler(async (req, res) => {
   }
 
   /* -------------------------
-     1️⃣ Buyer location (optional)
+     1️⃣ BUYER LOCATION
   ------------------------- */
   let buyerCoords = null;
 
@@ -5966,7 +5966,7 @@ const searchProductsByName = asyncHandler(async (req, res) => {
     const buyerAddress = await Address.findOne({
       user: req.user._id,
       isDefault: true,
-      "location.coordinates.1": { $exists: true }
+      "location.coordinates.1": { $exists: true },
     }).lean();
 
     if (buyerAddress?.location?.coordinates?.length === 2) {
@@ -5978,15 +5978,15 @@ const searchProductsByName = asyncHandler(async (req, res) => {
   }
 
   /* -------------------------
-     2️⃣ Fetch all products
+     2️⃣ FETCH ALL PRODUCTS
   ------------------------- */
   const allProducts = await Product.find()
-    .populate("vendor", "name profilePicture address location")
+    .populate("vendor", "name profilePicture address")
     .populate("category", "name image")
     .lean();
 
   /* -------------------------
-     3️⃣ JS level filtering
+     3️⃣ FILTER BY SEARCH
   ------------------------- */
   const results = allProducts.filter((p) => {
     return (
@@ -5999,29 +5999,29 @@ const searchProductsByName = asyncHandler(async (req, res) => {
   });
 
   /* -------------------------
-     4️⃣ ADD DISTANCE (NO RESPONSE CHANGE)
+     4️⃣ ADD DISTANCE (ONLY NEW FIELD)
   ------------------------- */
   const finalResults = results.map((p) => {
-    let distanceKm = null;
+    let distance = null;
 
     if (
       buyerCoords &&
       p.vendor?.address?.latitude &&
       p.vendor?.address?.longitude
     ) {
-      const dist = calculateDistanceKm(
+      const km = calculateDistance(
         buyerCoords.lat,
         buyerCoords.lon,
         parseFloat(p.vendor.address.latitude),
         parseFloat(p.vendor.address.longitude)
       );
 
-      distanceKm = dist.toFixed(2) + " km"; // ✅ REQUIRED FORMAT
+      distance = km.toFixed(2) + " km"; // ✅ REQUIRED
     }
 
     return {
       ...p,
-      ...(distanceKm && { distanceKm }) // add only if calculated
+      ...(distance && { distance }) // ✅ only add if exists
     };
   });
 
@@ -6031,9 +6031,10 @@ const searchProductsByName = asyncHandler(async (req, res) => {
   return res.json({
     success: true,
     count: finalResults.length,
-    data: finalResults
+    data: finalResults,
   });
 });
+
 
 
 
