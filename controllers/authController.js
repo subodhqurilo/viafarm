@@ -253,40 +253,83 @@ exports.login = async (req, res) => {
   const { mobileNumber, password } = req.body;
 
   try {
+    console.log("🔐 LOGIN ATTEMPT");
+    console.log("📱 Mobile Number:", mobileNumber);
+    console.log("🔑 Password received:", password ? "YES" : "NO");
 
+    // 🔍 Find user
     const user = await User.findOne({ mobileNumber });
 
+    console.log("👤 User found:", user ? "YES" : "NO");
 
-    if (!user || !user.isVerified) {
-      return res.status(400).json({ status: 'error', message: 'User not found or not verified.' });
-    }
-
-    if (!user.password) {
+    if (!user) {
+      console.log("❌ User NOT FOUND in DB");
       return res.status(400).json({
-        status: 'error',
-        message: 'This account has no password. Please login using OTP.',
+        status: "error",
+        message: "User not found or not verified.",
       });
     }
 
-    // Use schema method to compare
-    const isMatch = await user.matchPassword(password);
+    console.log("✅ User ID:", user._id.toString());
+    console.log("✅ isVerified:", user.isVerified);
+    console.log("✅ role:", user.role);
 
-    if (!isMatch) {
-      return res.status(400).json({ status: 'error', message: 'Invalid credentials.' });
+    if (!user.isVerified) {
+      console.log("❌ User is NOT VERIFIED");
+      return res.status(400).json({
+        status: "error",
+        message: "User not found or not verified.",
+      });
     }
 
-    const token = generateToken(user);
+    if (!user.password) {
+      console.log("❌ User has NO PASSWORD set");
+      return res.status(400).json({
+        status: "error",
+        message: "This account has no password. Please login using OTP.",
+      });
+    }
 
-    res.status(200).json({
-      status: 'success',
-      message: 'Login successful.',
-      data: { token, user: { id: user._id, name: user.name, role: user.role, mobileNumber: user.mobileNumber } }
+    // 🔐 Compare password
+    const isMatch = await user.matchPassword(password);
+    console.log("🔑 Password match:", isMatch);
+
+    if (!isMatch) {
+      console.log("❌ Password INCORRECT");
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid credentials.",
+      });
+    }
+
+    // 🎟️ Generate token
+    const token = generateToken(user);
+    console.log("✅ Token generated");
+
+    return res.status(200).json({
+      status: "success",
+      message: "Login successful.",
+      data: {
+        token,
+        user: {
+          id: user._id,
+          name: user.name,
+          role: user.role,
+          mobileNumber: user.mobileNumber,
+        },
+      },
     });
 
   } catch (err) {
-    res.status(500).json({ status: 'error', message: 'Server error', error: err.message });
+    console.error("🔥 LOGIN ERROR:", err);
+    return res.status(500).json({
+      status: "error",
+      message: "Server error",
+      error: err.message,
+    });
   }
 };
+
 
 
 

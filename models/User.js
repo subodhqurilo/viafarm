@@ -4,7 +4,7 @@ const { addressToCoords, coordsToAddress } = require('../utils/geocode');
 
 const userSchema = new mongoose.Schema(
   {
-    name: String,
+    name: { type: String },
 
     mobileNumber: {
       type: String,
@@ -15,6 +15,9 @@ const userSchema = new mongoose.Schema(
       sparse: true,
     },
 
+    // ✅ Expo Push Token (used by notifications)
+    expoPushToken: { type: String, default: null },
+
     email: {
       type: String,
       required: function () {
@@ -24,7 +27,13 @@ const userSchema = new mongoose.Schema(
       sparse: true,
     },
 
-    password: String,
+    password: { type: String },
+
+    passwordResetToken: { type: String },
+    passwordResetExpires: { type: Date }, // only once
+
+    isApproved: { type: Boolean, default: false },
+    isVerified: { type: Boolean, default: false },
 
     role: {
       type: String,
@@ -32,40 +41,40 @@ const userSchema = new mongoose.Schema(
       required: true,
     },
 
-    profilePicture: String,
+    otp: { type: String },
+    otpExpiry: { type: Date },
+
+    profilePicture: { type: String },
+
+
     language: { type: String, default: 'English' },
 
-    upiId: String,
+    // Forgot password via OTP
+    passwordResetOtp: { type: String },
+    passwordResetOtpExpires: { type: Date },
+
+    
+
+    upiId: { type: String },
 
     status: {
       type: String,
-      enum: ['Active', 'Inactive', 'Blocked', 'Rejected', 'Deleted'],
+      enum: ['Active', 'Inactive', 'UnBlocked', 'Blocked', 'Rejected', 'Deleted'],
       default: 'Active',
     },
 
-    // ✅ ONLY FOR VENDOR
     vendorDetails: {
       about: { type: String, default: '' },
-      location: String,          // readable address
+      location: String,
       contactNo: String,
       totalOrders: { type: Number, default: 0 },
-      farmImages: [String],
-      deliveryRegion: { type: Number, default: 10 }, // km
+      farmImages: [{ type: String }],
+      deliveryRegion: { type: Number, default: 10 }, // km radius
     },
 
-    // ✅ ONLY FOR VENDOR (GeoJSON)
-    location: {
-      type: {
-        type: String,
-        enum: ['Point'],
-        default: 'Point',
-      },
-      coordinates: {
-        type: [Number], // [lng, lat]
-        default: undefined,
-      },
-    },
+    rejectionReason: { type: String, default: null },
 
+    // Notification preferences (LOCAL only, not Expo-based)
     notificationSettings: {
       newVendorRegistration: { type: Boolean, default: true },
       newBuyerRegistration: { type: Boolean, default: true },
@@ -78,44 +87,51 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// ✅ Geo index ONLY works when field exists
+// =======================================
+// ✅ Index for geolocation
+// =======================================
 userSchema.index({ location: '2dsphere' });
 
-
 // =======================================
-// ✅ Pre-save middleware (VENDOR ONLY)
+// ✅ Pre-save middleware
 // =======================================
 userSchema.pre('save', async function (next) {
   try {
-    // 🔥 ONLY FOR VENDOR
+    // 🟢 Vendors require location
     if (this.role === 'Vendor') {
-      const addressText = this.vendorDetails?.location;
+      const addr =
+        this.vendorDetails.location ||
+        `${this.address.houseNumber || ''} ${this.address.locality || ''} ${this.address.city || ''} ${this.address.state || ''} ${this.address.pinCode || ''}`.trim();
 
-      // Address → Coords
-      if (
-        addressText &&
-        (!this.location?.coordinates || this.location.coordinates.length !== 2)
-      ) {
-        const coords = await addressToCoords(addressText);
-        if (coords) {
-          this.location = { type: 'Point', coordinates: coords };
-        }
+      // 🔄 Address → Coordinates
+      if (addr && (!this.location?.coordinates || this.location.coordinates[0] === 0)) {
+        const coords = await addressToCoords(addr);
+        if (coords) this.location = { type: 'Point', coordinates: coords };
       }
 
-      // Coords → Address
+      // 🔄 Coordinates → Address
       else if (
-        this.location?.coordinates?.length === 2 &&
-        !this.vendorDetails.location
+        this.location?.coordinates &&
+        (!this.vendorDetails.location || this.vendorDetails.location === '')
       ) {
         const [lng, lat] = this.location.coordinates;
-        const addr = await coordsToAddress(lat, lng);
-        if (addr?.fullAddress) {
-          this.vendorDetails.location = addr.fullAddress;
+        const addressData = await coordsToAddress(lat, lng);
+
+        if (addressData && addressData.fullAddress) {
+          this.vendorDetails.location = addressData.fullAddress;
+
+          if (!this.address.city) this.address.city = addressData.city;
+          if (!this.address.state) this.address.state = addressData.state;
+          if (!this.address.pinCode) this.address.pinCode = addressData.pinCode;
         }
       }
+
+      // Non-vendor cleanup
+    } else {
+      this.location = { type: 'Point', coordinates: [0, 0] };
     }
 
-    // 🔐 Password hash
+    // 🟢 Password hashing
     if (this.isModified('password') && this.password && !this.password.startsWith('$2b$')) {
       const salt = await bcrypt.genSalt(10);
       this.password = await bcrypt.hash(this.password, salt);
@@ -128,12 +144,20 @@ userSchema.pre('save', async function (next) {
   }
 });
 
-
 // =======================================
-// ✅ Password compare
+// ✅ Compare password
 // =======================================
 userSchema.methods.matchPassword = async function (enteredPassword) {
-  return bcrypt.compare(enteredPassword, this.password);
+  return await bcrypt.compare(enteredPassword, this.password);
 };
+
+// =======================================
+// ⚠️ Unique mobileNumber error for Admins
+// =======================================
+userSchema.on('index', async function (error) {
+  if (error && error.code === 11000 && error.keyPattern?.mobileNumber) {
+    console.warn('Duplicate mobileNumber index error ignored for Admins.');
+  }
+});
 
 module.exports = mongoose.model('User', userSchema);

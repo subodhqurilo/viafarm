@@ -912,7 +912,8 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       });
     }
 
-    const [buyerLng, buyerLat] = buyerAddress.location.coordinates.map(Number);
+    // 🔑 Buyer coords (GeoJSON order)
+    const buyerCoords = buyerAddress.location.coordinates; // [lng, lat]
 
     // ✅ 3️⃣ Active vendors
     const vendors = await User.find({
@@ -922,8 +923,8 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       .select("name profilePicture location vendorDetails")
       .lean();
 
-    // ✅ 4️⃣ Vendor distance map
-    const vendorDistanceMap = {};
+    // ✅ 4️⃣ Vendor map (NO distance calculation here)
+    const vendorMap = {};
     const vendorIds = [];
 
     for (const v of vendors) {
@@ -931,17 +932,8 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
         v.location?.coordinates?.length === 2 &&
         v.location.coordinates[0] !== 0
       ) {
-        const [vendorLng, vendorLat] = v.location.coordinates.map(Number);
-
-        const distanceKm = calculateDistanceKm(
-          buyerLat,
-          buyerLng,
-          vendorLat,
-          vendorLng
-        );
-
-        vendorDistanceMap[v._id.toString()] = {
-          distanceKm,
+        vendorMap[v._id.toString()] = {
+          coords: v.location.coordinates, // [lng, lat]
           profilePicture:
             v.profilePicture ||
             "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
@@ -959,16 +951,19 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       .sort({ rating: -1, createdAt: -1 })
       .limit(100)
       .select("name images vendor price unit rating quantity weightPerPiece")
-      .populate("vendor", "name status profilePicture")
+      .populate("vendor", "name status profilePicture location")
       .lean();
 
-    // ✅ 6️⃣ Format response (UNCHANGED STRUCTURE)
+    // ✅ 6️⃣ Format response (STRUCTURE UNCHANGED)
     const formattedProducts = products
       .filter((p) => p.vendor?.status === "Active")
       .map((p) => {
         const vendorId = p.vendor?._id?.toString();
-        const vendorData = vendorDistanceMap[vendorId] || {};
-        const distanceKm = vendorData.distanceKm ?? null;
+        const vendorData = vendorMap[vendorId];
+
+        const distanceText = vendorData
+          ? getDistanceText(buyerCoords, vendorData.coords)
+          : "N/A";
 
         return {
           _id: p._id,
@@ -976,10 +971,10 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
           image: p.images?.[0] || null,
           vendorName: p.vendor?.name || "Unknown Vendor",
           vendorImage:
-            vendorData.profilePicture ||
+            vendorData?.profilePicture ||
             p.vendor?.profilePicture ||
             "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
-          distance: distanceKm ? `${distanceKm.toFixed(2)} km away` : "N/A",
+          distance: distanceText, // ✅ "12.47 km away"
           price: p.price,
           rating: p.rating,
           unit: p.unit,
@@ -988,10 +983,13 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
         };
       });
 
-    // ✅ 7️⃣ Response (same keys)
+    // ✅ 7️⃣ Response (same keys, frontend safe)
     return res.status(200).json({
       success: true,
-      buyerLocation: { lat: buyerLat, lng: buyerLng },
+      buyerLocation: {
+        lat: buyerCoords[1],
+        lng: buyerCoords[0],
+      },
       count: formattedProducts.length,
       data: formattedProducts,
     });
@@ -1004,6 +1002,7 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
