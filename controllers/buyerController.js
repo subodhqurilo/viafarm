@@ -1430,7 +1430,6 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
        1️⃣ AUTH CHECK
     ============================== */
     const buyerId = req.user?._id;
-
     if (!buyerId) {
       return res.status(401).json({
         success: false,
@@ -1439,14 +1438,17 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
     }
 
     /* ==============================
-       2️⃣ BUYER LOCATION
+       2️⃣ BUYER LOCATION (STRICT VALIDATION)
     ============================== */
-    const buyer = await User.findById(buyerId).select("location");
+    const buyer = await User.findById(buyerId).select("location").lean();
+
+    const buyerCoords = buyer?.location?.coordinates;
 
     if (
-      !buyer ||
-      !buyer.location?.coordinates ||
-      buyer.location.coordinates.length !== 2
+      !Array.isArray(buyerCoords) ||
+      buyerCoords.length !== 2 ||
+      buyerCoords[0] === 0 ||
+      buyerCoords[1] === 0
     ) {
       return res.status(400).json({
         success: false,
@@ -1454,8 +1456,7 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
       });
     }
 
-    const buyerLng = Number(buyer.location.coordinates[0]);
-    const buyerLat = Number(buyer.location.coordinates[1]);
+    const [buyerLng, buyerLat] = buyerCoords.map(Number);
 
     /* ==============================
        3️⃣ DISTANCE PARAM
@@ -1464,7 +1465,7 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
     const maxDistanceMeters = maxDistanceKm * 1000;
 
     /* ==============================
-       4️⃣ GEO NEAR QUERY (FAST + ACCURATE)
+       4️⃣ GEO QUERY (SAFE)
     ============================== */
     const vendors = await User.aggregate([
       {
@@ -1479,12 +1480,8 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
           query: {
             role: "Vendor",
             status: "Active",
+            location: { $ne: null },
           },
-        },
-      },
-      {
-        $addFields: {
-          distanceKm: { $divide: ["$distanceMeters", 1000] },
         },
       },
       {
@@ -1492,7 +1489,8 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
           name: 1,
           profilePicture: 1,
           vendorDetails: 1,
-          distanceKm: 1,
+          location: 1,
+          distanceMeters: 1,
         },
       },
     ]);
@@ -1505,7 +1503,7 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
     }
 
     /* ==============================
-       5️⃣ ADD CATEGORIES PER VENDOR
+       5️⃣ ENRICH DATA (DISTANCE FROM UTIL)
     ============================== */
     const enrichedVendors = await Promise.all(
       vendors.map(async (v) => {
@@ -1518,9 +1516,7 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
 
         const categoryNames = [
           ...new Set(
-            products
-              .map((p) => p.category?.name)
-              .filter(Boolean)
+            products.map((p) => p.category?.name).filter(Boolean)
           ),
         ];
 
@@ -1531,9 +1527,11 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
             v.profilePicture ||
             "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
 
-          // ✅ REQUIRED FORMAT
-          distance: `${v.distanceKm.toFixed(1)} km away`,
-          distanceValue: parseFloat(v.distanceKm.toFixed(1)),
+          // ✅ DISTANCE FROM UTIL (SAFE)
+          distance: getDistanceText(buyerCoords, v.location?.coordinates),
+          distanceValue: v.distanceMeters
+            ? Number((v.distanceMeters / 1000).toFixed(2))
+            : 0,
 
           categories:
             categoryNames.length > 0
@@ -1546,7 +1544,7 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
     );
 
     /* ==============================
-       6️⃣ SORT BY NEAREST
+       6️⃣ SORT BY DISTANCE
     ============================== */
     enrichedVendors.sort(
       (a, b) => a.distanceValue - b.distanceValue
@@ -1565,6 +1563,7 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
       },
       maxDistanceKm,
     });
+
   } catch (err) {
     console.error("❌ Error fetching nearby vendors:", err);
     return res.status(500).json({
@@ -1580,6 +1579,7 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
 
 
 
+
 const getAllVendors = asyncHandler(async (req, res) => {
   const { q, category } = req.query;
   const userId = req.user._id;
@@ -1588,15 +1588,8 @@ const getAllVendors = asyncHandler(async (req, res) => {
     /* ==============================
        1️⃣ BUYER LOCATION (SAFE)
     ============================== */
-    const buyer = await User.findById(userId).select("location");
-
-    let buyerLat = null;
-    let buyerLng = null;
-
-    if (buyer?.location?.coordinates?.length === 2) {
-      buyerLng = Number(buyer.location.coordinates[0]);
-      buyerLat = Number(buyer.location.coordinates[1]);
-    }
+    const buyer = await User.findById(userId).select("location").lean();
+    const buyerCoords = buyer?.location?.coordinates || null;
 
     /* ==============================
        2️⃣ BASE VENDOR QUERY
@@ -1606,17 +1599,14 @@ const getAllVendors = asyncHandler(async (req, res) => {
       status: "Active",
     };
 
-    // 🔍 Search by vendor name
     if (q) {
       query.name = { $regex: q, $options: "i" };
     }
 
-    // 🔍 Filter vendors by product category
     if (category) {
       const vendorIds = await Product.distinct("vendor", {
         category: { $regex: category, $options: "i" },
       });
-
       query._id = { $in: vendorIds };
     }
 
@@ -1628,7 +1618,7 @@ const getAllVendors = asyncHandler(async (req, res) => {
     );
 
     /* ==============================
-       4️⃣ HELPER: GET VENDOR CATEGORIES
+       4️⃣ HELPER: VENDOR CATEGORIES
     ============================== */
     const getVendorCategories = async (vendorId) => {
       const products = await Product.find({ vendor: vendorId })
@@ -1643,48 +1633,22 @@ const getAllVendors = asyncHandler(async (req, res) => {
     };
 
     /* ==============================
-       5️⃣ DISTANCE HELPER (HAVERSINE)
-    ============================== */
-    const calculateDistanceKm = (lat1, lon1, lat2, lon2) => {
-      const toRad = (v) => (v * Math.PI) / 180;
-      const R = 6371;
-      const dLat = toRad(lat2 - lat1);
-      const dLon = toRad(lon2 - lon1);
-
-      const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(toRad(lat1)) *
-          Math.cos(toRad(lat2)) *
-          Math.sin(dLon / 2) ** 2;
-
-      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    };
-
-    /* ==============================
-       6️⃣ BUILD FINAL RESPONSE
+       5️⃣ BUILD FINAL RESPONSE
     ============================== */
     const enrichedVendors = await Promise.all(
       vendors.map(async (vendor) => {
-        let distanceText = "N/A";
-        let distanceValue = 9999; // keeps sort safe
+        const vendorCoords = vendor.location?.coordinates || null;
 
-        if (
-          buyerLat !== null &&
-          buyerLng !== null &&
-          vendor.location?.coordinates?.length === 2
-        ) {
-          const vendorLng = Number(vendor.location.coordinates[0]);
-          const vendorLat = Number(vendor.location.coordinates[1]);
+        // ✅ DISTANCE FROM UTIL (SAFE)
+        const distanceText = getDistanceText(
+          buyerCoords,
+          vendorCoords
+        );
 
-          const dist = calculateDistanceKm(
-            buyerLat,
-            buyerLng,
-            vendorLat,
-            vendorLng
-          );
-
-          distanceValue = Number(dist.toFixed(1));
-          distanceText = `${distanceValue} km away`;
+        // for sorting only (frontend unchanged)
+        let distanceValue = 9999;
+        if (distanceText !== "N/A") {
+          distanceValue = parseFloat(distanceText);
         }
 
         return {
@@ -1699,7 +1663,7 @@ const getAllVendors = asyncHandler(async (req, res) => {
             vendor.address?.city ||
             "Unknown Location",
 
-          // ✅ FRONTEND SAFE
+          // ✅ SAME FORMAT
           distance: distanceText,
           distanceValue,
 
@@ -1709,18 +1673,19 @@ const getAllVendors = asyncHandler(async (req, res) => {
     );
 
     /* ==============================
-       7️⃣ SORT BY NEAREST
+       6️⃣ SORT BY NEAREST
     ============================== */
     enrichedVendors.sort((a, b) => a.distanceValue - b.distanceValue);
 
     /* ==============================
-       8️⃣ RESPONSE
+       7️⃣ RESPONSE
     ============================== */
     res.status(200).json({
       success: true,
       count: enrichedVendors.length,
       vendors: enrichedVendors,
     });
+
   } catch (err) {
     console.error("❌ Error fetching vendors:", err);
     res.status(500).json({
@@ -1729,6 +1694,7 @@ const getAllVendors = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
