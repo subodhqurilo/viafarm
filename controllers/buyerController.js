@@ -1,6 +1,8 @@
 // controllers/buyerController.js
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
+
+
 const Variety = require('../models/Variety');
 const DeliveryPreference = require("../models/DeliveryPreference");
 
@@ -25,6 +27,8 @@ const { getDistanceKm } = require("../utils/orderUtils"); // ✅ import Haversin
 const NotificationSettings = require('../models/NotificationSettings');
 const Category = require("../models/Category");
 const Product = require("../models/Product");   // ✅ Product also imported
+const { calculateDistanceKm } = require("../utils/distance");
+const { getDistanceText } = require("../utils/distance");
 
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
@@ -32,53 +36,83 @@ const { Expo } = require("expo-server-sdk");
 const expo = new Expo();
 
 
- async function geocodeAddress({ houseNumber, street, locality, city, district, state, pinCode }) {
+async function geocodeAddress({
+  houseNumber = "",
+  street = "",
+  locality = "",
+  city = "",
+  district = "",
+  state = "",
+  pinCode = "",
+}) {
   try {
-    const fullAddress = [houseNumber, street, locality, city, district, state, pinCode]
+    // 🧠 Build strongest possible address
+    const fullAddress = [
+      houseNumber,
+      street,
+      locality,
+      district,
+      city,
+      state,
+      pinCode,
+      "India" // ⭐ IMPORTANT
+    ]
       .filter(Boolean)
       .join(", ");
 
     if (!fullAddress) return null;
 
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(fullAddress)}&format=json&limit=1`;
+    const { data } = await axios.get(
+      "https://nominatim.openstreetmap.org/search",
+      {
+        params: {
+          q: fullAddress,
+          format: "json",
+          limit: 1,
+        },
+        headers: {
+          "User-Agent": "ViaFarm-App/1.0 (support@viafarm.in)", // ⭐ strict UA
+        },
+        timeout: 8000,
+      }
+    );
 
-    const { data } = await axios.get(url, {
-      headers: { "User-Agent": "ViaFarm/1.0 (viafarm.app)" },
-    });
+    if (!data || !data.length) return null;
 
-    if (data.length > 0) {
-      const lat = parseFloat(data[0].lat);
-      const lon = parseFloat(data[0].lon);
-      if (!isNaN(lat) && !isNaN(lon)) return [lon, lat];
-    }
-    return null;
+    const lat = parseFloat(data[0].lat);
+    const lon = parseFloat(data[0].lon);
+
+    if (isNaN(lat) || isNaN(lon)) return null;
+
+    return [lon, lat]; // ✅ GeoJSON order
   } catch (err) {
-    console.warn("⚠️ Geocoding failed:", err.message);
+    console.warn("⚠️ Geocode failed:", err.message);
     return null;
   }
 }
+
 // --- Helper: Calculate distance between two coordinates (in km) ---
-function calculateDistanceKm(lat1, lon1, lat2, lon2) {
-  const toRad = (v) => (v * Math.PI) / 180;
-  const R = 6371; // Earth radius in km
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-const calculateDistance = (lat1, lon1, lat2, lon2) => {
-    const toRad = angle => (angle * Math.PI) / 180;
-    const R = 6371; // Radius of Earth in km
-    const dLat = toRad(lat2 - lat1);
-    const dLon = toRad(lon2 - lon1);
-    const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-};
+// function calculateDistanceKm(lat1, lon1, lat2, lon2) {
+//   const toRad = (v) => (v * Math.PI) / 180;
+//   const R = 6371; // Earth radius in km
+//   const dLat = toRad(lat2 - lat1);
+//   const dLon = toRad(lon2 - lon1);
+//   const a =
+//     Math.sin(dLat / 2) ** 2 +
+//     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+//   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+// }
+// const calculateDistance = (lat1, lon1, lat2, lon2) => {
+//     const toRad = angle => (angle * Math.PI) / 180;
+//     const R = 6371; // Radius of Earth in km
+//     const dLat = toRad(lat2 - lat1);
+//     const dLon = toRad(lon2 - lon1);
+//     const a =
+//         Math.sin(dLat / 2) ** 2 +
+//         Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+//     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+//     return R * c;
+// };
 /**
  * --- Estimate Delivery Date ---
  * 🟢 Within vendor region: same/next day (after 5 PM → next day)
@@ -88,40 +122,73 @@ const calculateDistance = (lat1, lon1, lat2, lon2) => {
 const calculateEstimatedDelivery = (vendor, buyer, orderTime = new Date()) => {
   let deliveryDate = new Date(orderTime);
 
-  const vendorCoords = vendor?.location?.coordinates || [0, 0];
-  const buyerCoords = buyer?.location?.coordinates || [0, 0];
+  const vendorCoords = vendor?.location?.coordinates;
+  const buyerCoords = buyer?.location?.coordinates;
+
+  // ❗ Guard: location missing
+  if (
+    !vendorCoords || vendorCoords.length !== 2 ||
+    !buyerCoords || buyerCoords.length !== 2
+  ) {
+    deliveryDate.setDate(deliveryDate.getDate() + 3);
+
+    const fallbackDate = deliveryDate
+      .toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })
+      .replace(",", "");
+
+    return {
+      formatted: fallbackDate,
+      deliveryText: `Delivery by ${fallbackDate}`,
+    };
+  }
+
   const vendorLat = vendorCoords[1];
   const vendorLng = vendorCoords[0];
   const buyerLat = buyerCoords[1];
   const buyerLng = buyerCoords[0];
 
-  const distanceKm = calculateDistanceKm(vendorLat, vendorLng, buyerLat, buyerLng);
+  const distanceKm = calculateDistanceKm(
+    vendorLat,
+    vendorLng,
+    buyerLat,
+    buyerLng
+  );
 
-  const normalize = (s) => s?.trim()?.toLowerCase().replace(/\s+/g, "");
+  const normalize = (s) =>
+    s?.trim()?.toLowerCase().replace(/\s+/g, "");
+
   const vendorState = normalize(vendor?.address?.state);
   const buyerState = normalize(buyer?.address?.state);
 
   let deliveryDays = 0;
 
-  if (distanceKm <= (vendor?.vendorDetails?.deliveryRegion || vendor?.deliveryRegion || 0)) {
-    const cutoffHour = 17;
-    if (orderTime.getHours() >= cutoffHour) {
-      deliveryDays = 1; // after 5PM → next day
+  const regionKm =
+    vendor?.vendorDetails?.deliveryRegion ||
+    vendor?.deliveryRegion ||
+    0;
+
+  if (distanceKm <= regionKm) {
+    if (orderTime.getHours() >= 17) {
+      deliveryDays = 1;
     }
   } else if (vendorState && buyerState && vendorState === buyerState) {
-    deliveryDays = 2; // same state
+    deliveryDays = 2;
   } else {
-    deliveryDays = 3; // different state
+    deliveryDays = 3;
   }
 
   deliveryDate.setDate(deliveryDate.getDate() + deliveryDays);
 
-  // ✅ Format: "Nov 10 2025"
-  const options = { month: "short", day: "2-digit", year: "numeric" };
-  const formattedDate = deliveryDate.toLocaleDateString("en-US", options).replace(",", "");
+  const formattedDate = deliveryDate
+    .toLocaleDateString("en-US", {
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+    })
+    .replace(",", "");
 
   return {
-    formatted: formattedDate, // "Nov 10 2025"
+    formatted: formattedDate,
     deliveryText: `Delivery by ${formattedDate}`,
   };
 };
@@ -131,18 +198,19 @@ const calculateEstimatedDelivery = (vendor, buyer, orderTime = new Date()) => {
 
 
 
-function calculateDistanceKm(lat1, lon1, lat2, lon2) {
-  const toRad = (v) => (v * Math.PI) / 180;
-  const R = 6371; // Earth radius in km
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
+
+// function calculateDistanceKm(lat1, lon1, lat2, lon2) {
+//   const toRad = (v) => (v * Math.PI) / 180;
+//   const R = 6371; // Earth radius in km
+//   const dLat = toRad(lat2 - lat1);
+//   const dLon = toRad(lon2 - lon1);
+//   const a =
+//     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+//     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+//     Math.sin(dLon / 2) * Math.sin(dLon / 2);
+//   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+//   return R * c;
+// }
 const formatCategories = async (vendorId) => {
   try {
     if (!vendorId) return 'No vendor ID';
@@ -175,15 +243,18 @@ const formatCategories = async (vendorId) => {
 
 
 const formatDeliveryDate = (date) => {
-    // ... (implementation for formatting delivery date)
-    if (!date) return 'N/A';
-    const deliveryDate = new Date(date);
-    deliveryDate.setDate(deliveryDate.getDate() + 3);
-    const options = { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' };
-    const formattedDate = deliveryDate.toLocaleDateString('en-US', options);
-    const [weekday, month, day, year] = formattedDate.split(/[\s,]+/);
-    return `${weekday}, ${day} ${month} ${year}`;
+  if (!date) return "N/A";
+
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return "N/A";
+
+  return d.toLocaleDateString("en-US", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
 };
+
 
 const generateUpiPaymentUrl = (upiId, name, amount, transactionId) => {
     const payeeVpa = encodeURIComponent(upiId);
@@ -317,7 +388,9 @@ const getFilteredProducts = asyncHandler(async (req, res) => {
 const getDeliveryChargeController = asyncHandler(async (req, res) => {
   const buyerId = req.user._id;
 
-  /* 1️⃣ CART + SELECTED VENDOR */
+  /* ===============================
+     1️⃣ FETCH CART + PRODUCTS
+  =============================== */
   const cart = await Cart.findOne({ user: buyerId })
     .populate("items.product");
 
@@ -337,7 +410,9 @@ const getDeliveryChargeController = asyncHandler(async (req, res) => {
 
   const vendorId = cart.selectedVendors[0];
 
-  /* 2️⃣ BUYER ADDRESS (default → latest) */
+  /* ===============================
+     2️⃣ BUYER ADDRESS (default → latest)
+  =============================== */
   const buyerAddress =
     (await Address.findOne({ user: buyerId, isDefault: true }).lean()) ||
     (await Address.findOne({ user: buyerId }).sort({ createdAt: -1 }).lean());
@@ -349,27 +424,33 @@ const getDeliveryChargeController = asyncHandler(async (req, res) => {
     });
   }
 
-  /* 3️⃣ TOTAL WEIGHT (kg) */
+  // ✅ buyer location must exist
+  if (!buyerAddress.location?.coordinates?.length) {
+    return res.status(400).json({
+      success: false,
+      message: "Buyer location not available. Please update address.",
+    });
+  }
+
+  /* ===============================
+     3️⃣ CALCULATE TOTAL WEIGHT (kg)
+  =============================== */
   let totalWeightKg = 0;
 
   cart.items.forEach((item) => {
-    const weightPerPiece = Number(item.product?.weightPerPiece) || 0.2;
+    const weightPerPiece = Number(item.product?.weightPerPiece) || 0.2; // default 200g
     const qty = Number(item.quantity) || 1;
     totalWeightKg += weightPerPiece * qty;
   });
 
   totalWeightKg = Number(totalWeightKg.toFixed(2));
 
-  /* 4️⃣ DELIVERY CHARGE */
-  const deliveryCharge = await getDeliveryCharge(
-    buyerId,
-    vendorId,
-    totalWeightKg,
-    buyerAddress._id
-  );
-
-  /* 5️⃣ VENDOR INFO (UI use) */
-  const vendor = await User.findById(vendorId).select("name").lean();
+  /* ===============================
+     4️⃣ FETCH VENDOR + LOCATION
+  =============================== */
+  const vendor = await User.findById(vendorId)
+    .select("name location vendorDetails")
+    .lean();
 
   if (!vendor) {
     return res.status(404).json({
@@ -378,6 +459,26 @@ const getDeliveryChargeController = asyncHandler(async (req, res) => {
     });
   }
 
+  if (!vendor.location?.coordinates?.length) {
+    return res.status(400).json({
+      success: false,
+      message: "Vendor location not available",
+    });
+  }
+
+  /* ===============================
+     5️⃣ DELIVERY CHARGE CALCULATION
+  =============================== */
+  const deliveryCharge = await getDeliveryCharge(
+    buyerId,
+    vendorId,
+    totalWeightKg,
+    buyerAddress._id
+  );
+
+  /* ===============================
+     6️⃣ FINAL RESPONSE (UNCHANGED)
+  =============================== */
   return res.json({
     success: true,
     message: "Delivery charge calculated automatically",
@@ -394,6 +495,10 @@ const getDeliveryChargeController = asyncHandler(async (req, res) => {
 });
 
 
+
+
+
+
 const getProductDetails = asyncHandler(async (req, res) => {
   const { id } = req.params;
   let { buyerLat, buyerLng } = req.query;
@@ -406,9 +511,12 @@ const getProductDetails = asyncHandler(async (req, res) => {
     });
   }
 
-  // Fetch main product with vendor + category
+  // Fetch product
   const product = await Product.findById(id)
-    .populate("vendor", "name address mobileNumber rating location profilePicture vendorDetails")
+    .populate(
+      "vendor",
+      "name address mobileNumber rating location profilePicture vendorDetails"
+    )
     .populate("category", "name image");
 
   if (!product) {
@@ -418,68 +526,51 @@ const getProductDetails = asyncHandler(async (req, res) => {
     });
   }
 
-  // Keep only category name
   const categoryName = product.category?.name || null;
 
-  // ----------------------------
-  // DISTANCE CALCULATION
-  // ----------------------------
-  const getDistanceKm = (lat1, lon1, lat2, lon2) => {
-    const toRad = (v) => (v * Math.PI) / 180;
-    const R = 6371;
-    const dLat = toRad(lat2 - lat1);
-    const dLon = toRad(lon2 - lon1);
-
-    return (
-      2 *
-      Math.atan2(
-        Math.sqrt(
-          Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(lat1)) *
-              Math.cos(toRad(lat2)) *
-              Math.sin(dLon / 2) ** 2
-        ),
-        Math.sqrt(
-          1 -
-            (Math.sin(dLat / 2) ** 2 +
-              Math.cos(toRad(lat1)) *
-                Math.cos(toRad(lat2)) *
-                Math.sin(dLon / 2) ** 2)
-        )
-      ) * R
-    );
-  };
-
-  let buyerHasLocation = false;
-
-  // If buyer location missing, try fetching from user profile
-  if ((!buyerLat || !buyerLng) && req.user?._id) {
-    const buyer = await User.findById(req.user._id).select("location");
-    if (buyer?.location?.coordinates?.length === 2) {
-      buyerLng = buyer.location.coordinates[0];
-      buyerLat = buyer.location.coordinates[1];
-      buyerHasLocation = true;
-    }
-  } else if (buyerLat && buyerLng) {
-    buyerHasLocation = true;
-  }
+  // ============================
+  // ✅ DISTANCE CALCULATION (FIXED)
+  // ============================
 
   let distanceText = "Please update your delivery address to view distance.";
 
-  if (buyerHasLocation && product.vendor?.location?.coordinates?.length === 2) {
-    const [vendorLng, vendorLat] = product.vendor.location.coordinates;
-    const distance = getDistanceKm(
-      parseFloat(buyerLat),
-      parseFloat(buyerLng),
-      vendorLat,
-      vendorLng
-    );
-    distanceText = `${distance.toFixed(2)} km away`;
+  let buyerCoords = null;
+
+  // 1️⃣ buyerLat/buyerLng from query
+  if (buyerLat && buyerLng) {
+    buyerCoords = [parseFloat(buyerLng), parseFloat(buyerLat)]; // [lng, lat]
   }
 
-  // ----------------------------
+  // 2️⃣ fallback → buyer saved location
+  if (!buyerCoords && req.user?._id) {
+    const buyer = await User.findById(req.user._id).select("location");
+    if (buyer?.location?.coordinates?.length === 2) {
+      buyerCoords = buyer.location.coordinates; // [lng, lat]
+    }
+  }
+
+  const vendorCoords = product.vendor?.location?.coordinates; // [lng, lat]
+
+  // 3️⃣ calculate distance
+  if (
+    buyerCoords?.length === 2 &&
+    vendorCoords?.length === 2 &&
+    buyerCoords[0] !== 0 &&
+    vendorCoords[0] !== 0
+  ) {
+    const distanceKm = calculateDistanceKm(
+      buyerCoords[1],  // buyer LAT
+      buyerCoords[0],  // buyer LNG
+      vendorCoords[1], // vendor LAT
+      vendorCoords[0]  // vendor LNG
+    );
+
+    distanceText = `${distanceKm.toFixed(2)} km away`;
+  }
+
+  // ============================
   // RECOMMENDED PRODUCTS
-  // ----------------------------
+  // ============================
 
   const recQuery = {
     _id: { $ne: product._id },
@@ -493,16 +584,16 @@ const getProductDetails = asyncHandler(async (req, res) => {
 
   const recommendedProducts = await Product.find(recQuery)
     .populate("category", "name")
-    .populate("vendor", "name profilePicture") // ⭐ vendor name added
+    .populate("vendor", "name profilePicture")
     .sort({ rating: -1, createdAt: -1 })
     .limit(6)
     .select(
       "name category vendor price unit quantity images rating status allIndiaDelivery"
     );
 
-  // ----------------------------
-  // FINAL RESPONSE
-  // ----------------------------
+  // ============================
+  // ✅ FINAL RESPONSE (UNCHANGED)
+  // ============================
 
   res.status(200).json({
     success: true,
@@ -532,7 +623,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
         mobileNumber: product.vendor.mobileNumber,
         profilePicture: product.vendor.profilePicture,
         rating: product.vendor.rating || 0,
-        distance: distanceText,
+        distance: distanceText, // ✅ SAME FIELD, CORRECT VALUE
         address: product.vendor.address,
         location: product.vendor.location,
         deliveryRegion: product.vendor.vendorDetails?.deliveryRegion || null,
@@ -551,58 +642,53 @@ const getProductDetails = asyncHandler(async (req, res) => {
 
 
 
+
 const getCategoriesWithProducts = asyncHandler(async (req, res) => {
   try {
-    // 🔹 Buyer location for distance calculation
-    const buyer = await User.findById(req.user._id).select("location");
-    const buyerLocation = buyer?.location?.coordinates;
+    // 🔹 Buyer location
+    const buyer = await User.findById(req.user._id).select("location").lean();
+    const buyerCoords = buyer?.location?.coordinates; // [lng, lat]
 
-    const getDistanceKm = (lat1, lon1, lat2, lon2) => {
-      const toRad = (v) => (v * Math.PI) / 180;
-      const R = 6371;
-      const dLat = toRad(lat2 - lat1);
-      const dLon = toRad(lon2 - lon1);
-      const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(toRad(lat1)) *
-          Math.cos(toRad(lat2)) *
-          Math.sin(dLon / 2) ** 2;
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return R * c;
-    };
+    // 1️⃣ Categories
+    const categories = await Category.find({}).sort({ name: 1 }).lean();
 
-    // 1️⃣ Get all categories
-    const categories = await Category.find({}).sort({ name: 1 });
-
-    // 2️⃣ Get all in-stock products + populate
+    // 2️⃣ Products
     const products = await Product.find({ status: "In Stock" })
-      .populate("category", "name") // Only category name
-      .populate("vendor", "name location") // vendor with location
-      .sort({ createdAt: -1 });
+      .populate("category", "name")
+      .populate("vendor", "name location")
+      .sort({ createdAt: -1 })
+      .lean();
 
-    // 3️⃣ Process products for consistent format
+    // 3️⃣ Add distance (NO response change)
     const formattedProducts = products.map((p) => {
       let distanceText = "N/A";
 
-      if (p.vendor?.location?.coordinates && buyerLocation) {
-        const [vendorLng, vendorLat] = p.vendor.location.coordinates;
-        const [buyerLng, buyerLat] = buyerLocation;
-        const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
-        distanceText = `${distance.toFixed(2)} km away`;
+      const vendorCoords = p.vendor?.location?.coordinates; // [lng, lat]
+
+      if (
+        buyerCoords?.length === 2 &&
+        vendorCoords?.length === 2 &&
+        buyerCoords[0] !== 0 &&
+        vendorCoords[0] !== 0
+      ) {
+        const distanceKm = calculateDistanceKm(
+          buyerCoords[1],  // buyer LAT
+          buyerCoords[0],  // buyer LNG
+          vendorCoords[1], // vendor LAT
+          vendorCoords[0]  // vendor LNG
+        );
+
+        distanceText = `${distanceKm.toFixed(2)} km away`;
       }
 
-      const obj = p.toObject();
-
-      // Replace category with its name only
-      obj.category = obj.category?.name || null;
-
-      // Add distance property
-      obj.distance = distanceText;
-
-      return obj;
+      return {
+        ...p,
+        category: p.category?.name || null, // SAME as before
+        distance: distanceText,              // ✅ same key
+      };
     });
 
-    // 4️⃣ Group products by category
+    // 4️⃣ Group by category
     const result = categories.map((cat) => {
       const matchedProducts = formattedProducts.filter(
         (p) => p.category === cat.name
@@ -617,6 +703,7 @@ const getCategoriesWithProducts = asyncHandler(async (req, res) => {
       };
     });
 
+    // 5️⃣ Response (UNCHANGED)
     res.status(200).json({
       success: true,
       totalCategories: result.length,
@@ -635,198 +722,170 @@ const getCategoriesWithProducts = asyncHandler(async (req, res) => {
 
 
 const getFreshAndPopularProducts = asyncHandler(async (req, res) => {
-    const buyer = await User.findById(req.user._id).select('location');
+  // 🔹 Buyer location
+  const buyer = await User.findById(req.user._id)
+    .select("location")
+    .lean();
 
-    // 📏 Helper inside controller for clarity
-    const getDistanceKm = (lat1, lon1, lat2, lon2) => {
-        const toRad = (v) => (v * Math.PI) / 180;
-        const R = 6371; // km
-        const dLat = toRad(lat2 - lat1);
-        const dLon = toRad(lon2 - lon1);
-        const a =
-            Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-            Math.sin(dLon / 2) ** 2;
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c;
+  const buyerCoords = buyer?.location?.coordinates; // [lng, lat]
+
+  const products = await Product.find({ status: "In Stock" })
+    .populate("vendor", "name location")
+    .populate("category", "name")
+    .sort({ rating: -1, createdAt: -1 })
+    .limit(10)
+    .lean();
+
+  const enriched = products.map((p) => {
+    let distanceText = "N/A";
+
+    const vendorCoords = p.vendor?.location?.coordinates; // [lng, lat]
+
+    if (
+      buyerCoords?.length === 2 &&
+      vendorCoords?.length === 2 &&
+      buyerCoords[0] !== 0 &&
+      vendorCoords[0] !== 0
+    ) {
+      const distanceKm = calculateDistanceKm(
+        buyerCoords[1],  // buyer lat
+        buyerCoords[0],  // buyer lng
+        vendorCoords[1], // vendor lat
+        vendorCoords[0]  // vendor lng
+      );
+
+      if (!isNaN(distanceKm)) {
+        distanceText = `${distanceKm.toFixed(2)} km away`;
+      }
+    }
+
+    return {
+      ...p,
+      category: p.category?.name || null, // SAME as before
+      distance: distanceText,              // SAME key
     };
+  });
 
-    const products = await Product.find({ status: "In Stock" })
-        .populate("vendor", "name location")
-        .populate("category", "name")   // ✅ Add category name
-        .sort({ rating: -1, createdAt: -1 })
-        .limit(10);
-
-    const enriched = products.map((p) => {
-        let distanceText = "N/A";
-
-        if (p.vendor?.location?.coordinates && buyer?.location?.coordinates) {
-            const [vendorLng, vendorLat] = p.vendor.location.coordinates;
-            const [buyerLng, buyerLat] = buyer.location.coordinates;
-
-            const distance = getDistanceKm(
-                buyerLat,
-                buyerLng,
-                vendorLat,
-                vendorLng
-            );
-
-            if (!isNaN(distance)) {
-                distanceText = `${distance.toFixed(2)} km away`;
-            }
-        }
-
-        const obj = p.toObject();
-
-        // ✅ convert category object → category name only
-        obj.category = obj.category?.name || null;
-
-        return {
-            ...obj,
-            distance: distanceText,
-        };
-    });
-
-    res.status(200).json({
-        success: true,
-        count: enriched.length,
-        data: enriched,
-    });
+  res.status(200).json({
+    success: true,
+    count: enriched.length,
+    data: enriched,
+  });
 });
+
 
 const getFreshAndPopularVendors = asyncHandler(async (req, res) => {
-    const buyerId = req.user._id;
+  const buyerId = req.user._id;
 
-    // 🧭 1️⃣ Fetch buyer location
-    const buyer = await User.findById(buyerId).select("location");
-    if (!buyer || !buyer.location?.coordinates?.length) {
-        return res.status(400).json({
-            success: false,
-            message: "Buyer location not found. Please update your address.",
-        });
-    }
+  // 🧭 1️⃣ Buyer location (optional – no hard fail)
+  const buyer = await User.findById(buyerId)
+    .select("location")
+    .lean();
 
-    const [buyerLng, buyerLat] = buyer.location.coordinates;
+  const buyerCoords = buyer?.location?.coordinates; // [lng, lat]
 
-    // 📏 Distance helper
-    const getDistanceKm = (lat1, lon1, lat2, lon2) => {
-        const toRad = (v) => (v * Math.PI) / 180;
-        const R = 6371;
-        const dLat = toRad(lat2 - lat1);
-        const dLon = toRad(lon2 - lon1);
-        const a =
-            Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(lat1)) *
-                Math.cos(toRad(lat2)) *
-                Math.sin(dLon / 2) ** 2;
-        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    };
+  // 🟢 2️⃣ Fetch products
+  const products = await Product.find({ status: "In Stock" })
+    .populate("vendor", "name profilePicture location vendorDetails")
+    .populate("category", "name")
+    .sort({ rating: -1, createdAt: -1 })
+    .limit(100)
+    .lean();
 
-    // 🟢 2️⃣ Get ALL Fresh + Popular products
-    const products = await Product.find({ status: "In Stock" })
-        .populate("vendor", "name profilePicture location vendorDetails")
-        .populate("category", "name")
-        .sort({ rating: -1, createdAt: -1 })
-        .limit(100); // fetch more, we will filter later
-
-    if (!products.length) {
-        return res.status(404).json({
-            success: false,
-            message: "No fresh or popular products found.",
-        });
-    }
-
-    // 🟢 3️⃣ Group products by vendor
-    const mapVendor = {};
-
-    for (const p of products) {
-        if (!p.vendor) continue;
-        const vId = p.vendor._id.toString();
-
-        if (!mapVendor[vId]) {
-            // initialize vendor
-            mapVendor[vId] = {
-                id: vId,
-                name: p.vendor.name,
-                profilePicture:
-                    p.vendor.profilePicture ||
-                    "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
-                distance: "N/A",
-                distanceValue: 9999,
-                categories: new Set(),
-                topProducts: [],
-            };
-
-            // calculate distance once per vendor
-            if (p.vendor.location?.coordinates?.length === 2) {
-                const [vLng, vLat] = p.vendor.location.coordinates;
-                const dist = getDistanceKm(
-                    buyerLat,
-                    buyerLng,
-                    vLat,
-                    vLng
-                );
-
-                mapVendor[vId].distance = `${dist.toFixed(2)} km away`;
-                mapVendor[vId].distanceValue = parseFloat(dist.toFixed(2));
-            }
-        }
-
-        // add category
-        if (p.category?.name) {
-            mapVendor[vId].categories.add(p.category.name);
-        }
-
-        // add product to top list
-        mapVendor[vId].topProducts.push({
-            id: p._id,
-            name: p.name,
-            price: p.price,
-            unit: p.unit,
-            rating: p.rating,
-            image: p.images?.[0] || null,
-            category: p.category?.name || null,
-        });
-    }
-
-    // 🟢 4️⃣ Convert map -> array
-    let vendors = Object.values(mapVendor);
-
-    // limit top 5 fresh/popular products per vendor
-    vendors = vendors.map((v) => ({
-        ...v,
-        categories: [...v.categories], // Set → array
-        topProducts: v.topProducts.slice(0, 5),
-    }));
-
-    // 🟢 5️⃣ Sort by distance (nearest vendor first)
-    vendors.sort((a, b) => a.distanceValue - b.distanceValue);
-
-    // 🟢 6️⃣ Response
-    return res.status(200).json({
-        success: true,
-        count: vendors.length,
-        vendors,
+  if (!products.length) {
+    return res.status(404).json({
+      success: false,
+      message: "No fresh or popular products found.",
     });
+  }
+
+  // 🟢 3️⃣ Group by vendor
+  const mapVendor = {};
+
+  for (const p of products) {
+    if (!p.vendor) continue;
+
+    const vId = p.vendor._id.toString();
+
+    if (!mapVendor[vId]) {
+      mapVendor[vId] = {
+        id: vId,
+        name: p.vendor.name,
+        profilePicture:
+          p.vendor.profilePicture ||
+          "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
+        distance: "N/A",
+        distanceValue: 9999,
+        categories: new Set(),
+        topProducts: [],
+      };
+
+      // 📏 distance (safe)
+      const vendorCoords = p.vendor.location?.coordinates;
+
+      if (
+        buyerCoords?.length === 2 &&
+        vendorCoords?.length === 2 &&
+        buyerCoords[0] !== 0 &&
+        vendorCoords[0] !== 0
+      ) {
+        const distanceKm = calculateDistanceKm(
+          buyerCoords[1],  // buyer lat
+          buyerCoords[0],  // buyer lng
+          vendorCoords[1], // vendor lat
+          vendorCoords[0]  // vendor lng
+        );
+
+        if (!isNaN(distanceKm)) {
+          mapVendor[vId].distance = `${distanceKm.toFixed(2)} km away`;
+          mapVendor[vId].distanceValue = distanceKm;
+        }
+      }
+    }
+
+    // 🟡 categories
+    if (p.category?.name) {
+      mapVendor[vId].categories.add(p.category.name);
+    }
+
+    // 🟡 top products
+    mapVendor[vId].topProducts.push({
+      id: p._id,
+      name: p.name,
+      price: p.price,
+      unit: p.unit,
+      rating: p.rating,
+      image: p.images?.[0] || null,
+      category: p.category?.name || null,
+    });
+  }
+
+  // 🟢 4️⃣ Final array
+  let vendors = Object.values(mapVendor).map((v) => ({
+    ...v,
+    categories: [...v.categories],
+    topProducts: v.topProducts.slice(0, 5),
+  }));
+
+  // 🟢 5️⃣ Sort by nearest
+  vendors.sort((a, b) => a.distanceValue - b.distanceValue);
+
+  // 🟢 6️⃣ Response (UNCHANGED STRUCTURE)
+  return res.status(200).json({
+    success: true,
+    count: vendors.length,
+    vendors,
+  });
 });
 
 
-function DistanceKm(lat1, lon1, lat2, lon2) {
-  const toRad = (v) => (v * Math.PI) / 180;
-  const R = 6371; // Radius of the Earth in km
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-    Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
+
+
 
 
 const getLocalBestProducts = asyncHandler(async (req, res) => {
   try {
-    // ✅ 1️⃣ Get buyer ID from logged-in user
+    // ✅ 1️⃣ Buyer ID
     const buyerId = req.user?._id;
 
     if (!buyerId) {
@@ -836,11 +895,16 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       });
     }
 
-    // ✅ 2️⃣ Fetch buyer’s default address (must contain lat/lng)
-    const buyerAddress = await Address.findOne({ user: buyerId, isDefault: true }).lean();
+    // ✅ 2️⃣ Buyer default address
+    const buyerAddress = await Address.findOne({
+      user: buyerId,
+      isDefault: true,
+    }).lean();
+
     if (
       !buyerAddress?.location?.coordinates ||
-      buyerAddress.location.coordinates.length !== 2
+      buyerAddress.location.coordinates.length !== 2 ||
+      buyerAddress.location.coordinates[0] === 0
     ) {
       return res.status(400).json({
         success: false,
@@ -849,21 +913,32 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
     }
 
     const [buyerLng, buyerLat] = buyerAddress.location.coordinates.map(Number);
-    console.log("📍 Buyer Coordinates:", buyerLat, buyerLng);
 
-    // ✅ 3️⃣ Fetch all active vendors
-    const vendors = await User.find({ role: "Vendor", status: "Active" }).select(
-      "name profilePicture location vendorDetails"
-    );
+    // ✅ 3️⃣ Active vendors
+    const vendors = await User.find({
+      role: "Vendor",
+      status: "Active",
+    })
+      .select("name profilePicture location vendorDetails")
+      .lean();
 
-    // ✅ 4️⃣ Compute vendor distances
+    // ✅ 4️⃣ Vendor distance map
     const vendorDistanceMap = {};
     const vendorIds = [];
 
     for (const v of vendors) {
-      if (v.location?.coordinates?.length === 2) {
+      if (
+        v.location?.coordinates?.length === 2 &&
+        v.location.coordinates[0] !== 0
+      ) {
         const [vendorLng, vendorLat] = v.location.coordinates.map(Number);
-        const distanceKm = DistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
+
+        const distanceKm = calculateDistanceKm(
+          buyerLat,
+          buyerLng,
+          vendorLat,
+          vendorLng
+        );
 
         vendorDistanceMap[v._id.toString()] = {
           distanceKm,
@@ -876,7 +951,7 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       }
     }
 
-    // ✅ 5️⃣ Fetch in-stock products from all active vendors
+    // ✅ 5️⃣ Products
     const products = await Product.find({
       vendor: { $in: vendorIds },
       status: "In Stock",
@@ -884,9 +959,10 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       .sort({ rating: -1, createdAt: -1 })
       .limit(100)
       .select("name images vendor price unit rating quantity weightPerPiece")
-      .populate("vendor", "name status profilePicture location");
+      .populate("vendor", "name status profilePicture")
+      .lean();
 
-    // ✅ 6️⃣ Format response with vendor distance + image
+    // ✅ 6️⃣ Format response (UNCHANGED STRUCTURE)
     const formattedProducts = products
       .filter((p) => p.vendor?.status === "Active")
       .map((p) => {
@@ -908,11 +984,11 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
           rating: p.rating,
           unit: p.unit,
           quantity: p.quantity,
-          weightPerPiece: p.weightPerPiece
+          weightPerPiece: p.weightPerPiece,
         };
       });
 
-    // ✅ 7️⃣ Send Response
+    // ✅ 7️⃣ Response (same keys)
     return res.status(200).json({
       success: true,
       buyerLocation: { lat: buyerLat, lng: buyerLng },
@@ -930,45 +1006,43 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
 });
 
 
-const getAllAroundIndiaProducts = asyncHandler(async (req, res) => {
-    // 🧭 Step 1: Fetch buyer location
-    const buyer = await User.findById(req.user._id).select("location");
 
-    if (!buyer || !buyer.location?.coordinates) {
+const getAllAroundIndiaProducts = asyncHandler(async (req, res) => {
+    // 🧭 Step 1: Buyer location
+    const buyer = await User.findById(req.user._id)
+        .select("location")
+        .lean();
+
+    if (
+        !buyer ||
+        !buyer.location?.coordinates ||
+        buyer.location.coordinates.length !== 2 ||
+        buyer.location.coordinates[0] === 0
+    ) {
         return res.status(400).json({
             success: false,
             message: "Buyer location not found. Please update your profile location first.",
         });
     }
 
-    const [buyerLng, buyerLat] = buyer.location.coordinates;
-
-    // 📏 Helper: Haversine formula (distance in km)
-    const getDistanceKm = (lat1, lon1, lat2, lon2) => {
-        const toRad = (v) => (v * Math.PI) / 180;
-        const R = 6371;
-        const dLat = toRad(lat2 - lat1);
-        const dLon = toRad(lon2 - lon1);
-        const a =
-            Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-            Math.sin(dLon / 2) ** 2;
-        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    };
+    const [buyerLng, buyerLat] = buyer.location.coordinates.map(Number);
 
     // 🟢 Step 2: Active vendors
     const activeVendorIds = (
-        await User.find({ role: "Vendor", status: "Active" }).select("_id")
+        await User.find({ role: "Vendor", status: "Active" })
+            .select("_id")
+            .lean()
     ).map((v) => v._id);
 
-    // 🟢 Step 3: Find All India delivery products
+    // 🟢 Step 3: All-India delivery products
     const products = await Product.find({
         status: "In Stock",
         allIndiaDelivery: true,
         vendor: { $in: activeVendorIds },
     })
         .sort({ rating: -1, salesCount: -1 })
-        .populate("vendor", "name location status");
+        .populate("vendor", "name location status")
+        .lean();
 
     if (!products.length) {
         return res.status(404).json({
@@ -977,14 +1051,24 @@ const getAllAroundIndiaProducts = asyncHandler(async (req, res) => {
         });
     }
 
-    // 🧮 Step 4: Enrich with distance
+    // 🧮 Step 4: Add distance (response SAME)
     const enrichedProducts = products.map((p) => {
         let distanceText = "N/A";
 
-        if (Array.isArray(p.vendor?.location?.coordinates)) {
-            const [vendorLng, vendorLat] = p.vendor.location.coordinates;
-            if (vendorLng && vendorLat) {
-                const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
+        if (
+            p.vendor?.location?.coordinates?.length === 2 &&
+            p.vendor.location.coordinates[0] !== 0
+        ) {
+            const [vendorLng, vendorLat] = p.vendor.location.coordinates.map(Number);
+
+            const distance = calculateDistanceKm(
+                buyerLat,
+                buyerLng,
+                vendorLat,
+                vendorLng
+            );
+
+            if (!isNaN(distance)) {
                 distanceText = `${distance.toFixed(2)} km away`;
             }
         }
@@ -1005,7 +1089,7 @@ const getAllAroundIndiaProducts = asyncHandler(async (req, res) => {
         };
     });
 
-    // 🧠 Step 5: Sort by nearest (optional UX improvement)
+    // 🧠 Step 5: Sort by nearest (same logic)
     const sortedProducts = enrichedProducts.sort((a, b) => {
         const da = parseFloat(a.distance);
         const db = parseFloat(b.distance);
@@ -1014,7 +1098,7 @@ const getAllAroundIndiaProducts = asyncHandler(async (req, res) => {
         return da - db;
     });
 
-    // ✅ Step 6: Response
+    // ✅ Step 6: Response (UNCHANGED)
     res.status(200).json({
         success: true,
         message: "All-India delivery products fetched successfully.",
@@ -1023,54 +1107,51 @@ const getAllAroundIndiaProducts = asyncHandler(async (req, res) => {
     });
 });
 
+
 const getSmartPicks = asyncHandler(async (req, res) => {
     const { category } = req.query;
     const userId = req.user._id;
 
-    // 🧭 Step 1: Fetch buyer location
-    const buyer = await User.findById(userId).select("location");
-    if (!buyer?.location?.coordinates?.length) {
+    // 🧭 Step 1: Buyer location
+    const buyer = await User.findById(userId)
+        .select("location")
+        .lean();
+
+    if (
+        !buyer?.location?.coordinates ||
+        buyer.location.coordinates.length !== 2 ||
+        buyer.location.coordinates[0] === 0
+    ) {
         return res.status(400).json({
             success: false,
             message: "User location not found. Please set your delivery address.",
         });
     }
 
-    // Correct order: [longitude, latitude]
-    const [buyerLng, buyerLat] = buyer.location.coordinates;
+    // [lng, lat]
+    const [buyerLng, buyerLat] = buyer.location.coordinates.map(Number);
 
-    // 📏 Distance function
-    const getDistanceKm = (lat1, lon1, lat2, lon2) => {
-        const toRad = (v) => (v * Math.PI) / 180;
-        const R = 6371;
-        const dLat = toRad(lat2 - lat1);
-        const dLon = toRad(lon2 - lon1);
-        const a =
-            Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(lat1)) *
-            Math.cos(toRad(lat2)) *
-            Math.sin(dLon / 2) ** 2;
-        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    };
-
-    // 🟢 Step 2: Active Vendors
+    // 🟢 Step 2: Active vendors
     const activeVendorIds = (
-        await User.find({ role: "Vendor", status: "Active" }).select("_id")
+        await User.find({ role: "Vendor", status: "Active" })
+            .select("_id")
+            .lean()
     ).map((v) => v._id);
 
-    // 🟢 Step 3: Filter
+    // 🟢 Step 3: Product filter
     const filter = {
         status: "In Stock",
         vendor: { $in: activeVendorIds },
     };
     if (category) filter.category = category;
 
-    // 🟢 Step 4: Fetch Products + Category Name
+    // 🟢 Step 4: Fetch products
     const products = await Product.find(filter)
         .sort({ rating: -1, createdAt: -1 })
         .limit(20)
         .populate("vendor", "name profilePicture location status")
-        .populate("category", "name image weightPerPiece"); // ⭐ ADDED
+        .populate("category", "name image")
+        .lean();
 
     if (!products.length) {
         return res.status(404).json({
@@ -1081,30 +1162,41 @@ const getSmartPicks = asyncHandler(async (req, res) => {
         });
     }
 
-    // 🧮 Step 5: Format Response
+    // 🧮 Step 5: Format response (UNCHANGED KEYS)
     const formatted = products.map((p) => {
-        const image = p.images?.[0] || null;
         let distanceText = "N/A";
 
-        if (p.vendor?.location?.coordinates?.length) {
-            const [vendorLng, vendorLat] = p.vendor.location.coordinates;
-            const dist = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
-            distanceText = `${dist.toFixed(2)} km away`;
+        if (
+            p.vendor?.location?.coordinates?.length === 2 &&
+            p.vendor.location.coordinates[0] !== 0
+        ) {
+            const [vendorLng, vendorLat] =
+                p.vendor.location.coordinates.map(Number);
+
+            const dist = calculateDistanceKm(
+                buyerLat,
+                buyerLng,
+                vendorLat,
+                vendorLng
+            );
+
+            if (!isNaN(dist)) {
+                distanceText = `${dist.toFixed(2)} km away`;
+            }
         }
 
         return {
             id: p._id,
             name: p.name,
-            image,
+            image: p.images?.[0] || null,
             price: p.price,
             unit: p.unit,
             rating: p.rating || 0,
             quantity: p.quantity,
-             weightPerPiece: p.weightPerPiece,
-            // ⭐ CATEGORY INFO ADDED
-            // categoryId: p.category?._id || null,
+            weightPerPiece: p.weightPerPiece,
+
+            // ⭐ SAME AS BEFORE
             category: p.category?.name || null,
-            // categoryImage: p.category?.image || null,
 
             vendorId: p.vendor?._id,
             vendorName: p.vendor?.name || "Unknown Vendor",
@@ -1113,7 +1205,7 @@ const getSmartPicks = asyncHandler(async (req, res) => {
         };
     });
 
-    // 🟢 Step 6: Response
+    // 🟢 Step 6: Response (NO CHANGE)
     res.status(200).json({
         success: true,
         count: formatted.length,
@@ -1122,14 +1214,18 @@ const getSmartPicks = asyncHandler(async (req, res) => {
 });
 
 
+
 const getProductsByCategory = asyncHandler(async (req, res) => {
     const { category } = req.query;
 
     if (!category) {
-        return res.status(400).json({ success: false, message: "Category is required" });
+        return res.status(400).json({
+            success: false,
+            message: "Category is required"
+        });
     }
 
-    // Convert category (name OR id) → ObjectId
+    // 🔁 Category name OR id → ObjectId
     let categoryId;
 
     if (mongoose.isValidObjectId(category)) {
@@ -1137,7 +1233,7 @@ const getProductsByCategory = asyncHandler(async (req, res) => {
     } else {
         const cat = await Category.findOne({
             name: { $regex: new RegExp(`^${category.trim()}$`, "i") }
-        });
+        }).lean();
 
         if (!cat) {
             return res.status(404).json({
@@ -1149,62 +1245,77 @@ const getProductsByCategory = asyncHandler(async (req, res) => {
         categoryId = cat._id;
     }
 
-    // Buyer geo
-    const buyer = await User.findById(req.user._id).select("location");
+    // 🧭 Buyer location
+    const buyer = await User.findById(req.user._id)
+        .select("location")
+        .lean();
+
     const buyerLocation = buyer?.location?.coordinates;
 
+    // 📏 Distance helper (FIXED)
     const getDistanceKm = (lat1, lon1, lat2, lon2) => {
         const toRad = (v) => (v * Math.PI) / 180;
         const R = 6371;
+
         const dLat = toRad(lat2 - lat1);
-        const dLon = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1); // ✅ FIXED
 
         const a =
             Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-            Math.sin(dLon / 2) ** 2;
+            Math.cos(toRad(lat1)) *
+                Math.cos(toRad(lat2)) *
+                Math.sin(dLon / 2) ** 2;
 
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     };
 
-    // Active vendors
-    const activeVendors = await User.find({
-        role: "Vendor",
-        status: "Active",
-    }).select("_id");
+    // 🟢 Active vendors
+    const activeVendorIds = (
+        await User.find({ role: "Vendor", status: "Active" })
+            .select("_id")
+            .lean()
+    ).map((v) => v._id);
 
-    const activeVendorIds = activeVendors.map((v) => v._id);
-
-    // ⭐ Query products + populate category name
+    // 🟢 Products
     const products = await Product.find({
         category: categoryId,
         status: "In Stock",
         vendor: { $in: activeVendorIds },
     })
-        .populate("category", "name")   // ⭐ Only bring name
+        .populate("category", "name")
         .populate("vendor", "name location")
-        .sort({ createdAt: -1, rating: -1 });
+        .sort({ rating: -1, createdAt: -1 })
+        .lean();
 
-    // ⭐ Convert category => category.name
+    // 🧮 Enrich with distance (NO response change)
     const enriched = products.map((p) => {
-        const obj = p.toObject();
+        let distanceText = "N/A";
 
-        // Category name only
-        obj.category = obj.category?.name || null;
-
-        // Add distance
-        if (obj.vendor?.location?.coordinates && buyerLocation) {
-            const [vendorLng, vendorLat] = obj.vendor.location.coordinates;
+        if (
+            p.vendor?.location?.coordinates?.length === 2 &&
+            buyerLocation?.length === 2 &&
+            p.vendor.location.coordinates[0] !== 0
+        ) {
+            const [vendorLng, vendorLat] = p.vendor.location.coordinates;
             const [buyerLng, buyerLat] = buyerLocation;
 
-            const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
-            obj.distance = `${distance.toFixed(2)} km away`;
-        } else {
-            obj.distance = "N/A";
+            const distance = getDistanceKm(
+                buyerLat,
+                buyerLng,
+                vendorLat,
+                vendorLng
+            );
+
+            if (!isNaN(distance)) {
+                distanceText = `${distance.toFixed(2)} km away`;
+            }
         }
 
-        return obj;
+        return {
+            ...p,
+            category: p.category?.name || null, // SAME AS BEFORE
+            distance: distanceText               // SAME KEY
+        };
     });
 
     res.status(200).json({
@@ -1216,74 +1327,96 @@ const getProductsByCategory = asyncHandler(async (req, res) => {
 
 
 
+
 const getProductsByVariety = asyncHandler(async (req, res) => {
   const { variety } = req.query;
 
-  // 🧍‍♂️ Step 1: Get buyer's location
-  const buyer = await User.findById(req.user._id).select("location");
-  const buyerLocation = buyer?.location?.coordinates;
-
   if (!variety) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Variety is required" });
+    return res.status(400).json({
+      success: false,
+      message: "Variety is required",
+    });
   }
 
-  // 📏 Helper: Haversine formula (distance in km)
+  // 🧍 Buyer location
+  const buyer = await User.findById(req.user._id)
+    .select("location")
+    .lean();
+
+  const buyerLocation = buyer?.location?.coordinates;
+
+  // 📏 Distance helper (CORRECT)
   const getDistanceKm = (lat1, lon1, lat2, lon2) => {
     const toRad = (v) => (v * Math.PI) / 180;
-    const R = 6371; // Earth's radius in km
+    const R = 6371;
+
     const dLat = toRad(lat2 - lat1);
     const dLon = toRad(lon2 - lon1);
+
     const a =
       Math.sin(dLat / 2) ** 2 +
       Math.cos(toRad(lat1)) *
         Math.cos(toRad(lat2)) *
         Math.sin(dLon / 2) ** 2;
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
+
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   };
 
-  // 🧩 Step 2: Find all active vendors
-  const activeVendors = await User.find({ role: "Vendor", status: "Active" }).select("_id");
-  const activeVendorIds = activeVendors.map((v) => v._id);
+  // 🟢 Active vendors
+  const activeVendorIds = (
+    await User.find({ role: "Vendor", status: "Active" })
+      .select("_id")
+      .lean()
+  ).map((v) => v._id);
 
-  // 🧩 Step 3: Query products by variety
-  const productQuery = {
+  // 🟢 Products
+  const products = await Product.find({
     variety,
     status: "In Stock",
     vendor: { $in: activeVendorIds },
-  };
-
-  // 🟢 Step 4: Fetch products with vendor info
-  const products = await Product.find(productQuery)
+  })
     .populate("vendor", "name location")
-    .sort({ createdAt: -1, rating: -1 });
+    .sort({ rating: -1, createdAt: -1 })
+    .lean();
 
-  // 🧮 Step 5: Enrich with distance
+  // 🧮 Enrich (RESPONSE SAME)
   const enriched = products.map((p) => {
     let distanceText = "N/A";
 
-    if (p.vendor?.location?.coordinates && buyerLocation) {
-      const [vendorLng, vendorLat] = p.vendor.location.coordinates;
-      const [buyerLng, buyerLat] = buyerLocation;
-      const distance = getDistanceKm(buyerLat, buyerLng, vendorLat, vendorLng);
-      distanceText = `${parseFloat(distance.toFixed(2))} km away`;
+    if (
+      buyerLocation?.length === 2 &&
+      p.vendor?.location?.coordinates?.length === 2 &&
+      p.vendor.location.coordinates[0] !== 0
+    ) {
+      const [buyerLng, buyerLat] = buyerLocation.map(Number);
+      const [vendorLng, vendorLat] = p.vendor.location.coordinates.map(Number);
+
+      const distance = getDistanceKm(
+        buyerLat,
+        buyerLng,
+        vendorLat,
+        vendorLng
+      );
+
+      if (!isNaN(distance)) {
+        distanceText = `${distance.toFixed(2)} km away`;
+      }
     }
 
     return {
-      ...p.toObject(),
-      distance: distanceText,
+      ...p,
+      distance: distanceText, // ✅ SAME KEY
     };
   });
 
-  // ✅ Step 6: Response
+  // ✅ Final response (UNCHANGED)
   res.status(200).json({
     success: true,
     count: enriched.length,
     data: enriched,
   });
 });
+
 
 
 const getStaticPageContent = asyncHandler(async (req, res) => {
@@ -1294,6 +1427,9 @@ const getStaticPageContent = asyncHandler(async (req, res) => {
 
 const getVendorsNearYou = asyncHandler(async (req, res) => {
   try {
+    /* ==============================
+       1️⃣ AUTH CHECK
+    ============================== */
     const buyerId = req.user?._id;
 
     if (!buyerId) {
@@ -1303,29 +1439,48 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
       });
     }
 
+    /* ==============================
+       2️⃣ BUYER LOCATION
+    ============================== */
     const buyer = await User.findById(buyerId).select("location");
-    const buyerCoords = buyer?.location?.coordinates;
 
-    if (!buyerCoords || buyerCoords.length !== 2) {
+    if (
+      !buyer ||
+      !buyer.location?.coordinates ||
+      buyer.location.coordinates.length !== 2
+    ) {
       return res.status(400).json({
         success: false,
         message: "Buyer location not found. Please update your address.",
       });
     }
 
-    const [buyerLng, buyerLat] = buyerCoords.map(Number);
+    const buyerLng = Number(buyer.location.coordinates[0]);
+    const buyerLat = Number(buyer.location.coordinates[1]);
 
+    /* ==============================
+       3️⃣ DISTANCE PARAM
+    ============================== */
     const maxDistanceKm = parseFloat(req.query.maxDistance) || 50;
     const maxDistanceMeters = maxDistanceKm * 1000;
 
+    /* ==============================
+       4️⃣ GEO NEAR QUERY (FAST + ACCURATE)
+    ============================== */
     const vendors = await User.aggregate([
       {
         $geoNear: {
-          near: { type: "Point", coordinates: [buyerLng, buyerLat] },
+          near: {
+            type: "Point",
+            coordinates: [buyerLng, buyerLat],
+          },
           distanceField: "distanceMeters",
           spherical: true,
           maxDistance: maxDistanceMeters,
-          query: { role: "Vendor", status: "Active" },
+          query: {
+            role: "Vendor",
+            status: "Active",
+          },
         },
       },
       {
@@ -1350,23 +1505,24 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
       });
     }
 
-    // ⭐⭐ FIXED: Fetch vendor categories properly
+    /* ==============================
+       5️⃣ ADD CATEGORIES PER VENDOR
+    ============================== */
     const enrichedVendors = await Promise.all(
       vendors.map(async (v) => {
         const products = await Product.find({
           vendor: v._id,
-          status: "In Stock"
+          status: "In Stock",
         })
           .select("category")
           .populate("category", "name");
 
-        // Extract category names
         const categoryNames = [
           ...new Set(
             products
               .map((p) => p.category?.name)
               .filter(Boolean)
-          )
+          ),
         ];
 
         return {
@@ -1375,17 +1531,31 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
           profilePicture:
             v.profilePicture ||
             "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
+
+          // ✅ REQUIRED FORMAT
           distance: `${v.distanceKm.toFixed(1)} km away`,
           distanceValue: parseFloat(v.distanceKm.toFixed(1)),
+
           categories:
-            categoryNames.length ? categoryNames : "No categories listed",
+            categoryNames.length > 0
+              ? categoryNames
+              : "No categories listed",
+
           deliveryRegion: v.vendorDetails?.deliveryRegion || 0,
         };
       })
     );
 
-    enrichedVendors.sort((a, b) => a.distanceValue - b.distanceValue);
+    /* ==============================
+       6️⃣ SORT BY NEAREST
+    ============================== */
+    enrichedVendors.sort(
+      (a, b) => a.distanceValue - b.distanceValue
+    );
 
+    /* ==============================
+       7️⃣ RESPONSE (UNCHANGED FORMAT)
+    ============================== */
     return res.status(200).json({
       success: true,
       count: enrichedVendors.length,
@@ -1409,91 +1579,112 @@ const getVendorsNearYou = asyncHandler(async (req, res) => {
 
 
 
+
+
 const getAllVendors = asyncHandler(async (req, res) => {
   const { q, category } = req.query;
-  const userId = req.user._id; 
+  const userId = req.user._id;
 
   try {
-    // 1️⃣ Buyer location
+    /* ==============================
+       1️⃣ BUYER LOCATION (SAFE)
+    ============================== */
     const buyer = await User.findById(userId).select("location");
-    const buyerCoords = buyer?.location?.coordinates || [];
 
-    let latitude = buyerCoords[1];
-    let longitude = buyerCoords[0];
+    let buyerLat = null;
+    let buyerLng = null;
 
-    // 📌 If buyer has no location → API should NOT crash
-    if (!latitude || !longitude) {
-      latitude = null;
-      longitude = null;
+    if (buyer?.location?.coordinates?.length === 2) {
+      buyerLng = Number(buyer.location.coordinates[0]);
+      buyerLat = Number(buyer.location.coordinates[1]);
     }
 
-    // 2️⃣ Vendor base query
-    let query = { role: "Vendor", status: "Active" };
+    /* ==============================
+       2️⃣ BASE VENDOR QUERY
+    ============================== */
+    let query = {
+      role: "Vendor",
+      status: "Active",
+    };
 
-    // 🔍 Search
-    if (q) query.name = { $regex: q, $options: "i" };
+    // 🔍 Search by vendor name
+    if (q) {
+      query.name = { $regex: q, $options: "i" };
+    }
 
-    // 🔍 Filter vendors by category
+    // 🔍 Filter vendors by product category
     if (category) {
       const vendorIds = await Product.distinct("vendor", {
-        category: { $regex: category, $options: "i" }
+        category: { $regex: category, $options: "i" },
       });
 
       query._id = { $in: vendorIds };
     }
 
-    // 3️⃣ Fetch vendor list
+    /* ==============================
+       3️⃣ FETCH VENDORS
+    ============================== */
     const vendors = await User.find(query).select(
       "name profilePicture location vendorDetails farmImages address"
     );
 
-    // ⭐ HELPER: GET vendor categories by vendorId
+    /* ==============================
+       4️⃣ HELPER: GET VENDOR CATEGORIES
+    ============================== */
     const getVendorCategories = async (vendorId) => {
-      try {
-        const products = await Product.find({ vendor: vendorId })
-          .populate("category", "name")
-          .select("category");
+      const products = await Product.find({ vendor: vendorId })
+        .populate("category", "name")
+        .select("category");
 
-        if (!products.length) return ["No categories listed"];
+      const names = products
+        .map((p) => p.category?.name)
+        .filter(Boolean);
 
-        const names = products
-          .map((p) => p.category?.name)
-          .filter(Boolean);
-
-        const unique = [...new Set(names)];
-
-        return unique.length ? unique : ["No categories listed"];
-      } catch (err) {
-        console.log("formatCategories error:", err.message);
-        return ["No categories listed"];
-      }
+      return names.length ? [...new Set(names)] : ["No categories listed"];
     };
 
-    // 4️⃣ Build final vendor objects
+    /* ==============================
+       5️⃣ DISTANCE HELPER (HAVERSINE)
+    ============================== */
+    const calculateDistanceKm = (lat1, lon1, lat2, lon2) => {
+      const toRad = (v) => (v * Math.PI) / 180;
+      const R = 6371;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) *
+          Math.cos(toRad(lat2)) *
+          Math.sin(dLon / 2) ** 2;
+
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    };
+
+    /* ==============================
+       6️⃣ BUILD FINAL RESPONSE
+    ============================== */
     const enrichedVendors = await Promise.all(
       vendors.map(async (vendor) => {
         let distanceText = "N/A";
-        let distanceValue = null;
+        let distanceValue = 9999; // keeps sort safe
 
         if (
-          latitude !== null &&
-          longitude !== null &&
+          buyerLat !== null &&
+          buyerLng !== null &&
           vendor.location?.coordinates?.length === 2
         ) {
-          const [vendorLng, vendorLat] = vendor.location.coordinates;
+          const vendorLng = Number(vendor.location.coordinates[0]);
+          const vendorLat = Number(vendor.location.coordinates[1]);
 
-          const toRad = (v) => (v * Math.PI) / 180;
-          const R = 6371;
-          const dLat = toRad(vendorLat - latitude);
-          const dLon = toRad(vendorLng - longitude);
-          const a =
-            Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(latitude)) *
-              Math.cos(toRad(vendorLat)) *
-              Math.sin(dLon / 2) ** 2;
+          const dist = calculateDistanceKm(
+            buyerLat,
+            buyerLng,
+            vendorLat,
+            vendorLng
+          );
 
-          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-          distanceValue = +(R * c).toFixed(1);
+          distanceValue = Number(dist.toFixed(1));
           distanceText = `${distanceValue} km away`;
         }
 
@@ -1508,31 +1699,39 @@ const getAllVendors = asyncHandler(async (req, res) => {
             vendor.address?.locality ||
             vendor.address?.city ||
             "Unknown Location",
+
+          // ✅ FRONTEND SAFE
           distance: distanceText,
-          distanceValue: distanceValue || 0,
-          categories: await getVendorCategories(vendor._id), // ⭐ ARRAY OF CATEGORY NAMES
+          distanceValue,
+
+          categories: await getVendorCategories(vendor._id),
         };
       })
     );
 
-    // 5️⃣ Sort by nearest vendors first
+    /* ==============================
+       7️⃣ SORT BY NEAREST
+    ============================== */
     enrichedVendors.sort((a, b) => a.distanceValue - b.distanceValue);
 
-    // 6️⃣ Final response
+    /* ==============================
+       8️⃣ RESPONSE
+    ============================== */
     res.status(200).json({
       success: true,
       count: enrichedVendors.length,
       vendors: enrichedVendors,
     });
-
   } catch (err) {
-    console.error("Error fetching vendors:", err);
+    console.error("❌ Error fetching vendors:", err);
     res.status(500).json({
       success: false,
       message: "Failed to fetch vendors.",
     });
   }
 });
+
+
 
 
 
@@ -2932,22 +3131,27 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     });
   }
 
-  // 📏 Step 2: Distance Helper
+  // 📏 Step 2: Distance Helper (FIXED)
   const getDistanceKm = (lat1, lon1, lat2, lon2) => {
     const toRad = (v) => (v * Math.PI) / 180;
-    const R = 6371;
+    const R = 6371; // km
+
     const dLat = toRad(lat2 - lat1);
-    const dLon = toRad(lat2 - lat2);
+    const dLon = toRad(lon2 - lon1); // ✅ FIX HERE
+
     const a =
       Math.sin(dLat / 2) ** 2 +
-      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-      Math.sin(dLon / 2) ** 2;
+      Math.cos(toRad(lat1)) *
+        Math.cos(toRad(lat2)) *
+        Math.sin(dLon / 2) ** 2;
+
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
   };
 
   // 🟢 Step 3: Auto-fetch Buyer Location
   let buyerHasLocation = false;
+
   if ((!buyerLat || !buyerLng) && req.user?._id) {
     const buyer = await User.findById(req.user._id).select("location");
     if (buyer?.location?.coordinates?.length === 2) {
@@ -2961,18 +3165,23 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
 
   // 🟢 Step 4: Distance Text
   let distanceText = "Please update your delivery address to view distance.";
+
   if (buyerHasLocation && vendor.location?.coordinates?.length === 2) {
     const [vendorLng, vendorLat] = vendor.location.coordinates;
+
     const distance = getDistanceKm(
       parseFloat(buyerLat),
       parseFloat(buyerLng),
       parseFloat(vendorLat),
       parseFloat(vendorLng)
     );
-    if (!isNaN(distance)) distanceText = `${distance.toFixed(2)} km away`;
+
+    if (!isNaN(distance)) {
+      distanceText = `${distance.toFixed(2)} km away`; // ✅ REQUIRED FORMAT
+    }
   }
 
-  // 🟢 Step 5: Vendor Products → IDs
+  // 🟢 Step 5: Vendor Products
   const vendorProducts = await Product.find({ vendor: vendorId }).select("_id");
   const productIds = vendorProducts.map((p) => p._id);
 
@@ -2992,30 +3201,32 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     updatedAt: r.updatedAt,
   }));
 
-  const reviewCount = await Review.countDocuments({ product: { $in: productIds } });
+  const reviewCount = await Review.countDocuments({
+    product: { $in: productIds },
+  });
 
-  // 🟢 Step 7: Real-time Rating Calculation
+  // 🟢 Step 7: Rating
   const ratingAgg = await Review.aggregate([
     { $match: { product: { $in: productIds } } },
     { $group: { _id: null, avgRating: { $avg: "$rating" } } },
   ]);
 
-  const avgVendorRating = ratingAgg[0]?.avgRating ?? vendor.rating ?? 0;
-  const vendorFinalRating = parseFloat(avgVendorRating.toFixed(1));
+  const vendorFinalRating = parseFloat(
+    (ratingAgg[0]?.avgRating ?? vendor.rating ?? 0).toFixed(1)
+  );
 
   await User.findByIdAndUpdate(vendorId, { rating: vendorFinalRating });
 
-  // 🟢 Step 8: Listed Products + CATEGORY POPULATION
+  // 🟢 Step 8: Products
   const productFilter = { vendor: vendorId, status: "In Stock" };
   if (category) productFilter.category = category;
 
   const listedProductsRaw = await Product.find(productFilter)
     .select("name category variety price quantity unit images rating weightPerPiece")
-    .populate("category", "name image") // ⭐ ADD CATEGORY NAME + IMAGE
+    .populate("category", "name image")
     .sort({ rating: -1 })
     .limit(20);
 
-  // Format products with full category info
   const listedProducts = listedProductsRaw.map((p) => ({
     id: p._id,
     name: p.name,
@@ -3025,20 +3236,18 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     quantity: p.quantity,
     images: p.images,
     variety: p.variety,
-weightPerPiece: p.weightPerPiece,
-    // ⭐ CATEGORY DETAILS
+    weightPerPiece: p.weightPerPiece,
     categoryId: p.category?._id || null,
     categoryName: p.category?.name || null,
     categoryImage: p.category?.image || null,
   }));
 
-  // 🟢 Step 9: Available Categories FULL DETAILS (NOT ONLY IDs)
+  // 🟢 Step 9: Categories
   const categoryIds = await Product.distinct("category", { vendor: vendorId });
-
   const availableCategories = await Category.find({ _id: { $in: categoryIds } })
-    .select("_id name image"); // ⭐ return full category info
+    .select("_id name image");
 
-  // 🟢 Step 10: Address Formatting
+  // 🟢 Step 10: Address
   const addr = vendor.address || {};
   const fullAddressText = [
     addr.houseNumber,
@@ -3072,17 +3281,16 @@ weightPerPiece: p.weightPerPiece,
           longitude: addr.longitude || null,
         },
       },
-
       reviews: {
         count: reviewCount,
         list: reviews,
       },
-
       listedProducts,
       availableCategories,
     },
   });
 });
+
 
 
 
@@ -3690,81 +3898,116 @@ const getHighlightedCoupon = asyncHandler(async (req, res) => {
 
 
 const getWishlist = asyncHandler(async (req, res) => {
-    const { page = 1, limit = 1000 } = req.query; // default: page 1, 10 items per page
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+  const { page = 1, limit = 1000 } = req.query;
+  const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const buyer = await User.findById(req.user._id);
-    if (!buyer) {
-        return res.status(404).json({ success: false, message: 'Buyer not found.' });
-    }
-
-    const wishlist = await Wishlist.findOne({ user: req.user._id }).populate('items.product');
-    if (!wishlist || !wishlist.items.length) {
-        return res.status(200).json({ success: true, data: { items: [], totalItems: 0, totalPages: 0, currentPage: 1 } });
-    }
-
-    // Filter out null products
-    const validItems = wishlist.items.filter(item => item.product);
-
-    // Pagination
-    const paginatedItems = validItems.slice(skip, skip + parseInt(limit));
-
-    const items = await Promise.all(
-        paginatedItems.map(async (item) => {
-            const product = item.product;
-
-            const vendor = await User.findById(product.vendor)
-                .where('role').equals('Vendor')
-                .where('status').equals('Active')
-                .select('name profilePicture mobileNumber vendorDetails location address');
-
-            // Calculate distance if buyer and vendor coordinates exist
-            let distance = 'Unknown distance';
-            if (buyer.location?.coordinates && vendor?.location?.coordinates) {
-                distance = `${calculateDistance(
-                    buyer.location.coordinates[1],
-                    buyer.location.coordinates[0],
-                    vendor.location.coordinates[1],
-                    vendor.location.coordinates[0]
-                ).toFixed(1)} km away`;
-            }
-
-            return {
-                id: product._id,
-                name: product.name,
-                category: product.category,
-                variety: product.variety,
-                rating: product.rating || 0,
-                image: product.images?.[0] || null,
-                price: product.price,
-                quantity:product.quantity,
-                unit: product.unit,
-                weightPerPiece: product.weightPerPiece,
-                vendor: vendor
-                    ? {
-                        id: vendor._id,
-                        name: vendor.name,
-                        mobileNumber: vendor.mobileNumber || null,
-                        profilePicture: vendor.profilePicture || null,
-                        locationText: vendor.address?.locality || vendor.address?.city || 'Unknown Location',
-                        distance,
-                        about: vendor.vendorDetails?.about || '',
-                    }
-                    : null,
-            };
-        })
-    );
-
-    res.status(200).json({
-        success: true,
-        data: {
-            items: items.filter(i => i !== null), // remove null items if any
-            totalItems: validItems.length,
-            totalPages: Math.ceil(validItems.length / parseInt(limit)),
-            currentPage: parseInt(page),
-        },
+  // 🟢 Buyer
+  const buyer = await User.findById(req.user._id).select("location");
+  if (!buyer) {
+    return res.status(404).json({
+      success: false,
+      message: "Buyer not found.",
     });
+  }
+
+  // 🟢 Wishlist
+  const wishlist = await Wishlist.findOne({ user: req.user._id })
+    .populate("items.product");
+
+  if (!wishlist || !wishlist.items.length) {
+    return res.status(200).json({
+      success: true,
+      data: {
+        items: [],
+        totalItems: 0,
+        totalPages: 0,
+        currentPage: 1,
+      },
+    });
+  }
+
+  // 🟢 Remove deleted products
+  const validItems = wishlist.items.filter((item) => item.product);
+
+  // 🟢 Pagination
+  const paginatedItems = validItems.slice(
+    skip,
+    skip + parseInt(limit)
+  );
+
+  const items = await Promise.all(
+    paginatedItems.map(async (item) => {
+      const product = item.product;
+
+      // 🟢 Vendor
+      const vendor = await User.findById(product.vendor)
+        .where("role").equals("Vendor")
+        .where("status").equals("Active")
+        .select("name profilePicture mobileNumber vendorDetails location address");
+
+      // 📏 Distance
+      let distanceText = "Unknown distance";
+
+      if (
+        buyer.location?.coordinates?.length === 2 &&
+        vendor?.location?.coordinates?.length === 2
+      ) {
+        const [buyerLng, buyerLat] = buyer.location.coordinates;
+        const [vendorLng, vendorLat] = vendor.location.coordinates;
+
+        const distanceKm = calculateDistanceKm(
+          buyerLat,
+          buyerLng,
+          vendorLat,
+          vendorLng
+        );
+
+        if (!isNaN(distanceKm)) {
+          distanceText = `${distanceKm.toFixed(2)} km away`; // ✅ exact format
+        }
+      }
+
+      return {
+        id: product._id,
+        name: product.name,
+        category: product.category,
+        variety: product.variety,
+        rating: product.rating || 0,
+        image: product.images?.[0] || null,
+        price: product.price,
+        quantity: product.quantity,
+        unit: product.unit,
+        weightPerPiece: product.weightPerPiece,
+
+        vendor: vendor
+          ? {
+              id: vendor._id,
+              name: vendor.name,
+              mobileNumber: vendor.mobileNumber || null,
+              profilePicture: vendor.profilePicture || null,
+              locationText:
+                vendor.address?.locality ||
+                vendor.address?.city ||
+                "Unknown Location",
+              distance: distanceText,
+              about: vendor.vendorDetails?.about || "",
+            }
+          : null,
+      };
+    })
+  );
+
+  return res.status(200).json({
+    success: true,
+    data: {
+      items: items.filter(Boolean),
+      totalItems: validItems.length,
+      totalPages: Math.ceil(validItems.length / parseInt(limit)),
+      currentPage: parseInt(page),
+    },
+  });
 });
+
 
 
 
@@ -4371,34 +4614,43 @@ const deleteReview = asyncHandler(async (req, res) => {
 
 
 const getBuyerProfile = asyncHandler(async (req, res) => {
-    // Ensure the user is a Buyer, although the route middleware should handle this
-    if (req.user.role !== 'Buyer') {
-        return res.status(403).json({ success: false, message: 'Access denied.' });
-    }
+  // 🔐 Safety check (middleware usually handles this)
+  if (req.user.role !== "Buyer") {
+    return res.status(403).json({
+      success: false,
+      message: "Access denied.",
+    });
+  }
 
-    const user = await User.findById(req.user.id).select('-password');
+  const user = await User.findById(req.user._id)
+    .select("-password")
+    .lean();
 
-    if (user) {
-        res.status(200).json({
-            success: true,
-            user: {
-                id: user.id,
-                name: user.name,
-                mobileNumber: user.mobileNumber,
-                profilePicture: user.profilePicture,
-                role: user.role,
-                address: user.address,
-                language: user.language
-            }
-        });
-    } else {
-        res.status(404).json({ success: false, message: 'Buyer not found.' });
-    }
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: "Buyer not found.",
+    });
+  }
+
+  return res.status(200).json({
+    success: true,
+    user: {
+      id: user._id,
+      name: user.name,
+      mobileNumber: user.mobileNumber,
+      profilePicture: user.profilePicture,
+      role: user.role,
+      address: user.address || {},
+      language: user.language || "English",
+    },
+  });
 });
+
 
 const updateBuyerProfile = asyncHandler(async (req, res) => {
   // 1️⃣ Find Buyer
-  const user = await User.findById(req.user.id);
+  const user = await User.findById(req.user._id);
   if (!user || user.role !== "Buyer") {
     return res.status(404).json({
       success: false,
@@ -4406,10 +4658,11 @@ const updateBuyerProfile = asyncHandler(async (req, res) => {
     });
   }
 
-  // 2️⃣ Prevent duplicate mobile number
+  // 2️⃣ Prevent duplicate mobile number (exclude self)
   if (req.body.mobileNumber && req.body.mobileNumber !== user.mobileNumber) {
     const existingUser = await User.findOne({
       mobileNumber: req.body.mobileNumber,
+      _id: { $ne: user._id },
     });
 
     if (existingUser) {
@@ -4422,19 +4675,28 @@ const updateBuyerProfile = asyncHandler(async (req, res) => {
     user.mobileNumber = req.body.mobileNumber;
   }
 
-  // 3️⃣ Handle profile image update (Cloudinary)
+  // 3️⃣ Handle profile image update
   if (req.file) {
     try {
-      // 🗑️ Delete old profile image (if exists)
       if (user.profilePicture) {
-        const oldPublicId = user.profilePicture.split("/").pop().split(".")[0];
-        await cloudinaryDestroy(`profile-images/${oldPublicId}`);
+        try {
+          const oldPublicId = user.profilePicture
+            .split("/")
+            .pop()
+            .split(".")[0];
+
+          await cloudinaryDestroy(`profile-images/${oldPublicId}`);
+        } catch (e) {
+          console.warn("Old image delete skipped");
+        }
       }
 
-      // 📤 Upload new image using helper
-      const uploaded = await cloudinaryUpload(req.file.path, "profile-images");
-      user.profilePicture = uploaded.secure_url;
+      const uploaded = await cloudinaryUpload(
+        req.file.path,
+        "profile-images"
+      );
 
+      user.profilePicture = uploaded.secure_url;
     } catch (error) {
       console.error("⚠️ Cloudinary upload error:", error);
       return res.status(500).json({
@@ -4444,52 +4706,57 @@ const updateBuyerProfile = asyncHandler(async (req, res) => {
     }
   }
 
-  // 4️⃣ Update basic data
+  // 4️⃣ Update basic fields
   if (req.body.name) user.name = req.body.name;
 
-  // 5️⃣ Update address
-  if (req.body.pinCode || req.body.city || req.body.locality || req.body.houseNumber) {
+  // 5️⃣ SAFE address update (partial merge)
+  if (
+    req.body.pinCode ||
+    req.body.city ||
+    req.body.locality ||
+    req.body.houseNumber ||
+    req.body.district
+  ) {
     user.address = {
-      pinCode: req.body.pinCode || user.address?.pinCode,
-      houseNumber: req.body.houseNumber || user.address?.houseNumber,
-      locality: req.body.locality || user.address?.locality,
-      city: req.body.city || user.address?.city,
-      district: req.body.district || user.address?.district,
+      ...(user.address || {}),
+      pinCode: req.body.pinCode ?? user.address?.pinCode,
+      houseNumber: req.body.houseNumber ?? user.address?.houseNumber,
+      locality: req.body.locality ?? user.address?.locality,
+      city: req.body.city ?? user.address?.city,
+      district: req.body.district ?? user.address?.district,
     };
   }
 
   // 6️⃣ Save buyer
   const updatedUser = await user.save();
 
-  // 7️⃣ Notification (BELLS only)
+  // 7️⃣ Notification (real-time)
   const io = req.app.get("io");
   const onlineUsers = req.app.get("onlineUsers") || {};
 
   const notif = await Notification.create({
     title: "👤 Profile Updated",
     message: "Your profile information has been updated successfully.",
-    data: {
-      userId: updatedUser._id,
-      name: updatedUser.name,
-      mobileNumber: updatedUser.mobileNumber,
-      action: "profile_updated",
-    },
     receiverId: updatedUser._id,
     userType: "Buyer",
     createdBy: updatedUser._id,
     isRead: false,
+    data: {
+      userId: updatedUser._id,
+      action: "profile_updated",
+    },
   });
 
   if (onlineUsers[updatedUser._id]) {
     io.to(onlineUsers[updatedUser._id].socketId).emit("notification", notif);
   }
 
-  // 8️⃣ Final Response
+  // 8️⃣ Final Response (UNCHANGED STRUCTURE)
   res.status(200).json({
     success: true,
     message: "Profile updated successfully.",
     data: {
-      id: updatedUser.id,
+      id: updatedUser._id,
       name: updatedUser.name,
       mobileNumber: updatedUser.mobileNumber,
       profilePicture: updatedUser.profilePicture,
@@ -4504,117 +4771,124 @@ const updateBuyerProfile = asyncHandler(async (req, res) => {
 
 
 
+
 const updateBuyerLocation = asyncHandler(async (req, res) => {
-  try {
-    let {
-      pinCode,
-      houseNumber,
-      locality,
-      city,
-      district,
-      latitude,
-      longitude
-    } = req.body;
+  const userId = req.user._id;
 
-    let locationData = null;
+  const {
+    addressId,
+    pinCode,
+    houseNumber,
+    street,
+    locality,
+    city,
+    district,
+    state,
+    latitude,
+    longitude,
+  } = req.body;
 
-    // --- 1️⃣ Handle Geo Coordinates ---
-    if (latitude && longitude) {
-      const lat = parseFloat(latitude);
-      const lng = parseFloat(longitude);
-
-      if (isNaN(lat) || isNaN(lng)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid latitude or longitude provided.'
-        });
-      }
-
-      // --- 2️⃣ Reverse Geocode (optional auto-fill) ---
-      try {
-        const geoResponse = await axios.get(
-          `https://nominatim.openstreetmap.org/reverse`,
-          {
-            params: {
-              lat,
-              lon: lng,
-              format: 'json',
-              addressdetails: 1
-            },
-            headers: { 'User-Agent': 'ViaFarm/1.0 (viafarm.app)' }
-          }
-        );
-
-        const addr = geoResponse.data.address;
-        if (addr) {
-          pinCode = pinCode || addr.postcode || '';
-          city = city || addr.city || addr.town || addr.village || '';
-          district = district || addr.state_district || addr.county || '';
-          locality =
-            locality ||
-            addr.suburb ||
-            addr.neighbourhood ||
-            addr.road ||
-            addr.hamlet ||
-            '';
-        }
-      } catch (geoErr) {
-        console.warn('⚠️ Reverse geocoding failed:', geoErr.message);
-      }
-
-      locationData = {
-        type: 'Point',
-        coordinates: [lng, lat]
-      };
-    }
-
-    // --- 3️⃣ Build Update Object ---
-    const updateFields = {};
-
-    if (pinCode) updateFields['address.pinCode'] = pinCode;
-    if (houseNumber) updateFields['address.houseNumber'] = houseNumber;
-    if (locality) updateFields['address.locality'] = locality;
-    if (city) updateFields['address.city'] = city;
-    if (district) updateFields['address.district'] = district;
-    if (locationData) updateFields['location'] = locationData;
-
-    // --- 4️⃣ Skip if nothing provided ---
-    if (Object.keys(updateFields).length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'No fields provided for update.'
-      });
-    }
-
-    // --- 5️⃣ Update User ---
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user._id,
-      { $set: updateFields },
-      { new: true, runValidators: true }
-    ).select('address location');
-
-    if (!updatedUser) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found.'
-      });
-    }
-
-    // --- 6️⃣ Response ---
-    res.status(200).json({
-      success: true,
-      message: 'Location updated successfully.',
-      data: updatedUser
-    });
-  } catch (error) {
-    console.error('❌ Error updating buyer location:', error);
-    res.status(500).json({
+  // 1️⃣ addressId required
+  if (!addressId) {
+    return res.status(400).json({
       success: false,
-      message: 'Server error while updating location.',
-      error: error.message
+      message: "Address ID is required",
     });
   }
+
+  const update = {};
+
+  // 2️⃣ Address fields (partial update)
+  if (pinCode) update.pinCode = pinCode;
+  if (houseNumber) update.houseNumber = houseNumber;
+  if (street) update.street = street;
+  if (locality) update.locality = locality;
+  if (city) update.city = city;
+  if (district) update.district = district;
+  if (state) update.state = state;
+
+  // 3️⃣ Location (allow 0 values also)
+  if (latitude !== undefined && longitude !== undefined) {
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
+
+    if (isNaN(lat) || isNaN(lng)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid latitude or longitude",
+      });
+    }
+
+    update.location = {
+      type: "Point",
+      coordinates: [lng, lat], // GeoJSON order
+    };
+  }
+
+  // 4️⃣ Prevent empty update
+  if (Object.keys(update).length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: "No fields provided for update",
+    });
+  }
+
+  // 5️⃣ Update address (ownership safe)
+  const address = await Address.findOneAndUpdate(
+    { _id: addressId, user: userId },
+    { $set: update },
+    { new: true }
+  );
+
+  if (!address) {
+    return res.status(404).json({
+      success: false,
+      message: "Address not found",
+    });
+  }
+
+  // 6️⃣ 🔥 Sync buyer main location (VERY IMPORTANT for distance APIs)
+  if (update.location) {
+    await User.findByIdAndUpdate(userId, {
+      $set: { location: update.location },
+    });
+  }
+
+  // 7️⃣ Frontend-friendly formatted address
+  const formattedAddress = [
+    address.houseNumber,
+    address.street,
+    address.locality,
+    address.city,
+    address.district,
+    address.state,
+    address.pinCode,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  return res.json({
+    success: true,
+    message: "Address location updated successfully",
+    address: {
+      id: address._id,
+      formattedAddress,
+      isDefault: address.isDefault,
+      coordinates: address.location?.coordinates || [],
+      details: {
+        houseNumber: address.houseNumber,
+        street: address.street,
+        locality: address.locality,
+        city: address.city,
+        district: address.district,
+        state: address.state,
+        pinCode: address.pinCode,
+      },
+    },
+  });
 });
+
+
 
 
 
@@ -4642,22 +4916,22 @@ const logout = asyncHandler(async (_req, res) => {
 
 
 const getAddresses = asyncHandler(async (req, res) => {
-  // 1️⃣ Fetch all addresses for this user
+  // 1️⃣ Fetch all addresses (default first, then latest)
   const addresses = await Address.find({ user: req.user._id })
-    .select("-name -mobileNumber") // exclude unnecessary fields
+    .sort({ isDefault: -1, createdAt: -1 })
     .lean();
 
-  // 2️⃣ If no addresses found
-  if (!addresses || addresses.length === 0) {
+  // 2️⃣ If no addresses
+  if (!addresses.length) {
     return res.status(200).json({
       success: true,
       message: "No addresses found.",
-      addresses: []
+      addresses: [],
     });
   }
 
   // 3️⃣ Format response
-  const formattedAddresses = addresses.map(addr => {
+  const formattedAddresses = addresses.map((addr) => {
     const formattedAddress = [
       addr.houseNumber,
       addr.street,
@@ -4665,7 +4939,7 @@ const getAddresses = asyncHandler(async (req, res) => {
       addr.city,
       addr.district,
       addr.state,
-      addr.pinCode
+      addr.pinCode,
     ]
       .filter(Boolean)
       .join(", ");
@@ -4674,26 +4948,35 @@ const getAddresses = asyncHandler(async (req, res) => {
       id: addr._id.toString(),
       isDefault: addr.isDefault,
       formattedAddress,
-      pinCode: addr.pinCode,
-      houseNumber: addr.houseNumber,
+
+      pinCode: addr.pinCode || "",
+      houseNumber: addr.houseNumber || "",
       street: addr.street || "",
       locality: addr.locality || "",
       city: addr.city || "",
       district: addr.district || "",
       state: addr.state || "",
-      location: addr.location || { type: "Point", coordinates: [] },
+
+      location: {
+        type: "Point",
+        coordinates: Array.isArray(addr.location?.coordinates)
+          ? addr.location.coordinates
+          : [],
+      },
+
       createdAt: addr.createdAt,
-      updatedAt: addr.updatedAt
+      updatedAt: addr.updatedAt,
     };
   });
 
-  // 4️⃣ Send response
+  // 4️⃣ Response
   res.status(200).json({
     success: true,
     message: "All addresses retrieved successfully.",
-    addresses: formattedAddresses
+    addresses: formattedAddresses,
   });
 });
+
 
 
 
@@ -4785,10 +5068,11 @@ const addAddress = asyncHandler(async (req, res) => {
       });
     }
 
-    let geoJsonLocation = null;
+    // ✅ Always keep valid GeoJSON structure
+    let geoJsonLocation = { type: "Point", coordinates: [] };
 
-    /** ✅ 1. Use direct coordinates if provided */
-    if (latitude && longitude) {
+    /** ✅ 1️⃣ Use direct coordinates if provided */
+    if (latitude !== undefined && longitude !== undefined) {
       const lat = parseFloat(latitude);
       const lng = parseFloat(longitude);
 
@@ -4800,10 +5084,7 @@ const addAddress = asyncHandler(async (req, res) => {
         lng >= -180 &&
         lng <= 180
       ) {
-        geoJsonLocation = {
-          type: "Point",
-          coordinates: [lng, lat],
-        };
+        geoJsonLocation.coordinates = [lng, lat]; // ✅ [lng, lat]
       } else {
         return res.status(400).json({
           success: false,
@@ -4811,7 +5092,7 @@ const addAddress = asyncHandler(async (req, res) => {
         });
       }
     } else {
-      /** 🌍 2. Auto-GeoCoding if lat/lng missing */
+      /** 🌍 2️⃣ Auto-Geocoding */
       const coords = await geocodeAddress({
         houseNumber,
         street,
@@ -4822,24 +5103,19 @@ const addAddress = asyncHandler(async (req, res) => {
         pinCode,
       });
 
-      if (coords) {
-        geoJsonLocation = {
-          type: "Point",
-          coordinates: coords,
-        };
+      if (coords && coords.length === 2) {
+        geoJsonLocation.coordinates = coords;
         console.log("📍 Auto-Geocoded:", coords);
       } else {
-        console.log("⚠ Geocoding failed → saving without coordinates");
+        console.warn("⚠️ Geocoding failed → saving address without coordinates");
       }
     }
 
-    /** ⭐ 3. Default Address Logic */
-    const existing = await Address.find({ user: req.user._id });
-    let makeDefault = isDefault;
+    /** ⭐ 3️⃣ Default Address Logic */
+    const existing = await Address.find({ user: req.user._id }).lean();
+    let makeDefault = Boolean(isDefault);
 
-    if (existing.length === 0) {
-      makeDefault = true; // first address is always default
-    }
+    if (existing.length === 0) makeDefault = true;
 
     if (makeDefault) {
       await Address.updateMany(
@@ -4848,7 +5124,7 @@ const addAddress = asyncHandler(async (req, res) => {
       );
     }
 
-    /** 🏠 4. Create Address */
+    /** 🏠 4️⃣ Create Address */
     const newAddress = await Address.create({
       user: req.user._id,
       pinCode: pinCode || "",
@@ -4859,7 +5135,7 @@ const addAddress = asyncHandler(async (req, res) => {
       district: district || "",
       state: state || "",
       isDefault: makeDefault,
-      location: geoJsonLocation, // 🌍 Saved correctly
+      location: geoJsonLocation, // ✅ ALWAYS valid
     });
 
     /** 🧩 Build formattedAddress */
@@ -4883,7 +5159,7 @@ const addAddress = asyncHandler(async (req, res) => {
         user: newAddress.user,
         formattedAddress,
         isDefault: newAddress.isDefault,
-        coordinates: newAddress.location?.coordinates || [],
+        coordinates: newAddress.location.coordinates,
         details: {
           houseNumber: newAddress.houseNumber,
           street: newAddress.street,
@@ -4908,38 +5184,8 @@ const addAddress = asyncHandler(async (req, res) => {
 
 
 
-async function geocodeAddress(addr) {
-  const full = [
-    addr.houseNumber,
-    addr.street,
-    addr.locality,
-    addr.city,
-    addr.district,
-    addr.state,
-    addr.pinCode,
-  ]
-    .filter(Boolean)
-    .join(", ");
 
-  if (!full) return null;
 
-  try {
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
-      full
-    )}&format=json&limit=1`;
-
-    const { data } = await axios.get(url, {
-      headers: { "User-Agent": "ViaFarm-GeoCoder" },
-    });
-
-    if (!data.length) return null;
-
-    return [parseFloat(data[0].lon), parseFloat(data[0].lat)];
-  } catch (err) {
-    console.log("❌ Geocode error:", err.message);
-    return null;
-  }
-}
 
 const updateAddress = asyncHandler(async (req, res) => {
   try {
@@ -4957,7 +5203,7 @@ const updateAddress = asyncHandler(async (req, res) => {
       longitude,
     } = req.body;
 
-    // --- 1️⃣ Validate ID ---
+    // 1️⃣ Validate ID
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
@@ -4965,7 +5211,7 @@ const updateAddress = asyncHandler(async (req, res) => {
       });
     }
 
-    // --- 2️⃣ Find the address ---
+    // 2️⃣ Find address
     const address = await Address.findOne({ _id: id, user: req.user._id });
     if (!address) {
       return res.status(404).json({
@@ -4974,20 +5220,20 @@ const updateAddress = asyncHandler(async (req, res) => {
       });
     }
 
-    let newCoordinates = null;
+    // ✅ Always keep valid GeoJSON
+    if (!address.location) {
+      address.location = { type: "Point", coordinates: [] };
+    }
 
-    // --- 3️⃣ If coordinates provided → update + reverse-geocode missing fields ---
-    if (latitude && longitude) {
+    // 3️⃣ Coordinates provided → update + reverse geocode
+    if (latitude !== undefined && longitude !== undefined) {
       const lat = parseFloat(latitude);
       const lng = parseFloat(longitude);
 
       if (
-        isNaN(lat) ||
-        isNaN(lng) ||
-        lat < -90 ||
-        lat > 90 ||
-        lng < -180 ||
-        lng > 180
+        isNaN(lat) || isNaN(lng) ||
+        lat < -90 || lat > 90 ||
+        lng < -180 || lng > 180
       ) {
         return res.status(400).json({
           success: false,
@@ -4995,41 +5241,36 @@ const updateAddress = asyncHandler(async (req, res) => {
         });
       }
 
-      newCoordinates = [lng, lat];
+      address.location.coordinates = [lng, lat];
 
-      address.location = {
-        type: "Point",
-        coordinates: newCoordinates,
-      };
-
-      // 🌍 Reverse Geocode → fill missing details
+      // 🌍 Reverse geocode (fill ONLY missing fields)
       try {
         const resp = await axios.get(
           "https://nominatim.openstreetmap.org/reverse",
           {
-            params: { lat, lon: lng, format: "json", addressdetails: 1 },
-            headers: { "User-Agent": "ViaFarm-GeoCoder" },
+            params: {
+              lat,
+              lon: lng,
+              format: "json",
+              addressdetails: 1,
+            },
+            headers: { "User-Agent": "ViaFarm-GeoCoder/1.0" },
+            timeout: 8000,
           }
         );
 
-        const addr = resp.data.address || {};
-        pinCode = pinCode || addr.postcode || "";
-        city = city || addr.city || addr.town || addr.village || "";
-        district = district || addr.state_district || addr.county || "";
-        state = state || addr.state || "";
-        locality =
-          locality ||
-          addr.suburb ||
-          addr.road ||
-          addr.neighbourhood ||
-          addr.hamlet ||
-          "";
+        const a = resp.data?.address || {};
+        pinCode ??= a.postcode || "";
+        city ??= a.city || a.town || a.village || "";
+        district ??= a.state_district || a.county || "";
+        state ??= a.state || "";
+        locality ??= a.suburb || a.road || a.neighbourhood || "";
       } catch (err) {
-        console.log("⚠ Reverse geocode failed:", err.message);
+        console.warn("⚠ Reverse geocode failed:", err.message);
       }
     }
 
-    // --- 4️⃣ If NO coordinates provided → Forward-Geocode ---
+    // 4️⃣ No coordinates → forward geocode
     else {
       const coords = await geocodeAddress({
         houseNumber,
@@ -5041,37 +5282,36 @@ const updateAddress = asyncHandler(async (req, res) => {
         pinCode,
       });
 
-      if (coords) {
-        address.location = { type: "Point", coordinates: coords };
-        newCoordinates = coords;
-        console.log("📍 Auto-coordinates:", coords);
-      } else {
-        console.log("⚠ Could not geocode updated address.");
+      if (coords && coords.length === 2) {
+        address.location.coordinates = coords;
+        console.log("📍 Auto-geocoded:", coords);
       }
     }
 
-    // --- 5️⃣ Make default address ---
+    // 5️⃣ Default address logic
     if (isDefault === true) {
       await Address.updateMany(
         { user: req.user._id, isDefault: true },
         { isDefault: false }
       );
       address.isDefault = true;
+    } else if (isDefault === false) {
+      address.isDefault = false;
     }
 
-    // --- 6️⃣ Apply partial updates safely ---
+    // 6️⃣ Partial updates (safe)
     if (pinCode !== undefined) address.pinCode = pinCode;
     if (houseNumber !== undefined) address.houseNumber = houseNumber;
     if (street !== undefined) address.street = street || "";
-    if (locality !== undefined) address.locality = locality;
-    if (city !== undefined) address.city = city;
-    if (district !== undefined) address.district = district;
-    if (state !== undefined) address.state = state;
+    if (locality !== undefined) address.locality = locality || "";
+    if (city !== undefined) address.city = city || "";
+    if (district !== undefined) address.district = district || "";
+    if (state !== undefined) address.state = state || "";
 
-    // --- 7️⃣ Save ---
+    // 7️⃣ Save
     await address.save();
 
-    // --- 8️⃣ Build formatted address ---
+    // 8️⃣ Format address
     const formattedAddress = [
       address.houseNumber,
       address.street,
@@ -5091,7 +5331,7 @@ const updateAddress = asyncHandler(async (req, res) => {
         id: address._id,
         formattedAddress,
         isDefault: address.isDefault,
-        coordinates: address.location?.coordinates || [],
+        coordinates: address.location.coordinates,
         details: {
           houseNumber: address.houseNumber,
           street: address.street,
@@ -5117,6 +5357,7 @@ const updateAddress = asyncHandler(async (req, res) => {
 
 
 
+
 const deleteAddress = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
@@ -5128,7 +5369,7 @@ const deleteAddress = asyncHandler(async (req, res) => {
     });
   }
 
-  // 2️⃣ Check address exists for this user
+  // 2️⃣ Find address
   const address = await Address.findOne({
     _id: id,
     user: req.user._id,
@@ -5141,22 +5382,30 @@ const deleteAddress = asyncHandler(async (req, res) => {
     });
   }
 
-  const wasDefault = address.isDefault;
+  const wasDefault = address.isDefault === true;
 
   // 3️⃣ Delete address
-  await address.deleteOne();
+  await Address.deleteOne({ _id: id });
 
-  let newDefaultAddress = null;
+  let newDefaultAddressId = null;
 
-  // 4️⃣ If deleted address was default → assign NEW default
+  // 4️⃣ If deleted address was default → assign NEW default safely
   if (wasDefault) {
-    // find latest added address
-    newDefaultAddress = await Address.findOne({ user: req.user._id })
-      .sort({ createdAt: -1 });
+    const latestAddress = await Address.findOne({
+      user: req.user._id,
+    }).sort({ createdAt: -1 });
 
-    if (newDefaultAddress) {
-      newDefaultAddress.isDefault = true;
-      await newDefaultAddress.save();
+    if (latestAddress) {
+      // ensure only ONE default exists
+      await Address.updateMany(
+        { user: req.user._id, isDefault: true },
+        { isDefault: false }
+      );
+
+      latestAddress.isDefault = true;
+      await latestAddress.save();
+
+      newDefaultAddressId = latestAddress._id;
     }
   }
 
@@ -5169,10 +5418,11 @@ const deleteAddress = asyncHandler(async (req, res) => {
     success: true,
     message: "Address deleted successfully.",
     deletedAddressId: id,
-    newDefaultAddressId: newDefaultAddress?._id || null,
+    newDefaultAddressId,
     remainingAddresses: remainingCount,
   });
 });
+
 
 
 
@@ -5225,155 +5475,199 @@ const selectPickupSlot = asyncHandler(async (req, res) => {
 
 
 const getPickupLocationDetails = asyncHandler(async (req, res) => {
-    const { vendorId } = req.params;
-    const userId = req.user._id;
+  const { vendorId } = req.params;
+  const userId = req.user._id;
 
-    // Fetch vendor, cart, and buyer's default address in parallel
-    const [vendor, cart, defaultBuyerAddress] = await Promise.all([
-        User.findById(vendorId)
-            .select("name mobileNumber address location profilePicture role")
-            .lean(),
-        Cart.findOne({ user: userId }).select("pickupDetails").lean(),
-        Address.findOne({ user: userId, isDefault: true }).lean()
-    ]);
+  // 1️⃣ Fetch vendor, cart, buyer address
+  const [vendor, cart, defaultBuyerAddress] = await Promise.all([
+    User.findById(vendorId)
+      .select("name mobileNumber address location profilePicture role")
+      .lean(),
 
-    let buyerAddress = defaultBuyerAddress || (await Address.findOne({ user: userId }).lean());
+    Cart.findOne({ user: userId })
+      .select("pickupDetails")
+      .lean(),
 
-    if (!vendor || vendor.role !== "Vendor") {
-        return res.status(404).json({ success: false, message: "Vendor not found." });
-    }
+    Address.findOne({ user: userId, isDefault: true }).lean(),
+  ]);
 
-    // Determine slot details
-    let slotToDisplay = {};
-    let isSaved = false;
-    const savedPickup = cart?.pickupDetails;
-    const vendorObjectId = new mongoose.Types.ObjectId(vendorId);
+  const buyerAddress =
+    defaultBuyerAddress ||
+    (await Address.findOne({ user: userId }).lean());
 
-    if (savedPickup && savedPickup.vendor?.equals(vendorObjectId)) {
-        // Use selected slot
-        slotToDisplay = savedPickup;
-        isSaved = true;
-    } else {
-        // Fallback default slot (optional)
-        const now = new Date();
-        const tomorrow = new Date(now);
-        tomorrow.setDate(now.getDate() + 1);
-
-        const formattedDate = `${String(tomorrow.getDate()).padStart(2, "0")}/${String(tomorrow.getMonth() + 1).padStart(2, "0")
-            }/${tomorrow.getFullYear()}`;
-
-        slotToDisplay = {
-            date: formattedDate,
-            startTime: "10:30 AM",
-            endTime: "12:30 PM",
-        };
-        isSaved = false;
-    }
-
-    // Calculate distance
-    let distanceKm = null;
-    if (buyerAddress?.location?.coordinates?.length === 2 && vendor.location?.coordinates?.length === 2) {
-        const [vendorLng, vendorLat] = vendor.location.coordinates;
-        const buyerLatNum = buyerAddress.location.coordinates[1];
-        const buyerLngNum = buyerAddress.location.coordinates[0];
-        distanceKm = calculateDistance(buyerLatNum, buyerLngNum, vendorLat, vendorLng).toFixed(1);
-    }
-
-    // Format vendor address
-    const vendorAddressText = [
-        vendor.address?.houseNumber,
-        vendor.address?.locality || vendor.address?.city,
-        vendor.address?.city
-    ].filter(Boolean).join(", ");
-
-    const pickupHoursDisplay = `${slotToDisplay.startTime} to ${slotToDisplay.endTime}`;
-
-    res.status(200).json({
-        success: true,
-        data: {
-            vendor: {
-                name: vendor.name,
-                profilePicture: vendor.profilePicture,
-                phoneNo: vendor.mobileNumber,
-                pickupLocationText: vendorAddressText,
-                distance: distanceKm ? `${distanceKm} kms away` : "N/A",
-            },
-            slotDetails: {
-                date: slotToDisplay.date,
-                startTime: slotToDisplay.startTime,
-                endTime: slotToDisplay.endTime,
-                pickupHoursDisplay,
-                isSaved
-            }
-        }
+  if (!vendor || vendor.role !== "Vendor") {
+    return res.status(404).json({
+      success: false,
+      message: "Vendor not found.",
     });
+  }
+
+  // 2️⃣ Pickup Slot Logic
+  let slotToDisplay = {};
+  let isSaved = false;
+
+  const savedPickup = cart?.pickupDetails;
+  const vendorObjectId = new mongoose.Types.ObjectId(vendorId);
+
+  if (savedPickup && savedPickup.vendor?.equals(vendorObjectId)) {
+    slotToDisplay = savedPickup;
+    isSaved = true;
+  } else {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    slotToDisplay = {
+      date: `${String(tomorrow.getDate()).padStart(2, "0")}/${String(
+        tomorrow.getMonth() + 1
+      ).padStart(2, "0")}/${tomorrow.getFullYear()}`,
+      startTime: "10:30 AM",
+      endTime: "12:30 PM",
+    };
+  }
+
+  // 3️⃣ Distance Calculation (FIXED ✅)
+  let distanceKm = null;
+
+  if (
+    buyerAddress?.location?.coordinates?.length === 2 &&
+    vendor.location?.coordinates?.length === 2
+  ) {
+    const [buyerLng, buyerLat] = buyerAddress.location.coordinates;
+    const [vendorLng, vendorLat] = vendor.location.coordinates;
+
+    distanceKm = calculateDistanceKm(
+      buyerLat,
+      buyerLng,
+      vendorLat,
+      vendorLng
+    ).toFixed(1);
+  }
+
+  // 4️⃣ Vendor Address Text
+  const vendorAddressText = [
+    vendor.address?.houseNumber,
+    vendor.address?.locality || vendor.address?.city,
+    vendor.address?.city,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  // 5️⃣ Pickup hours display
+  const pickupHoursDisplay = `${slotToDisplay.startTime} to ${slotToDisplay.endTime}`;
+
+  // 6️⃣ Response (UNCHANGED 🔒)
+  res.status(200).json({
+    success: true,
+    data: {
+      vendor: {
+        name: vendor.name,
+        profilePicture: vendor.profilePicture,
+        phoneNo: vendor.mobileNumber,
+        pickupLocationText: vendorAddressText,
+        distance: distanceKm ? `${distanceKm} km away` : "N/A",
+      },
+      slotDetails: {
+        date: slotToDisplay.date,
+        startTime: slotToDisplay.startTime,
+        endTime: slotToDisplay.endTime,
+        pickupHoursDisplay,
+        isSaved,
+      },
+    },
+  });
 });
+
 
 
 
 const getPickupLocationDetailsPost = asyncHandler(async (req, res) => {
-    const { vendorId, buyerLat, buyerLng } = req.body;
+  const { vendorId, buyerLat, buyerLng } = req.body;
 
-    if (!vendorId) {
-        return res.status(400).json({ success: false, message: "Vendor ID is required." });
-    }
-
-    // 1️⃣ Fetch vendor details
-    const vendor = await User.findById(vendorId).select("name mobileNumber address location profilePicture role");
-
-    if (!vendor || vendor.role !== "Vendor") {
-        return res.status(404).json({ success: false, message: "Vendor not found." });
-    }
-
-    // 2️⃣ Calculate distance
-    let distanceKm = null;
-    if (buyerLat && buyerLng && vendor.location?.coordinates?.length === 2) {
-        try {
-            // Note: coordinates are stored [lng, lat]
-            distanceKm = calculateDistance(
-                parseFloat(buyerLat),
-                parseFloat(buyerLng),
-                vendor.location.coordinates[1], // vendorLat
-                vendor.location.coordinates[0]  // vendorLng
-            ).toFixed(1);
-        } catch (e) {
-            distanceKm = null;
-        }
-    }
-
-    // 3️⃣ Build pickup address display text
-    const pickupAddress = vendor.address?.houseNumber
-        ? `${vendor.address.houseNumber}, ${vendor.address.locality || vendor.address.city}, ${vendor.address.district}`
-        : `${vendor.address?.locality || vendor.address?.city || "N/A"}`;
-
-    // 4️⃣ Dynamic pickup hours & date (Current logic provides a slot 30 min from now + 2 hours)
-    const now = new Date();
-    const startTime = new Date(now.getTime() + 30 * 60000);
-    const endTime = new Date(startTime.getTime() + 2 * 60 * 60000);
-
-    // Helper to format time as 10:30 AM
-    const formatTime = (d) =>
-        d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toLowerCase();
-
-    const pickupHours = `${formatTime(startTime)} to ${formatTime(endTime)}`;
-    const pickupDate = now.toLocaleDateString("en-GB"); // Formatted as dd/mm/yyyy
-
-    // ✅ 5️⃣ Send response
-    res.status(200).json({
-        success: true,
-        data: {
-            vendor: {
-                name: vendor.name,
-                profilePicture: vendor.profilePicture,
-                phoneNo: vendor.mobileNumber,
-                pickupLocationText: pickupAddress,
-                distance: distanceKm ? `${distanceKm} kms away` : null,
-            },
-            defaultPickupHours: pickupHours,
-            defaultPickupDate: pickupDate,
-        },
+  if (!vendorId) {
+    return res.status(400).json({
+      success: false,
+      message: "Vendor ID is required.",
     });
+  }
+
+  // 1️⃣ Fetch vendor
+  const vendor = await User.findById(vendorId)
+    .select("name mobileNumber address location profilePicture role")
+    .lean();
+
+  if (!vendor || vendor.role !== "Vendor") {
+    return res.status(404).json({
+      success: false,
+      message: "Vendor not found.",
+    });
+  }
+
+  // 2️⃣ Distance calculation (FIXED ✅)
+  let distanceKm = null;
+
+  const lat = parseFloat(buyerLat);
+  const lng = parseFloat(buyerLng);
+
+  if (
+    !isNaN(lat) &&
+    !isNaN(lng) &&
+    vendor.location?.coordinates?.length === 2
+  ) {
+    const [vendorLng, vendorLat] = vendor.location.coordinates;
+
+    const dist = calculateDistanceKm(
+      lat,
+      lng,
+      vendorLat,
+      vendorLng
+    );
+
+    if (!isNaN(dist)) {
+      distanceKm = dist.toFixed(1);
+    }
+  }
+
+  // 3️⃣ Pickup address text
+  const pickupAddress = [
+    vendor.address?.houseNumber,
+    vendor.address?.locality || vendor.address?.city,
+    vendor.address?.district,
+  ]
+    .filter(Boolean)
+    .join(", ") || "N/A";
+
+  // 4️⃣ Dynamic pickup slot (30 min from now → +2 hours)
+  const now = new Date();
+  const startTime = new Date(now.getTime() + 30 * 60000);
+  const endTime = new Date(startTime.getTime() + 2 * 60 * 60000);
+
+  const formatTime = (d) =>
+    d.toLocaleTimeString("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    });
+
+  const pickupHours = `${formatTime(startTime)} to ${formatTime(endTime)}`;
+  const pickupDate = now.toLocaleDateString("en-GB"); // dd/mm/yyyy
+
+  // 5️⃣ Response (UNCHANGED 🔒)
+  return res.status(200).json({
+    success: true,
+    data: {
+      vendor: {
+        name: vendor.name,
+        profilePicture: vendor.profilePicture,
+        phoneNo: vendor.mobileNumber,
+        pickupLocationText: pickupAddress,
+        distance: distanceKm ? `${distanceKm} km away` : null,
+      },
+      defaultPickupHours: pickupHours,
+      defaultPickupDate: pickupDate,
+    },
+  });
 });
+
 
 
 
@@ -5469,240 +5763,252 @@ const searchAllProducts = asyncHandler(async (req, res) => {
 
 
 const getVendorsByProductName = asyncHandler(async (req, res) => {
-    const { q, page = 1, limit = 10, lat, lng } = req.query;
+  const { q, lat, lng } = req.query;
 
-    if (!q || q.trim() === '') {
-        return res.status(400).json({ success: false, message: 'Search query (q) is required.' });
-    }
-
-    const pageSize = parseInt(limit);
-    const skip = (parseInt(page) - 1) * pageSize;
-
-    // 1️⃣ Find all products matching the query
-    const matchingProducts = await Product.find({
-        name: { $regex: q, $options: 'i' },
-        status: 'In Stock'
-    }).select('vendor');
-
-    if (matchingProducts.length === 0) {
-        return res.status(404).json({ success: false, message: `No active products found matching "${q}".` });
-    }
-
-    // 2️⃣ Extract unique vendor IDs
-    const uniqueVendorIds = [...new Set(matchingProducts.map(p => p.vendor.toString()))];
-    const vendorObjectIds = uniqueVendorIds.map(id => new mongoose.Types.ObjectId(id));
-    const totalVendors = vendorObjectIds.length;
-
-    // 3️⃣ Fetch Vendors (paginated)
-    const vendors = await User.find({
-        _id: { $in: vendorObjectIds },
-        role: 'Vendor',
-        status: 'Active'
-    })
-        .select('name profilePicture mobileNumber address rating location')
-        .limit(pageSize)
-        .skip(skip)
-        .sort({ rating: -1, name: 1 });
-
-    // 4️⃣ Format Vendors
-    const formattedVendors = await Promise.all(vendors.map(async vendor => {
-        // Distance calculation
-        let distanceText = 'N/A';
-        if (lat && lng && vendor?.location?.coordinates?.length === 2) {
-            const [vendorLng, vendorLat] = vendor.location.coordinates;
-            const distance = calculateDistance(
-                parseFloat(lat),
-                parseFloat(lng),
-                vendorLat,
-                vendorLng
-            ).toFixed(1);
-            distanceText = `${distance} kms away`;
-        }
-
-        // Count categories sold by this vendor
-        const categories = await Product.distinct('category', { vendor: vendor._id, status: 'In Stock' });
-
-        // Count products matching search query for this vendor
-        const productsSoldCount = matchingProducts.filter(p => p.vendor.toString() === vendor._id.toString()).length;
-
-        return {
-            id: vendor._id,
-            name: vendor.name,
-            profilePicture: vendor.profilePicture || 'https://default-image-url.com/default.png',
-            mobileNumber: vendor.mobileNumber,
-            rating: vendor.rating || 0,
-            distance: distanceText,
-            categoriesSold: categories.join(', '),
-            productsSoldCount
-        };
-    }));
-
-    res.status(200).json({
-        success: true,
-        message: `Found ${totalVendors} vendor(s) selling products related to "${q}".`,
-        count: formattedVendors.length,
-        total: totalVendors,
-        page: parseInt(page),
-        pages: Math.ceil(totalVendors / pageSize),
-        vendors: formattedVendors
+  if (!q || q.trim() === "") {
+    return res.status(400).json({
+      success: false,
+      message: "Search query (q) is required.",
     });
+  }
+
+  // 1️⃣ Find all matching products
+  const matchingProducts = await Product.find({
+    name: { $regex: q, $options: "i" },
+    status: "In Stock",
+  }).select("vendor category");
+
+  if (!matchingProducts.length) {
+    return res.status(404).json({
+      success: false,
+      message: `No active products found matching "${q}".`,
+    });
+  }
+
+  // 2️⃣ Unique vendor IDs
+  const vendorIds = [
+    ...new Set(matchingProducts.map((p) => p.vendor.toString())),
+  ].map((id) => new mongoose.Types.ObjectId(id));
+
+  // 3️⃣ Fetch ALL vendors (NO PAGINATION ✅)
+  const vendors = await User.find({
+    _id: { $in: vendorIds },
+    role: "Vendor",
+    status: "Active",
+  })
+    .select("name profilePicture mobileNumber address rating location")
+    .sort({ rating: -1, name: 1 });
+
+  // 4️⃣ Format vendors
+  const formattedVendors = await Promise.all(
+    vendors.map(async (vendor) => {
+      // 📏 Distance
+      let distanceText = "N/A";
+      if (
+        lat &&
+        lng &&
+        vendor.location?.coordinates?.length === 2
+      ) {
+        const [vendorLng, vendorLat] = vendor.location.coordinates;
+        const dist = calculateDistance(
+          parseFloat(lat),
+          parseFloat(lng),
+          vendorLat,
+          vendorLng
+        );
+
+        if (!isNaN(dist)) {
+          distanceText = `${dist.toFixed(1)} km away`;
+        }
+      }
+
+      // 📦 Categories sold
+      const categories = await Product.distinct("category", {
+        vendor: vendor._id,
+        status: "In Stock",
+      });
+
+      // 🔍 Matching products count
+      const productsSoldCount = matchingProducts.filter(
+        (p) => p.vendor.toString() === vendor._id.toString()
+      ).length;
+
+      return {
+        id: vendor._id,
+        name: vendor.name,
+        profilePicture:
+          vendor.profilePicture ||
+          "https://default-image-url.com/default.png",
+        mobileNumber: vendor.mobileNumber,
+        rating: vendor.rating || 0,
+        distance: distanceText,
+        categoriesSold: categories.join(", "),
+        productsSoldCount,
+      };
+    })
+  );
+
+  // 5️⃣ Response
+  return res.status(200).json({
+    success: true,
+    message: `Found ${formattedVendors.length} vendor(s) selling products related to "${q}".`,
+    count: formattedVendors.length,
+    vendors: formattedVendors,
+  });
 });
+
 
 
 const getProductsByName = asyncHandler(async (req, res) => {
-    const {
-        q,
-        lat,
-        lng,
-        page = 1,
-        limit = 10
-    } = req.query;
+  const { q, lat, lng } = req.query;
+  const userId = req.user._id;
 
-    const userId = req.user._id;
-    const pageSize = parseInt(limit);
-    const skip = (parseInt(page) - 1) * pageSize;
+  if (!q || q.trim() === "") {
+    return res.status(400).json({
+      success: false,
+      message: "Search query (q) is required to find products.",
+    });
+  }
 
-    if (!q || q.trim() === '') {
-        return res.status(400).json({ success: false, message: 'Search query (q) is required to find products.' });
+  // 1️⃣ Query
+  const query = {
+    name: { $regex: q, $options: "i" },
+    status: "In Stock",
+  };
+
+  // 2️⃣ Buyer Location (query → fallback profile)
+  let buyerLocation = null;
+
+  if (lat && lng) {
+    const userLat = parseFloat(lat);
+    const userLng = parseFloat(lng);
+    if (!isNaN(userLat) && !isNaN(userLng)) {
+      buyerLocation = { lat: userLat, lng: userLng };
+    }
+  } else {
+    const buyer = await User.findById(userId).select("location");
+    if (buyer?.location?.coordinates?.length === 2) {
+      buyerLocation = {
+        lat: buyer.location.coordinates[1],
+        lng: buyer.location.coordinates[0],
+      };
+    }
+  }
+
+  // 3️⃣ Fetch ALL matching products (NO PAGINATION ✅)
+  const products = await Product.find(query)
+    .select("name price unit weightPerPiece images rating vendor variety")
+    .populate("vendor", "name location");
+
+  if (!products.length) {
+    return res.status(404).json({
+      success: false,
+      message: `No active products found matching "${q}".`,
+    });
+  }
+
+  // 4️⃣ Format Response (frontend-safe)
+  const formattedProducts = products.map((product) => {
+    let distanceText = "N/A";
+    const vendor = product.vendor;
+
+    if (
+      buyerLocation &&
+      vendor?.location?.coordinates?.length === 2
+    ) {
+      const [vendorLng, vendorLat] = vendor.location.coordinates;
+      const dist = calculateDistance(
+        buyerLocation.lat,
+        buyerLocation.lng,
+        vendorLat,
+        vendorLng
+      );
+
+      if (!isNaN(dist)) {
+        distanceText = `${dist.toFixed(1)} km away`;
+      }
     }
 
-    // 1. Prepare Query
-    const query = {
-        name: { $regex: q, $options: 'i' }, // Case-insensitive search on product name
-        status: 'In Stock'
+    return {
+      id: product._id,
+      name: product.name,
+      rating: product.rating || 0,
+      vendorName: vendor?.name || "Unknown Vendor",
+      distance: distanceText,
+
+      // UI-friendly
+      priceDisplay: `₹ ${product.price} / ${product.unit || "pc"} 100gm`,
+      imageUrl: product.images?.[0] || "https://default-image.url",
+
+      // raw values (cart use)
+      price: product.price,
+      unit: product.unit,
+      weightPerPiece: product.weightPerPiece,
+      vendorId: vendor?._id,
     };
+  });
 
-    // 2. Fetch Buyer Location (Needed for distance calculation)
-    let buyerLocation = null;
-    if (lat && lng) {
-        const userLat = parseFloat(lat);
-        const userLng = parseFloat(lng);
-        if (!isNaN(userLat) && !isNaN(userLng)) {
-            buyerLocation = { lat: userLat, lng: userLng };
-        }
-    } else {
-        // Fallback: Fetch from user profile if not provided in query
-        const buyer = await User.findById(userId).select('location');
-        if (buyer?.location?.coordinates?.length === 2) {
-            buyerLocation = { lat: buyer.location.coordinates[1], lng: buyer.location.coordinates[0] };
-        }
-    }
-
-    // 3. Execute Query (Products + Count)
-    const totalProducts = await Product.countDocuments(query);
-
-    const products = await Product.find(query)
-        .select('name price unit weightPerPiece images rating vendor variety')
-        .limit(pageSize)
-        .skip(skip)
-        .populate('vendor', 'name location'); // Populate vendor name and location for distance/display
-
-    if (products.length === 0) {
-        return res.status(404).json({ success: false, message: `No active products found matching "${q}".` });
-    }
-
-    // 4. Format Output (Matching the image card structure)
-    const formattedProducts = products.map(product => {
-        let distanceText = 'N/A';
-        const vendor = product.vendor;
-
-        // Calculate Distance if possible
-        if (buyerLocation && vendor?.location?.coordinates?.length === 2) {
-            const [vendorLng, vendorLat] = vendor.location.coordinates;
-
-            const distance = calculateDistance(
-                buyerLocation.lat,
-                buyerLocation.lng,
-                vendorLat,
-                vendorLng
-            ).toFixed(1);
-
-            distanceText = `${distance} kms away`;
-        }
-
-        // Final structure matching the image:
-        return {
-            id: product._id,
-            name: product.name, // e.g., Mango Chausa
-            rating: product.rating || 0, // e.g., 4.5
-            vendorName: vendor?.name || 'Unknown Vendor', // e.g., by Ashok Sharma
-            distance: distanceText, // e.g., 1.2 kms away
-            // Custom price/unit format matching the UI: ₹200 / 1pc 100gm
-            priceDisplay: `₹ ${product.price} / ${product.unit || 'pc'} 100gm`,
-            imageUrl: product.images?.[0] || 'https://default-image.url',
-            // Raw data for quantity control/cart management
-            price: product.price,
-            unit: product.unit,
-            weightPerPiece: product.weightPerPiece,
-            vendorId: product.vendor?._id
-        };
-    });
-
-    res.status(200).json({
-        success: true,
-        count: formattedProducts.length,
-        total: totalProducts,
-        page: parseInt(page),
-        pages: Math.ceil(totalProducts / pageSize),
-        products: formattedProducts
-    });
+  // 5️⃣ Final Response
+  res.status(200).json({
+    success: true,
+    count: formattedProducts.length,
+    products: formattedProducts,
+  });
 });
+
 
 
 const getProductsByVendorId = asyncHandler(async (req, res) => {
-    const { vendorId } = req.params;
-    const { page = 1, limit = 12 } = req.query;
+  const { vendorId } = req.params;
 
-    // 1️⃣ Validate Vendor ID
-    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
-        return res.status(400).json({ success: false, message: 'Invalid vendor ID.' });
-    }
-
-    const pageSize = parseInt(limit);
-    const skip = (parseInt(page) - 1) * pageSize;
-
-    // 2️⃣ Define Query: Only 'In Stock' products from this vendor
-    const query = { vendor: vendorId, status: 'In Stock' };
-
-    // 3️⃣ Count total products
-    const totalProducts = await Product.countDocuments(query);
-
-    // 4️⃣ Fetch paginated products
-    const products = await Product.find(query)
-        .select('name variety price weightPerPiece rating unit images') // fields to return
-        .limit(pageSize)
-        .skip(skip)
-        .sort({ rating: -1, name: 1 });
-
-    if (products.length === 0 && parseInt(page) === 1) {
-        return res.status(404).json({
-            success: false,
-            message: 'This vendor has no active products listed.'
-        });
-    }
-
-    // 5️⃣ Format response
-    const formattedProducts = products.map(p => ({
-        id: p._id,
-        name: p.name,
-        variety: p.variety || 'N/A',
-        price: p.price,
-        rating: p.rating || 0,
-        unit: p.unit || 'pc',
-        weightPerPiece: p.weightPerPiece,
-        imageUrl: p.images?.[0] || null,
-        vendorId
-    }));
-
-    res.status(200).json({
-        success: true,
-        count: formattedProducts.length,
-        total: totalProducts,
-        page: parseInt(page),
-        pages: Math.ceil(totalProducts / pageSize),
-        products: formattedProducts
+  // 1️⃣ Validate Vendor ID
+  if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid vendor ID.",
     });
+  }
+
+  // 2️⃣ Query: Only active products of this vendor
+  const query = {
+    vendor: vendorId,
+    status: "In Stock",
+  };
+
+  // 3️⃣ Fetch ALL products (NO PAGINATION ✅)
+  const products = await Product.find(query)
+    .select("name variety price weightPerPiece rating unit images")
+    .sort({ rating: -1, name: 1 });
+
+  if (!products.length) {
+    return res.status(404).json({
+      success: false,
+      message: "This vendor has no active products listed.",
+    });
+  }
+
+  // 4️⃣ Format response (unchanged for frontend)
+  const formattedProducts = products.map((p) => ({
+    id: p._id,
+    name: p.name,
+    variety: p.variety || "N/A",
+    price: p.price,
+    rating: p.rating || 0,
+    unit: p.unit || "pc",
+    weightPerPiece: p.weightPerPiece,
+    imageUrl: p.images?.[0] || null,
+    vendorId,
+  }));
+
+  // 5️⃣ Final response
+  res.status(200).json({
+    success: true,
+    count: formattedProducts.length,
+    total: formattedProducts.length, // ✅ kept for frontend safety
+    products: formattedProducts,
+  });
 });
+
 
 const getProductById = asyncHandler(async (req, res) => {
     const { id } = req.params;
@@ -5957,83 +6263,59 @@ const searchProductsByName = asyncHandler(async (req, res) => {
     return res.json({ success: true, count: 0, data: [] });
   }
 
-  /* -------------------------
-     1️⃣ BUYER LOCATION
-  ------------------------- */
-  let buyerCoords = null;
+  // 🧍 Buyer default address (for distance)
+  const buyerAddress = await Address.findOne({
+    user: req.user._id,
+    isDefault: true
+  }).lean();
 
-  if (req.user?._id) {
-    const buyerAddress = await Address.findOne({
-      user: req.user._id,
-      isDefault: true,
-      "location.coordinates.1": { $exists: true },
-    }).lean();
+  const buyerCoords = buyerAddress?.location?.coordinates;
 
-    if (buyerAddress?.location?.coordinates?.length === 2) {
-      buyerCoords = {
-        lon: buyerAddress.location.coordinates[0],
-        lat: buyerAddress.location.coordinates[1],
-      };
-    }
-  }
-
-  /* -------------------------
-     2️⃣ FETCH ALL PRODUCTS
-  ------------------------- */
+  // 📦 Get all products
   const allProducts = await Product.find()
-    .populate("vendor", "name profilePicture address")
+    .populate("vendor", "name profilePicture location")
     .populate("category", "name image")
     .lean();
 
-  /* -------------------------
-     3️⃣ FILTER BY SEARCH
-  ------------------------- */
-  const results = allProducts.filter((p) => {
-    return (
-      (p.name && p.name.toLowerCase().includes(q)) ||
-      (p.variety && p.variety.toLowerCase().includes(q)) ||
-      (p.description && p.description.toLowerCase().includes(q)) ||
-      (p.vendor?.name && p.vendor.name.toLowerCase().includes(q)) ||
-      (p.category?.name && p.category.name.toLowerCase().includes(q))
-    );
-  });
+  // 🔍 Filter + add distance
+  const results = allProducts
+    .filter((p) =>
+      [p.name, p.variety, p.description, p.vendor?.name, p.category?.name]
+        .some(v => v?.toLowerCase().includes(q))
+    )
+    .map((p) => {
+      let distance = null;
 
-  /* -------------------------
-     4️⃣ ADD DISTANCE (ONLY NEW FIELD)
-  ------------------------- */
-  const finalResults = results.map((p) => {
-    let distance = null;
+      if (
+        buyerCoords?.length === 2 &&
+        p.vendor?.location?.coordinates?.length === 2
+      ) {
+        const [buyerLng, buyerLat] = buyerCoords;
+        const [vendorLng, vendorLat] = p.vendor.location.coordinates;
 
-    if (
-      buyerCoords &&
-      p.vendor?.address?.latitude &&
-      p.vendor?.address?.longitude
-    ) {
-      const km = calculateDistance(
-        buyerCoords.lat,
-        buyerCoords.lon,
-        parseFloat(p.vendor.address.latitude),
-        parseFloat(p.vendor.address.longitude)
-      );
+        const km = calculateDistanceKm(
+          buyerLat,
+          buyerLng,
+          vendorLat,
+          vendorLng
+        );
 
-      distance = km.toFixed(2) + " km"; // ✅ REQUIRED
-    }
+        distance = `${km.toFixed(2)} km away`; // ✅ EXACT FORMAT
+      }
 
-    return {
-      ...p,
-      ...(distance && { distance }) // ✅ only add if exists
-    };
-  });
+      return {
+        ...p,
+        distance // 👈 new field added safely
+      };
+    });
 
-  /* -------------------------
-     5️⃣ RESPONSE (UNCHANGED)
-  ------------------------- */
   return res.json({
     success: true,
-    count: finalResults.length,
-    data: finalResults,
+    count: results.length,
+    data: results
   });
 });
+
 
 
 

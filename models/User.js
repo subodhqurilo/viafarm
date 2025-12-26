@@ -4,7 +4,7 @@ const { addressToCoords, coordsToAddress } = require('../utils/geocode');
 
 const userSchema = new mongoose.Schema(
   {
-    name: { type: String },
+    name: String,
 
     mobileNumber: {
       type: String,
@@ -15,9 +15,6 @@ const userSchema = new mongoose.Schema(
       sparse: true,
     },
 
-    // ✅ Expo Push Token (used by notifications)
-    expoPushToken: { type: String, default: null },
-
     email: {
       type: String,
       required: function () {
@@ -27,13 +24,7 @@ const userSchema = new mongoose.Schema(
       sparse: true,
     },
 
-    password: { type: String },
-
-    passwordResetToken: { type: String },
-    passwordResetExpires: { type: Date }, // only once
-
-    isApproved: { type: Boolean, default: false },
-    isVerified: { type: Boolean, default: false },
+    password: String,
 
     role: {
       type: String,
@@ -41,57 +32,40 @@ const userSchema = new mongoose.Schema(
       required: true,
     },
 
-    otp: { type: String },
-    otpExpiry: { type: Date },
-
-    profilePicture: { type: String },
-
-
+    profilePicture: String,
     language: { type: String, default: 'English' },
 
-    // Forgot password via OTP
-    passwordResetOtp: { type: String },
-    passwordResetOtpExpires: { type: Date },
-
-    address: {
-      street: String,
-      city: String,
-      state: String,
-      pinCode: String,
-      houseNumber: String,
-      block: String,
-      locality: String,
-      town: String,
-      district: String,
-      latitude: String,
-      longitude: String,
-    },
-
-    location: {
-      type: { type: String, enum: ['Point'], default: 'Point' },
-      coordinates: { type: [Number], default: [0, 0] }, // [lng, lat]
-    },
-
-    upiId: { type: String },
+    upiId: String,
 
     status: {
       type: String,
-      enum: ['Active', 'Inactive', 'UnBlocked', 'Blocked', 'Rejected', 'Deleted'],
+      enum: ['Active', 'Inactive', 'Blocked', 'Rejected', 'Deleted'],
       default: 'Active',
     },
 
+    // ✅ ONLY FOR VENDOR
     vendorDetails: {
       about: { type: String, default: '' },
-      location: String,
+      location: String,          // readable address
       contactNo: String,
       totalOrders: { type: Number, default: 0 },
-      farmImages: [{ type: String }],
-      deliveryRegion: { type: Number, default: 10 }, // km radius
+      farmImages: [String],
+      deliveryRegion: { type: Number, default: 10 }, // km
     },
 
-    rejectionReason: { type: String, default: null },
+    // ✅ ONLY FOR VENDOR (GeoJSON)
+    location: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point',
+      },
+      coordinates: {
+        type: [Number], // [lng, lat]
+        default: undefined,
+      },
+    },
 
-    // Notification preferences (LOCAL only, not Expo-based)
     notificationSettings: {
       newVendorRegistration: { type: Boolean, default: true },
       newBuyerRegistration: { type: Boolean, default: true },
@@ -104,51 +78,44 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// =======================================
-// ✅ Index for geolocation
-// =======================================
+// ✅ Geo index ONLY works when field exists
 userSchema.index({ location: '2dsphere' });
 
+
 // =======================================
-// ✅ Pre-save middleware
+// ✅ Pre-save middleware (VENDOR ONLY)
 // =======================================
 userSchema.pre('save', async function (next) {
   try {
-    // 🟢 Vendors require location
+    // 🔥 ONLY FOR VENDOR
     if (this.role === 'Vendor') {
-      const addr =
-        this.vendorDetails.location ||
-        `${this.address.houseNumber || ''} ${this.address.locality || ''} ${this.address.city || ''} ${this.address.state || ''} ${this.address.pinCode || ''}`.trim();
+      const addressText = this.vendorDetails?.location;
 
-      // 🔄 Address → Coordinates
-      if (addr && (!this.location?.coordinates || this.location.coordinates[0] === 0)) {
-        const coords = await addressToCoords(addr);
-        if (coords) this.location = { type: 'Point', coordinates: coords };
-      }
-
-      // 🔄 Coordinates → Address
-      else if (
-        this.location?.coordinates &&
-        (!this.vendorDetails.location || this.vendorDetails.location === '')
+      // Address → Coords
+      if (
+        addressText &&
+        (!this.location?.coordinates || this.location.coordinates.length !== 2)
       ) {
-        const [lng, lat] = this.location.coordinates;
-        const addressData = await coordsToAddress(lat, lng);
-
-        if (addressData && addressData.fullAddress) {
-          this.vendorDetails.location = addressData.fullAddress;
-
-          if (!this.address.city) this.address.city = addressData.city;
-          if (!this.address.state) this.address.state = addressData.state;
-          if (!this.address.pinCode) this.address.pinCode = addressData.pinCode;
+        const coords = await addressToCoords(addressText);
+        if (coords) {
+          this.location = { type: 'Point', coordinates: coords };
         }
       }
 
-      // Non-vendor cleanup
-    } else {
-      this.location = { type: 'Point', coordinates: [0, 0] };
+      // Coords → Address
+      else if (
+        this.location?.coordinates?.length === 2 &&
+        !this.vendorDetails.location
+      ) {
+        const [lng, lat] = this.location.coordinates;
+        const addr = await coordsToAddress(lat, lng);
+        if (addr?.fullAddress) {
+          this.vendorDetails.location = addr.fullAddress;
+        }
+      }
     }
 
-    // 🟢 Password hashing
+    // 🔐 Password hash
     if (this.isModified('password') && this.password && !this.password.startsWith('$2b$')) {
       const salt = await bcrypt.genSalt(10);
       this.password = await bcrypt.hash(this.password, salt);
@@ -161,20 +128,12 @@ userSchema.pre('save', async function (next) {
   }
 });
 
-// =======================================
-// ✅ Compare password
-// =======================================
-userSchema.methods.matchPassword = async function (enteredPassword) {
-  return await bcrypt.compare(enteredPassword, this.password);
-};
 
 // =======================================
-// ⚠️ Unique mobileNumber error for Admins
+// ✅ Password compare
 // =======================================
-userSchema.on('index', async function (error) {
-  if (error && error.code === 11000 && error.keyPattern?.mobileNumber) {
-    console.warn('Duplicate mobileNumber index error ignored for Admins.');
-  }
-});
+userSchema.methods.matchPassword = async function (enteredPassword) {
+  return bcrypt.compare(enteredPassword, this.password);
+};
 
 module.exports = mongoose.model('User', userSchema);
