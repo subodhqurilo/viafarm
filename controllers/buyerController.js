@@ -4774,7 +4774,7 @@ const updateBuyerProfile = asyncHandler(async (req, res) => {
 const updateBuyerLocation = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
-  const {
+  let {
     addressId,
     pinCode,
     houseNumber,
@@ -4787,17 +4787,27 @@ const updateBuyerLocation = asyncHandler(async (req, res) => {
     longitude,
   } = req.body;
 
-  // 1️⃣ addressId required
+  /** ✅ 1️⃣ Auto-pick address if addressId not provided */
   if (!addressId) {
-    return res.status(400).json({
-      success: false,
-      message: "Address ID is required",
-    });
+    let address = await Address.findOne({ user: userId, isDefault: true });
+
+    if (!address) {
+      address = await Address.findOne({ user: userId }).sort({ createdAt: -1 });
+    }
+
+    if (!address) {
+      return res.status(400).json({
+        success: false,
+        message: "No address found. Please add address first.",
+      });
+    }
+
+    addressId = address._id;
   }
 
   const update = {};
 
-  // 2️⃣ Address fields (partial update)
+  /** ✅ 2️⃣ Partial address update */
   if (pinCode) update.pinCode = pinCode;
   if (houseNumber) update.houseNumber = houseNumber;
   if (street) update.street = street;
@@ -4806,7 +4816,7 @@ const updateBuyerLocation = asyncHandler(async (req, res) => {
   if (district) update.district = district;
   if (state) update.state = state;
 
-  // 3️⃣ Location (allow 0 values also)
+  /** ✅ 3️⃣ Location update (0 allowed) */
   if (latitude !== undefined && longitude !== undefined) {
     const lat = parseFloat(latitude);
     const lng = parseFloat(longitude);
@@ -4820,11 +4830,11 @@ const updateBuyerLocation = asyncHandler(async (req, res) => {
 
     update.location = {
       type: "Point",
-      coordinates: [lng, lat], // GeoJSON order
+      coordinates: [lng, lat],
     };
   }
 
-  // 4️⃣ Prevent empty update
+  /** ❌ Prevent empty update */
   if (Object.keys(update).length === 0) {
     return res.status(400).json({
       success: false,
@@ -4832,7 +4842,7 @@ const updateBuyerLocation = asyncHandler(async (req, res) => {
     });
   }
 
-  // 5️⃣ Update address (ownership safe)
+  /** ✅ 4️⃣ Update address */
   const address = await Address.findOneAndUpdate(
     { _id: addressId, user: userId },
     { $set: update },
@@ -4846,14 +4856,14 @@ const updateBuyerLocation = asyncHandler(async (req, res) => {
     });
   }
 
-  // 6️⃣ 🔥 Sync buyer main location (VERY IMPORTANT for distance APIs)
+  /** 🔥 5️⃣ Sync buyer main location (for distance APIs) */
   if (update.location) {
     await User.findByIdAndUpdate(userId, {
       $set: { location: update.location },
     });
   }
 
-  // 7️⃣ Frontend-friendly formatted address
+  /** ✅ 6️⃣ Response */
   const formattedAddress = [
     address.houseNumber,
     address.street,
@@ -4874,18 +4884,10 @@ const updateBuyerLocation = asyncHandler(async (req, res) => {
       formattedAddress,
       isDefault: address.isDefault,
       coordinates: address.location?.coordinates || [],
-      details: {
-        houseNumber: address.houseNumber,
-        street: address.street,
-        locality: address.locality,
-        city: address.city,
-        district: address.district,
-        state: address.state,
-        pinCode: address.pinCode,
-      },
     },
   });
 });
+
 
 
 
