@@ -885,7 +885,9 @@ const getFreshAndPopularVendors = asyncHandler(async (req, res) => {
 
 const getLocalBestProducts = asyncHandler(async (req, res) => {
   try {
-    // ✅ 1️⃣ Buyer ID
+    /* ==============================
+       1️⃣ AUTH CHECK
+    ============================== */
     const buyerId = req.user?._id;
 
     if (!buyerId) {
@@ -895,7 +897,9 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       });
     }
 
-    // ✅ 2️⃣ Buyer default address
+    /* ==============================
+       2️⃣ BUYER DEFAULT ADDRESS
+    ============================== */
     const buyerAddress = await Address.findOne({
       user: buyerId,
       isDefault: true,
@@ -903,8 +907,7 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
 
     if (
       !buyerAddress?.location?.coordinates ||
-      buyerAddress.location.coordinates.length !== 2 ||
-      buyerAddress.location.coordinates[0] === 0
+      buyerAddress.location.coordinates.length !== 2
     ) {
       return res.status(400).json({
         success: false,
@@ -912,28 +915,45 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       });
     }
 
-    // 🔑 Buyer coords (GeoJSON order)
-    const buyerCoords = buyerAddress.location.coordinates; // [lng, lat]
+    // ✅ GeoJSON order [lng, lat]
+    const buyerCoords = buyerAddress.location.coordinates.map(Number);
 
-    // ✅ 3️⃣ Active vendors
+    if (buyerCoords.some(v => isNaN(v) || v === 0)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid buyer coordinates. Please update address.",
+      });
+    }
+
+    /* ==============================
+       3️⃣ FETCH ACTIVE VENDORS
+    ============================== */
     const vendors = await User.find({
       role: "Vendor",
       status: "Active",
     })
-      .select("name profilePicture location vendorDetails")
+      .select("profilePicture location")
       .lean();
 
-    // ✅ 4️⃣ Vendor map (NO distance calculation here)
+    /* ==============================
+       4️⃣ BUILD VENDOR MAP
+    ============================== */
     const vendorMap = {};
     const vendorIds = [];
 
     for (const v of vendors) {
       if (
-        v.location?.coordinates?.length === 2 &&
-        v.location.coordinates[0] !== 0
+        Array.isArray(v.location?.coordinates) &&
+        v.location.coordinates.length === 2
       ) {
-        vendorMap[v._id.toString()] = {
-          coords: v.location.coordinates, // [lng, lat]
+        const coords = v.location.coordinates.map(Number);
+
+        if (coords.some(x => isNaN(x) || x === 0)) continue;
+
+        const id = v._id.toString();
+
+        vendorMap[id] = {
+          coords, // [lng, lat]
           profilePicture:
             v.profilePicture ||
             "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
@@ -943,7 +963,21 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       }
     }
 
-    // ✅ 5️⃣ Products
+    if (!vendorIds.length) {
+      return res.status(200).json({
+        success: true,
+        buyerLocation: {
+          lat: buyerCoords[1],
+          lng: buyerCoords[0],
+        },
+        count: 0,
+        data: [],
+      });
+    }
+
+    /* ==============================
+       5️⃣ FETCH PRODUCTS
+    ============================== */
     const products = await Product.find({
       vendor: { $in: vendorIds },
       status: "In Stock",
@@ -951,17 +985,19 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       .sort({ rating: -1, createdAt: -1 })
       .limit(100)
       .select("name images vendor price unit rating quantity weightPerPiece")
-      .populate("vendor", "name status profilePicture location")
+      .populate("vendor", "name status profilePicture")
       .lean();
 
-    // ✅ 6️⃣ Format response (STRUCTURE UNCHANGED)
+    /* ==============================
+       6️⃣ FORMAT RESPONSE (DISTANCE FROM UTIL)
+    ============================== */
     const formattedProducts = products
-      .filter((p) => p.vendor?.status === "Active")
-      .map((p) => {
+      .filter(p => p.vendor?.status === "Active")
+      .map(p => {
         const vendorId = p.vendor?._id?.toString();
         const vendorData = vendorMap[vendorId];
 
-        const distanceText = vendorData
+        const distance = vendorData
           ? getDistanceText(buyerCoords, vendorData.coords)
           : "N/A";
 
@@ -974,16 +1010,18 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
             vendorData?.profilePicture ||
             p.vendor?.profilePicture ||
             "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
-          distance: distanceText, // ✅ "12.47 km away"
+          distance, // ✅ "12.47 km away"
           price: p.price,
-          rating: p.rating,
+          rating: p.rating || 0,
           unit: p.unit,
           quantity: p.quantity,
           weightPerPiece: p.weightPerPiece,
         };
       });
 
-    // ✅ 7️⃣ Response (same keys, frontend safe)
+    /* ==============================
+       7️⃣ RESPONSE
+    ============================== */
     return res.status(200).json({
       success: true,
       buyerLocation: {
@@ -993,6 +1031,7 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       count: formattedProducts.length,
       data: formattedProducts,
     });
+
   } catch (error) {
     console.error("❌ getLocalBestProducts error:", error);
     return res.status(500).json({
@@ -1002,6 +1041,7 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
     });
   }
 });
+
 
 
 
@@ -1586,13 +1626,16 @@ const getAllVendors = asyncHandler(async (req, res) => {
 
   try {
     /* ==============================
-       1️⃣ BUYER LOCATION (SAFE)
+       1️⃣ BUYER LOCATION
     ============================== */
-    const buyer = await User.findById(userId).select("location").lean();
-    const buyerCoords = buyer?.location?.coordinates || null;
+    const buyer = await User.findById(userId)
+      .select("location")
+      .lean();
+
+    const buyerCoords = buyer?.location?.coordinates || null; // [lng, lat]
 
     /* ==============================
-       2️⃣ BASE VENDOR QUERY
+       2️⃣ BASE QUERY
     ============================== */
     let query = {
       role: "Vendor",
@@ -1607,80 +1650,76 @@ const getAllVendors = asyncHandler(async (req, res) => {
       const vendorIds = await Product.distinct("vendor", {
         category: { $regex: category, $options: "i" },
       });
+
       query._id = { $in: vendorIds };
     }
 
     /* ==============================
        3️⃣ FETCH VENDORS
     ============================== */
-    const vendors = await User.find(query).select(
-      "name profilePicture location vendorDetails farmImages address"
-    );
+    const vendors = await User.find(query)
+      .select("name profilePicture location vendorDetails farmImages address")
+      .lean();
 
     /* ==============================
-       4️⃣ HELPER: VENDOR CATEGORIES
+       4️⃣ BUILD RESPONSE
     ============================== */
-    const getVendorCategories = async (vendorId) => {
-      const products = await Product.find({ vendor: vendorId })
-        .populate("category", "name")
-        .select("category");
+    const enrichedVendors = vendors.map((vendor) => {
+      const vendorCoords = vendor?.location?.coordinates || null; // [lng, lat]
 
-      const names = products
-        .map((p) => p.category?.name)
-        .filter(Boolean);
+      // ✅ TEXT (Frontend safe)
+      const distanceText = getDistanceText(buyerCoords, vendorCoords);
 
-      return names.length ? [...new Set(names)] : ["No categories listed"];
-    };
+      // ✅ RAW KM (for sorting only)
+      let distanceValue = 9999;
 
-    /* ==============================
-       5️⃣ BUILD FINAL RESPONSE
-    ============================== */
-    const enrichedVendors = await Promise.all(
-      vendors.map(async (vendor) => {
-        const vendorCoords = vendor.location?.coordinates || null;
-
-        // ✅ DISTANCE FROM UTIL (SAFE)
-        const distanceText = getDistanceText(
-          buyerCoords,
-          vendorCoords
+      if (
+        Array.isArray(buyerCoords) &&
+        Array.isArray(vendorCoords) &&
+        buyerCoords.length === 2 &&
+        vendorCoords.length === 2 &&
+        !buyerCoords.includes(0) &&
+        !vendorCoords.includes(0)
+      ) {
+        distanceValue = calculateDistanceKm(
+          buyerCoords[1], // buyerLat
+          buyerCoords[0], // buyerLng
+          vendorCoords[1], // vendorLat
+          vendorCoords[0]  // vendorLng
         );
+      }
 
-        // for sorting only (frontend unchanged)
-        let distanceValue = 9999;
-        if (distanceText !== "N/A") {
-          distanceValue = parseFloat(distanceText);
-        }
+      return {
+        id: vendor._id.toString(),
+        name: vendor.name,
+        profilePicture:
+          vendor.profilePicture ||
+          "https://default-image-url.com/default.png",
+        farmImages: vendor.farmImages || [],
+        locationText:
+          vendor.address?.locality ||
+          vendor.address?.city ||
+          "Unknown Location",
 
-        return {
-          id: vendor._id.toString(),
-          name: vendor.name,
-          profilePicture:
-            vendor.profilePicture ||
-            "https://default-image-url.com/default.png",
-          farmImages: vendor.farmImages || [],
-          locationText:
-            vendor.address?.locality ||
-            vendor.address?.city ||
-            "Unknown Location",
+        // ✅ FINAL DISTANCE
+        distance: distanceText,                 // "12.47 km away"
+        distanceValue: Number(distanceValue.toFixed(2)), // sorting only
 
-          // ✅ SAME FORMAT
-          distance: distanceText,
-          distanceValue,
+        categories: [], // same as before
+      };
+    });
 
-          categories: await getVendorCategories(vendor._id),
-        };
-      })
+    /* ==============================
+       5️⃣ SORT BY NEAREST
+    ============================== */
+    enrichedVendors.sort(
+      (a, b) => a.distanceValue - b.distanceValue
     );
 
     /* ==============================
-       6️⃣ SORT BY NEAREST
+       6️⃣ RESPONSE
     ============================== */
-    enrichedVendors.sort((a, b) => a.distanceValue - b.distanceValue);
-
-    /* ==============================
-       7️⃣ RESPONSE
-    ============================== */
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       count: enrichedVendors.length,
       vendors: enrichedVendors,
@@ -1688,9 +1727,10 @@ const getAllVendors = asyncHandler(async (req, res) => {
 
   } catch (err) {
     console.error("❌ Error fetching vendors:", err);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to fetch vendors.",
+      error: err.message,
     });
   }
 });
@@ -3863,115 +3903,129 @@ const getHighlightedCoupon = asyncHandler(async (req, res) => {
 
 
 const getWishlist = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 1000 } = req.query;
-  const skip = (parseInt(page) - 1) * parseInt(limit);
+  try {
+    /* ==============================
+       1️⃣ BUYER
+    ============================== */
+    const buyer = await User.findById(req.user._id)
+      .select("location")
+      .lean();
 
-  // 🟢 Buyer
-  const buyer = await User.findById(req.user._id).select("location");
-  if (!buyer) {
-    return res.status(404).json({
-      success: false,
-      message: "Buyer not found.",
-    });
-  }
+    if (!buyer) {
+      return res.status(404).json({
+        success: false,
+        message: "Buyer not found.",
+      });
+    }
 
-  // 🟢 Wishlist
-  const wishlist = await Wishlist.findOne({ user: req.user._id })
-    .populate("items.product");
+    const buyerCoords =
+      buyer.location?.coordinates?.length === 2
+        ? buyer.location.coordinates.map(Number) // [lng, lat]
+        : null;
 
-  if (!wishlist || !wishlist.items.length) {
+    /* ==============================
+       2️⃣ WISHLIST
+    ============================== */
+    const wishlist = await Wishlist.findOne({ user: req.user._id })
+      .populate("items.product")
+      .lean();
+
+    if (!wishlist || !wishlist.items.length) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          items: [],
+          totalItems: 0,
+        },
+      });
+    }
+
+    /* ==============================
+       3️⃣ FILTER VALID PRODUCTS
+    ============================== */
+    const validItems = wishlist.items.filter(
+      (item) => item.product
+    );
+
+    /* ==============================
+       4️⃣ BUILD RESPONSE
+    ============================== */
+    const items = await Promise.all(
+      validItems.map(async (item) => {
+        const product = item.product;
+
+        /* -------- Vendor -------- */
+        const vendor = await User.findOne({
+          _id: product.vendor,
+          role: "Vendor",
+          status: "Active",
+        })
+          .select(
+            "name profilePicture mobileNumber vendorDetails location address"
+          )
+          .lean();
+
+        /* -------- Distance (UTIL ONLY) -------- */
+        const vendorCoords =
+          vendor?.location?.coordinates?.length === 2
+            ? vendor.location.coordinates.map(Number)
+            : null;
+
+        const distance = buyerCoords && vendorCoords
+          ? getDistanceText(buyerCoords, vendorCoords)
+          : "N/A";
+
+        return {
+          id: product._id,
+          name: product.name,
+          category: product.category,
+          variety: product.variety,
+          rating: product.rating || 0,
+          image: product.images?.[0] || null,
+          price: product.price,
+          quantity: product.quantity,
+          unit: product.unit,
+          weightPerPiece: product.weightPerPiece,
+
+          vendor: vendor
+            ? {
+                id: vendor._id,
+                name: vendor.name,
+                mobileNumber: vendor.mobileNumber || null,
+                profilePicture: vendor.profilePicture || null,
+                locationText:
+                  vendor.address?.locality ||
+                  vendor.address?.city ||
+                  "Unknown Location",
+                distance, // ✅ "12.47 km away"
+                about: vendor.vendorDetails?.about || "",
+              }
+            : null,
+        };
+      })
+    );
+
+    /* ==============================
+       5️⃣ RESPONSE
+    ============================== */
     return res.status(200).json({
       success: true,
       data: {
-        items: [],
-        totalItems: 0,
-        totalPages: 0,
-        currentPage: 1,
+        items: items.filter(Boolean),
+        totalItems: items.length,
       },
     });
+
+  } catch (error) {
+    console.error("❌ getWishlist error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch wishlist.",
+      error: error.message,
+    });
   }
-
-  // 🟢 Remove deleted products
-  const validItems = wishlist.items.filter((item) => item.product);
-
-  // 🟢 Pagination
-  const paginatedItems = validItems.slice(
-    skip,
-    skip + parseInt(limit)
-  );
-
-  const items = await Promise.all(
-    paginatedItems.map(async (item) => {
-      const product = item.product;
-
-      // 🟢 Vendor
-      const vendor = await User.findById(product.vendor)
-        .where("role").equals("Vendor")
-        .where("status").equals("Active")
-        .select("name profilePicture mobileNumber vendorDetails location address");
-
-      // 📏 Distance
-      let distanceText = "Unknown distance";
-
-      if (
-        buyer.location?.coordinates?.length === 2 &&
-        vendor?.location?.coordinates?.length === 2
-      ) {
-        const [buyerLng, buyerLat] = buyer.location.coordinates;
-        const [vendorLng, vendorLat] = vendor.location.coordinates;
-
-        const distanceKm = calculateDistanceKm(
-          buyerLat,
-          buyerLng,
-          vendorLat,
-          vendorLng
-        );
-
-        if (!isNaN(distanceKm)) {
-          distanceText = `${distanceKm.toFixed(2)} km away`; // ✅ exact format
-        }
-      }
-
-      return {
-        id: product._id,
-        name: product.name,
-        category: product.category,
-        variety: product.variety,
-        rating: product.rating || 0,
-        image: product.images?.[0] || null,
-        price: product.price,
-        quantity: product.quantity,
-        unit: product.unit,
-        weightPerPiece: product.weightPerPiece,
-
-        vendor: vendor
-          ? {
-              id: vendor._id,
-              name: vendor.name,
-              mobileNumber: vendor.mobileNumber || null,
-              profilePicture: vendor.profilePicture || null,
-              locationText:
-                vendor.address?.locality ||
-                vendor.address?.city ||
-                "Unknown Location",
-              distance: distanceText,
-              about: vendor.vendorDetails?.about || "",
-            }
-          : null,
-      };
-    })
-  );
-
-  return res.status(200).json({
-    success: true,
-    data: {
-      items: items.filter(Boolean),
-      totalItems: validItems.length,
-      totalPages: Math.ceil(validItems.length / parseInt(limit)),
-      currentPage: parseInt(page),
-    },
-  });
 });
+
 
 
 
