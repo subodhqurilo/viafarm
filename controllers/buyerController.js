@@ -5953,21 +5953,41 @@ const searchProductsByName = asyncHandler(async (req, res) => {
   const rawQ = req.query.q || "";
   const q = decodeURIComponent(rawQ).trim().toLowerCase();
 
-  console.log("SEARCH RECEIVED:", q);
-
   if (!q) {
     return res.json({ success: true, count: 0, data: [] });
   }
 
-  // ❤️ 1) GET ALL PRODUCTS (NO FILTER)
+  /* -------------------------
+     1️⃣ Buyer location (optional)
+  ------------------------- */
+  let buyerCoords = null;
+
+  if (req.user?._id) {
+    const buyerAddress = await Address.findOne({
+      user: req.user._id,
+      isDefault: true,
+      "location.coordinates.1": { $exists: true }
+    }).lean();
+
+    if (buyerAddress?.location?.coordinates?.length === 2) {
+      buyerCoords = {
+        lon: buyerAddress.location.coordinates[0],
+        lat: buyerAddress.location.coordinates[1],
+      };
+    }
+  }
+
+  /* -------------------------
+     2️⃣ Fetch all products
+  ------------------------- */
   const allProducts = await Product.find()
-    .populate("vendor", "name profilePicture")
+    .populate("vendor", "name profilePicture address location")
     .populate("category", "name image")
     .lean();
 
-  console.log("TOTAL PRODUCTS:", allProducts.length);
-
-  // ❤️ 2) JS-LEVEL FILTERING (CANNOT FAIL)
+  /* -------------------------
+     3️⃣ JS level filtering
+  ------------------------- */
   const results = allProducts.filter((p) => {
     return (
       (p.name && p.name.toLowerCase().includes(q)) ||
@@ -5977,17 +5997,44 @@ const searchProductsByName = asyncHandler(async (req, res) => {
       (p.category?.name && p.category.name.toLowerCase().includes(q))
     );
   });
-console.log("🔥 TOTAL PRODUCTS FROM DB:", allProducts.length);
-console.log("🔥 FIRST PRODUCT SAMPLE:", allProducts[0]);
 
-  console.log("MATCHED:", results.length);
+  /* -------------------------
+     4️⃣ ADD DISTANCE (NO RESPONSE CHANGE)
+  ------------------------- */
+  const finalResults = results.map((p) => {
+    let distanceKm = null;
 
+    if (
+      buyerCoords &&
+      p.vendor?.address?.latitude &&
+      p.vendor?.address?.longitude
+    ) {
+      const dist = calculateDistanceKm(
+        buyerCoords.lat,
+        buyerCoords.lon,
+        parseFloat(p.vendor.address.latitude),
+        parseFloat(p.vendor.address.longitude)
+      );
+
+      distanceKm = dist.toFixed(2) + " km"; // ✅ REQUIRED FORMAT
+    }
+
+    return {
+      ...p,
+      ...(distanceKm && { distanceKm }) // add only if calculated
+    };
+  });
+
+  /* -------------------------
+     5️⃣ RESPONSE (UNCHANGED)
+  ------------------------- */
   return res.json({
     success: true,
-    count: results.length,
-    data: results
+    count: finalResults.length,
+    data: finalResults
   });
 });
+
 
 
 
