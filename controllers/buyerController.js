@@ -5619,10 +5619,34 @@ const deleteAddress = asyncHandler(async (req, res) => {
 
 
 const setDefaultAddress = asyncHandler(async (req, res) => {
-    await Address.updateMany({ user: req.user._id }, { isDefault: false });
-    const address = await Address.findByIdAndUpdate(req.params.id, { isDefault: true }, { new: true });
-    if (!address) return res.status(404).json({ success: false, message: 'Address not found' });
-    res.json({ success: true, message: 'Default address set', data: address });
+  const userId = req.user._id;
+  const addressId = req.params.id;
+
+  const address = await Address.findOne({
+    _id: addressId,
+    user: userId,
+  });
+
+  if (!address) {
+    return res.status(404).json({
+      success: false,
+      message: "Address not found",
+    });
+  }
+
+  await Address.updateMany(
+    { user: userId },
+    { isDefault: false }
+  );
+
+  address.isDefault = true;
+  await address.save();
+
+  res.json({
+    success: true,
+    message: "Default address set",
+    data: address,
+  });
 });
 
 
