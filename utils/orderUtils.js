@@ -60,6 +60,41 @@ async function addressToCoords(addr) {
   }
 }
 
+
+function parseWeightToKg(weightPerPiece) {
+  if (!weightPerPiece) return 0.2; // default 200g
+
+  // already number (just in case)
+  if (typeof weightPerPiece === "number") {
+    return weightPerPiece > 0 ? weightPerPiece : 0.2;
+  }
+
+  if (typeof weightPerPiece !== "string") return 0.2;
+
+  const val = weightPerPiece.toLowerCase().trim();
+
+  let kg = 0.2;
+
+  if (val.endsWith("kg")) {
+    kg = parseFloat(val.replace("kg", ""));
+  } 
+  else if (val.endsWith("g")) {
+    kg = parseFloat(val.replace("g", "")) / 1000;
+  } 
+  else if (val.endsWith("ml")) {
+    // 1ml ≈ 1g (food/liquid assumption)
+    kg = parseFloat(val.replace("ml", "")) / 1000;
+  } 
+  else if (!isNaN(val)) {
+    kg = parseFloat(val);
+  }
+
+  if (isNaN(kg) || kg <= 0) kg = 0.2;
+
+  return kg;
+}
+
+module.exports = { parseWeightToKg };
 /** -----------------------------------------
  *  SPEED POST RATE TABLE
  * ----------------------------------------- */
@@ -102,75 +137,32 @@ function getSpeedPostRate(weightGrams, distanceKm) {
 /** -----------------------------------------
  *  DELIVERY CHARGE (Corrected)
  * ----------------------------------------- */
-async function getDeliveryCharge(
-  buyerId,
-  vendorId,
-  totalWeightKg = 1,
-  selectedAddressId = null
-) {
+async function getDeliveryCharge(buyerId, vendorId, totalWeightKg = 1, addressId = null) {
   try {
-    // Buyer address
-    let buyerAddress =
-      (selectedAddressId &&
-        (await Address.findById(selectedAddressId).lean())) ||
-      (await Address.findOne({ user: buyerId, isDefault: true }).lean());
+    const buyerAddress =
+      (addressId && await Address.findById(addressId).lean()) ||
+      await Address.findOne({ user: buyerId, isDefault: true }).lean();
 
     if (!buyerAddress) return 50;
 
-    /** Fix buyer coordinates */
-    if (
-      !buyerAddress.location ||
-      !buyerAddress.location.coordinates ||
-      buyerAddress.location.coordinates.length !== 2
-    ) {
-      const coords = await addressToCoords({
-        houseNumber: buyerAddress.houseNumber,
-        street: buyerAddress.street || "",
-        locality: buyerAddress.locality,
-        city: buyerAddress.city,
-        district: buyerAddress.district,
-        state: buyerAddress.state,
-        pinCode: buyerAddress.pinCode,
-      });
-
-      buyerAddress.location = {
-        type: "Point",
-        coordinates: coords || [77.0, 28.5],
-      };
+    let buyerCoords = buyerAddress.location?.coordinates;
+    if (!Array.isArray(buyerCoords)) {
+      buyerCoords = await addressToCoords(buyerAddress) || [77, 28.5];
     }
 
-    /** Vendor address */
     const vendor = await User.findById(vendorId).lean();
     if (!vendor) return 50;
 
-    let vCoords =
-      vendor.address?.latitude && vendor.address?.longitude
-        ? [
-            parseFloat(vendor.address.longitude),
-            parseFloat(vendor.address.latitude),
-          ]
-        : await addressToCoords({
-            houseNumber: vendor.address?.houseNumber,
-            street: vendor.address?.street || "",
-            locality: vendor.address?.locality,
-            city: vendor.address?.city,
-            district: vendor.address?.district,
-            state: vendor.address?.state,
-            pinCode: vendor.address?.pinCode,
-          });
+    let vendorCoords = vendor.location?.coordinates;
+    if (!Array.isArray(vendorCoords)) {
+      vendorCoords = await addressToCoords(vendor.address || {}) || [77, 28.6];
+    }
 
-    vendor.location = {
-      type: "Point",
-      coordinates: vCoords || [77.0, 28.6],
-    };
+    const distanceKm = getDistanceKm(
+      buyerCoords[1], buyerCoords[0],
+      vendorCoords[1], vendorCoords[0]
+    );
 
-    /** Calculate distance */
-    const [bLng, bLat] = buyerAddress.location.coordinates;
-    const [vLng, vLat] = vendor.location.coordinates;
-
-    const distanceKm = getDistanceKm(bLat, bLng, vLat, vLng);
-
-    /** Local delivery */
     const region = vendor.vendorDetails?.deliveryRegion || 5;
 
     if (distanceKm <= region) {
@@ -178,27 +170,33 @@ async function getDeliveryCharge(
       return Math.round(50 + (distanceKm - 2) * 10);
     }
 
-    /** Speed Post */
-    const grams = totalWeightKg * 1000;
-    const sp = getSpeedPostRate(grams, distanceKm);
-    return sp.rate || 200;
-  } catch (err) {
-    console.log("Delivery charge error:", err);
+    const grams = Math.max(totalWeightKg, 0.2) * 1000;
+    return getSpeedPostRate(grams, distanceKm).rate;
+
+  } catch {
     return 50;
   }
 }
 
+
 /** -----------------------------------------
  *  ORDER SUMMARY
  * ----------------------------------------- */
-async function calculateOrderSummary(cartData, couponOrCode, deliveryType = "Delivery") {
+async function calculateOrderSummary(
+  cartData,
+  couponOrCode,
+  deliveryType = "Delivery"
+) {
   const items = cartData.items || [];
   const userId = cartData.user || cartData.userId;
   const addressId = cartData.addressId || null;
 
   let totalMRP = 0;
-  let weight = 0;
+  let totalWeightKg = 0;
 
+  /* ===============================
+     PREPARE ITEMS + WEIGHT
+  =============================== */
   const prepared = items.map((i) => {
     const price = i.product.price;
     const qty = i.quantity;
@@ -206,7 +204,9 @@ async function calculateOrderSummary(cartData, couponOrCode, deliveryType = "Del
     const itemMRP = price * qty;
     totalMRP += itemMRP;
 
-    weight += (i.product.weightPerPiece || 0.2) * qty;
+    // ✅ SAFE WEIGHT CALCULATION (STRING → KG)
+    const perPieceKg = parseWeightToKg(i.product.weightPerPiece);
+    totalWeightKg += perPieceKg * qty;
 
     return {
       raw: i,
@@ -225,9 +225,9 @@ async function calculateOrderSummary(cartData, couponOrCode, deliveryType = "Del
     total: i.itemMRP
   }));
 
-  /** -----------------------------
-   *  COUPON LOGIC START
-   * ----------------------------- */
+  /* ===============================
+     COUPON LOGIC
+  =============================== */
   let totalDiscount = 0;
 
   if (couponOrCode) {
@@ -246,23 +246,20 @@ async function calculateOrderSummary(cartData, couponOrCode, deliveryType = "Del
 
       let applicableItems = [];
 
-      // ⭐ ADMIN coupon = APPLY on ALL ITEMS
-      if (isAdminCoupon) {
-        applicableItems = prepared;
-      }
+      if (isAdminCoupon) applicableItems = prepared;
 
-      // ⭐ VENDOR coupon = APPLY only for that vendor
       if (isVendorCoupon) {
         applicableItems = prepared.filter(
           (i) => i.vendorId.toString() === coupon.createdBy._id.toString()
         );
       }
 
-      // Minimum order check
-      const applicableMRP = applicableItems.reduce((a, b) => a + b.itemMRP, 0);
+      const applicableMRP = applicableItems.reduce(
+        (sum, i) => sum + i.itemMRP,
+        0
+      );
+
       if (applicableMRP >= coupon.minimumOrder) {
-        
-        // discount calculate
         let discount = 0;
 
         if (coupon.discount.type === "Percentage") {
@@ -273,30 +270,38 @@ async function calculateOrderSummary(cartData, couponOrCode, deliveryType = "Del
 
         totalDiscount = discount;
 
-        // spread discount to items
         applicableItems.forEach((appItem) => {
           updatedItems = updatedItems.map((u) => {
-            if (u.product._id.toString() === appItem.raw.product._id.toString()) {
+            if (
+              u.product._id.toString() ===
+              appItem.raw.product._id.toString()
+            ) {
               return {
                 ...u,
-                discount: (u.discount || 0) + totalDiscount,
-                total: u.itemMRP - totalDiscount
+                discount: (u.discount || 0) + discount,
+                total: u.itemMRP - discount
               };
             }
             return u;
           });
         });
-
       }
     }
   }
 
-  /** Delivery charge */
+  /* ===============================
+     DELIVERY CHARGE
+  =============================== */
   const vendorId = prepared[0]?.vendorId;
 
   const deliveryCharge =
     deliveryType === "Delivery"
-      ? await getDeliveryCharge(userId, vendorId, weight, addressId)
+      ? await getDeliveryCharge(
+          userId,
+          vendorId,
+          totalWeightKg, // ✅ FIXED WEIGHT
+          addressId
+        )
       : 0;
 
   const finalAmount = totalMRP - totalDiscount + deliveryCharge;
@@ -313,4 +318,4 @@ async function calculateOrderSummary(cartData, couponOrCode, deliveryType = "Del
 }
 
 
-module.exports = { calculateOrderSummary, getDeliveryCharge };
+module.exports = { calculateOrderSummary, getDeliveryCharge ,parseWeightToKg };

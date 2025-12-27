@@ -29,6 +29,7 @@ const Category = require("../models/Category");
 const Product = require("../models/Product");   // ✅ Product also imported
 const { calculateDistanceKm } = require("../utils/distance");
 const { getDistanceText } = require("../utils/distance");
+const { parseWeightToKg } = require("../utils/orderUtils"); 
 
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
@@ -411,7 +412,7 @@ const getDeliveryChargeController = asyncHandler(async (req, res) => {
   const vendorId = cart.selectedVendors[0];
 
   /* ===============================
-     2️⃣ BUYER ADDRESS (default → latest)
+     2️⃣ BUYER ADDRESS
   =============================== */
   const buyerAddress =
     (await Address.findOne({ user: buyerId, isDefault: true }).lean()) ||
@@ -424,7 +425,6 @@ const getDeliveryChargeController = asyncHandler(async (req, res) => {
     });
   }
 
-  // ✅ buyer location must exist
   if (!buyerAddress.location?.coordinates?.length) {
     return res.status(400).json({
       success: false,
@@ -433,20 +433,22 @@ const getDeliveryChargeController = asyncHandler(async (req, res) => {
   }
 
   /* ===============================
-     3️⃣ CALCULATE TOTAL WEIGHT (kg)
+     3️⃣ TOTAL WEIGHT (UPDATED LOGIC)
+     ⚠️ RESPONSE SAME
   =============================== */
   let totalWeightKg = 0;
 
   cart.items.forEach((item) => {
-    const weightPerPiece = Number(item.product?.weightPerPiece) || 0.2; // default 200g
+    const perPieceKg = parseWeightToKg(item.product?.weightPerPiece);
     const qty = Number(item.quantity) || 1;
-    totalWeightKg += weightPerPiece * qty;
+
+    totalWeightKg += perPieceKg * qty;
   });
 
   totalWeightKg = Number(totalWeightKg.toFixed(2));
 
   /* ===============================
-     4️⃣ FETCH VENDOR + LOCATION
+     4️⃣ FETCH VENDOR
   =============================== */
   const vendor = await User.findById(vendorId)
     .select("name location vendorDetails")
@@ -467,7 +469,7 @@ const getDeliveryChargeController = asyncHandler(async (req, res) => {
   }
 
   /* ===============================
-     5️⃣ DELIVERY CHARGE CALCULATION
+     5️⃣ DELIVERY CHARGE
   =============================== */
   const deliveryCharge = await getDeliveryCharge(
     buyerId,
@@ -477,7 +479,7 @@ const getDeliveryChargeController = asyncHandler(async (req, res) => {
   );
 
   /* ===============================
-     6️⃣ FINAL RESPONSE (UNCHANGED)
+     6️⃣ FINAL RESPONSE (❌ DO NOT CHANGE)
   =============================== */
   return res.json({
     success: true,
@@ -493,6 +495,7 @@ const getDeliveryChargeController = asyncHandler(async (req, res) => {
     },
   });
 });
+
 
 
 
@@ -886,47 +889,53 @@ const getFreshAndPopularVendors = asyncHandler(async (req, res) => {
 const getLocalBestProducts = asyncHandler(async (req, res) => {
   try {
     /* ==============================
-       1️⃣ AUTH CHECK
+       1️⃣ AUTH
     ============================== */
     const buyerId = req.user?._id;
-
     if (!buyerId) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized: Buyer not logged in.",
+        message: "Unauthorized",
       });
     }
 
     /* ==============================
-       2️⃣ BUYER DEFAULT ADDRESS
+       2️⃣ BUYER LOCATION (USER → ADDRESS FALLBACK)
     ============================== */
-    const buyerAddress = await Address.findOne({
-      user: buyerId,
-      isDefault: true,
-    }).lean();
+    const buyerUser = await User.findById(buyerId)
+      .select("location")
+      .lean();
+
+    let buyerCoords = buyerUser?.location?.coordinates;
 
     if (
-      !buyerAddress?.location?.coordinates ||
-      buyerAddress.location.coordinates.length !== 2
+      !Array.isArray(buyerCoords) ||
+      buyerCoords.length !== 2 ||
+      buyerCoords.includes(0)
+    ) {
+      const buyerAddress = await Address.findOne({
+        user: buyerId,
+        isDefault: true,
+      }).lean();
+
+      buyerCoords = buyerAddress?.location?.coordinates;
+    }
+
+    if (
+      !Array.isArray(buyerCoords) ||
+      buyerCoords.length !== 2 ||
+      buyerCoords.includes(0)
     ) {
       return res.status(400).json({
         success: false,
-        message: "Buyer location not found. Please set a default address.",
+        message: "Buyer location not found. Please update address.",
       });
     }
 
-    // ✅ GeoJSON order [lng, lat]
-    const buyerCoords = buyerAddress.location.coordinates.map(Number);
-
-    if (buyerCoords.some(v => isNaN(v) || v === 0)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid buyer coordinates. Please update address.",
-      });
-    }
+    buyerCoords = buyerCoords.map(Number); // [lng, lat]
 
     /* ==============================
-       3️⃣ FETCH ACTIVE VENDORS
+       3️⃣ ACTIVE VENDORS
     ============================== */
     const vendors = await User.find({
       role: "Vendor",
@@ -936,29 +945,25 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       .lean();
 
     /* ==============================
-       4️⃣ BUILD VENDOR MAP
+       4️⃣ VENDOR MAP
     ============================== */
     const vendorMap = {};
     const vendorIds = [];
 
     for (const v of vendors) {
+      const coords = v?.location?.coordinates;
+
       if (
-        Array.isArray(v.location?.coordinates) &&
-        v.location.coordinates.length === 2
+        Array.isArray(coords) &&
+        coords.length === 2 &&
+        !coords.includes(0)
       ) {
-        const coords = v.location.coordinates.map(Number);
-
-        if (coords.some(x => isNaN(x) || x === 0)) continue;
-
-        const id = v._id.toString();
-
-        vendorMap[id] = {
-          coords, // [lng, lat]
+        vendorMap[v._id.toString()] = {
+          coords: coords.map(Number), // [lng, lat]
           profilePicture:
             v.profilePicture ||
             "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
         };
-
         vendorIds.push(v._id);
       }
     }
@@ -966,17 +971,13 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
     if (!vendorIds.length) {
       return res.status(200).json({
         success: true,
-        buyerLocation: {
-          lat: buyerCoords[1],
-          lng: buyerCoords[0],
-        },
         count: 0,
         data: [],
       });
     }
 
     /* ==============================
-       5️⃣ FETCH PRODUCTS
+       5️⃣ PRODUCTS
     ============================== */
     const products = await Product.find({
       vendor: { $in: vendorIds },
@@ -989,7 +990,7 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
       .lean();
 
     /* ==============================
-       6️⃣ FORMAT RESPONSE (DISTANCE FROM UTIL)
+       6️⃣ FORMAT RESPONSE
     ============================== */
     const formattedProducts = products
       .filter(p => p.vendor?.status === "Active")
@@ -997,9 +998,21 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
         const vendorId = p.vendor?._id?.toString();
         const vendorData = vendorMap[vendorId];
 
-        const distance = vendorData
+        // ✅ TEXT for frontend
+        const distanceText = vendorData
           ? getDistanceText(buyerCoords, vendorData.coords)
           : "N/A";
+
+        // ✅ RAW KM (optional future use)
+        let distanceKm = null;
+        if (vendorData) {
+          distanceKm = calculateDistanceKm(
+            buyerCoords[1], // buyerLat
+            buyerCoords[0], // buyerLng
+            vendorData.coords[1], // vendorLat
+            vendorData.coords[0]  // vendorLng
+          );
+        }
 
         return {
           _id: p._id,
@@ -1010,7 +1023,10 @@ const getLocalBestProducts = asyncHandler(async (req, res) => {
             vendorData?.profilePicture ||
             p.vendor?.profilePicture ||
             "https://res.cloudinary.com/demo/image/upload/v1679879879/default_vendor.png",
-          distance, // ✅ "12.47 km away"
+
+          // ✅ DISTANCE (CORRECT)
+          distance: distanceText,
+
           price: p.price,
           rating: p.rating || 0,
           unit: p.unit,
@@ -1650,7 +1666,6 @@ const getAllVendors = asyncHandler(async (req, res) => {
       const vendorIds = await Product.distinct("vendor", {
         category: { $regex: category, $options: "i" },
       });
-
       query._id = { $in: vendorIds };
     }
 
@@ -1661,18 +1676,43 @@ const getAllVendors = asyncHandler(async (req, res) => {
       .select("name profilePicture location vendorDetails farmImages address")
       .lean();
 
+    const vendorIds = vendors.map(v => v._id);
+
     /* ==============================
-       4️⃣ BUILD RESPONSE
+       4️⃣ FETCH CATEGORIES (ONCE)
+    ============================== */
+    const products = await Product.find({
+      vendor: { $in: vendorIds },
+      status: "In Stock",
+    })
+      .populate("category", "name")
+      .select("vendor category")
+      .lean();
+
+    // vendorId -> Set(categories)
+    const vendorCategoryMap = {};
+
+    for (const p of products) {
+      const vId = p.vendor.toString();
+      if (!vendorCategoryMap[vId]) {
+        vendorCategoryMap[vId] = new Set();
+      }
+      if (p.category?.name) {
+        vendorCategoryMap[vId].add(p.category.name);
+      }
+    }
+
+    /* ==============================
+       5️⃣ BUILD RESPONSE
     ============================== */
     const enrichedVendors = vendors.map((vendor) => {
-      const vendorCoords = vendor?.location?.coordinates || null; // [lng, lat]
+      const vendorCoords = vendor?.location?.coordinates || null;
 
-      // ✅ TEXT (Frontend safe)
+      // ✅ distance text
       const distanceText = getDistanceText(buyerCoords, vendorCoords);
 
-      // ✅ RAW KM (for sorting only)
+      // ✅ raw distance (sorting)
       let distanceValue = 9999;
-
       if (
         Array.isArray(buyerCoords) &&
         Array.isArray(vendorCoords) &&
@@ -1682,10 +1722,10 @@ const getAllVendors = asyncHandler(async (req, res) => {
         !vendorCoords.includes(0)
       ) {
         distanceValue = calculateDistanceKm(
-          buyerCoords[1], // buyerLat
-          buyerCoords[0], // buyerLng
-          vendorCoords[1], // vendorLat
-          vendorCoords[0]  // vendorLng
+          buyerCoords[1],
+          buyerCoords[0],
+          vendorCoords[1],
+          vendorCoords[0]
         );
       }
 
@@ -1701,23 +1741,24 @@ const getAllVendors = asyncHandler(async (req, res) => {
           vendor.address?.city ||
           "Unknown Location",
 
-        // ✅ FINAL DISTANCE
-        distance: distanceText,                 // "12.47 km away"
-        distanceValue: Number(distanceValue.toFixed(2)), // sorting only
+        // ✅ DISTANCE
+        distance: distanceText,
+        distanceValue: Number(distanceValue.toFixed(2)),
 
-        categories: [], // same as before
+        // ✅ FIXED: REAL CATEGORIES
+        categories: vendorCategoryMap[vendor._id.toString()]
+          ? Array.from(vendorCategoryMap[vendor._id.toString()])
+          : ["No categories listed"],
       };
     });
 
     /* ==============================
-       5️⃣ SORT BY NEAREST
+       6️⃣ SORT
     ============================== */
-    enrichedVendors.sort(
-      (a, b) => a.distanceValue - b.distanceValue
-    );
+    enrichedVendors.sort((a, b) => a.distanceValue - b.distanceValue);
 
     /* ==============================
-       6️⃣ RESPONSE
+       7️⃣ RESPONSE
     ============================== */
     return res.status(200).json({
       success: true,
@@ -2212,7 +2253,9 @@ const placeOrder = asyncHandler(async (req, res) => {
     const userId = req.user._id;
     const { comments, paymentMethod } = req.body;
 
-    // 1️⃣ VALIDATE PAYMENT
+    /* ===============================
+       1️⃣ VALIDATE PAYMENT
+    =============================== */
     if (paymentMethod !== "UPI") {
       return res.status(400).json({
         success: false,
@@ -2223,7 +2266,9 @@ const placeOrder = asyncHandler(async (req, res) => {
     const orderStatus = "In-process";
     const isPaid = false;
 
-    // 2️⃣ CHECK DELIVERY PREF
+    /* ===============================
+       2️⃣ DELIVERY PREFERENCE
+    =============================== */
     const pref = await DeliveryPreference.findOne({ user: userId }).lean();
     if (!pref || !pref.addressId) {
       return res.status(400).json({
@@ -2232,7 +2277,9 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // 3️⃣ ADDRESS FETCH
+    /* ===============================
+       3️⃣ ADDRESS
+    =============================== */
     const shippingAddress = await Address.findById(pref.addressId).lean();
     if (!shippingAddress) {
       return res.status(404).json({
@@ -2241,7 +2288,9 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // 4️⃣ FETCH CART
+    /* ===============================
+       4️⃣ CART
+    =============================== */
     const cart = await Cart.findOne({ user: userId })
       .populate({
         path: "items.product",
@@ -2256,18 +2305,19 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ⭐ AUTO SELECT VENDOR (IF CART HAS ONLY ONE VENDOR)
+    /* ===============================
+       5️⃣ AUTO SELECT VENDOR
+    =============================== */
     const uniqueVendors = [
-      ...new Set(cart.items.map((i) => i.product?.vendor?.toString())),
+      ...new Set(cart.items.map(i => i.product?.vendor?.toString()))
     ];
 
     let selectedVendorId = cart.selectedVendors?.[0];
 
     if (uniqueVendors.length === 1) {
-      selectedVendorId = uniqueVendors[0];  // AUTO SELECT
+      selectedVendorId = uniqueVendors[0];
     }
 
-    // ⭐ SELECTED VENDOR CHECK
     if (!selectedVendorId) {
       return res.status(400).json({
         success: false,
@@ -2275,9 +2325,11 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ⭐ FILTER ITEMS OF SELECTED VENDOR
+    /* ===============================
+       6️⃣ FILTER ITEMS
+    =============================== */
     const selectedItems = cart.items.filter(
-      (i) => i.product?.vendor?.toString() === selectedVendorId.toString()
+      i => i.product?.vendor?.toString() === selectedVendorId.toString()
     );
 
     if (!selectedItems.length) {
@@ -2287,8 +2339,11 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    // ⭐⭐⭐ FORMAT ITEMS (REVIEW ORDER STYLE)
-    const formattedItems = selectedItems.map((i) => ({
+    /* ===============================
+       7️⃣ FORMAT ITEMS (IMPORTANT FIX)
+       ❗ weightPerPiece STRING 그대로
+    =============================== */
+    const formattedItems = selectedItems.map(i => ({
       product: {
         _id: i.product._id,
         name: i.product.name,
@@ -2296,24 +2351,25 @@ const placeOrder = asyncHandler(async (req, res) => {
         vendor: i.product.vendor,
         images: i.product.images,
         unit: i.product.unit,
-        weightPerPiece: i.product.weightPerPiece || 0.2,
+        weightPerPiece: i.product.weightPerPiece, // ✅ STRING
         category: i.product.category || null,
       },
       quantity: i.quantity,
     }));
 
-    // ⭐⭐⭐ COUPON LOGIC (Same as Review Order)
+    /* ===============================
+       8️⃣ COUPON
+    =============================== */
     const appliedCouponCode =
-      (cart?.couponCode ? cart.couponCode.trim().toUpperCase() : null) ||
-      (pref?.couponCode ? pref.couponCode.trim().toUpperCase() : null) ||
+      (cart?.couponCode?.trim()?.toUpperCase()) ||
+      (pref?.couponCode?.trim()?.toUpperCase()) ||
       null;
 
-    // 5️⃣ VALIDATE COUPON
     let coupon = null;
 
     if (appliedCouponCode) {
       coupon = await Coupon.findOne({
-        code: appliedCouponCode.toUpperCase(),
+        code: appliedCouponCode,
         status: "Active",
         startDate: { $lte: new Date() },
         expiryDate: { $gte: new Date() },
@@ -2327,7 +2383,7 @@ const placeOrder = asyncHandler(async (req, res) => {
       }
 
       const used = coupon.usedBy.find(
-        (u) => u.user.toString() === userId.toString()
+        u => u.user.toString() === userId.toString()
       );
 
       if (coupon.usageLimitPerUser && used && used.count >= coupon.usageLimitPerUser) {
@@ -2345,7 +2401,9 @@ const placeOrder = asyncHandler(async (req, res) => {
       }
     }
 
-    // 6️⃣ SUMMARY CALCULATION
+    /* ===============================
+       9️⃣ SUMMARY (UTIL HANDLES WEIGHT)
+    =============================== */
     const { summary } = await calculateOrderSummary(
       {
         items: formattedItems,
@@ -2356,6 +2414,9 @@ const placeOrder = asyncHandler(async (req, res) => {
       "Delivery"
     );
 
+    /* ===============================
+       🔟 VENDOR + ORDER
+    =============================== */
     const vendor = await User.findById(selectedVendorId)
       .select("name upiId")
       .lean();
@@ -2367,15 +2428,11 @@ const placeOrder = asyncHandler(async (req, res) => {
       });
     }
 
-    let grandTotal = summary.totalAmount;
-    let totalDiscount = summary.discount || 0;
-
-    // 7️⃣ CREATE ORDER
     const newOrder = await Order.create({
       orderId: `ORDER#${Math.floor(10000 + Math.random() * 90000)}`,
       buyer: userId,
       vendor: selectedVendorId,
-      products: selectedItems.map((i) => ({
+      products: selectedItems.map(i => ({
         product: i.product._id,
         quantity: i.quantity,
         price: i.product.price,
@@ -2391,77 +2448,45 @@ const placeOrder = asyncHandler(async (req, res) => {
       orderStatus,
     });
 
-    // 8️⃣ NOTIFICATIONS
-    await createAndSendNotification(
-      req,
-      "📦 New Delivery Order",
-      `You received a new delivery order (${newOrder.orderId}).`,
-      { orderId: newOrder._id, amount: summary.totalAmount },
-      "Vendor",
-      selectedVendorId
-    );
-
-    await createAndSendNotification(
-      req,
-      "🛍️ Order Placed",
-      `Your delivery order (${newOrder.orderId}) has been placed.`,
-      { orderId: newOrder._id, amount: summary.totalAmount },
-      "Buyer",
-      userId
-    );
-
-    // 9️⃣ PAYMENT QR
+    /* ===============================
+       1️⃣1️⃣ PAYMENT QR
+    =============================== */
     const ref = `TXN-${newOrder.orderId.replace("#", "-")}-${Date.now()}`;
     const upiUrl = `upi://pay?pa=${vendor.upiId}&pn=${vendor.name}&am=${summary.totalAmount}&tn=${newOrder.orderId}&tr=${ref}&cu=INR`;
     const qrCode = await QRCode.toDataURL(upiUrl);
 
-    const payments = [
-      {
-        orderId: newOrder._id,
-        vendorName: vendor.name,
-        upiId: vendor.upiId,
-        amount: summary.totalAmount,
-        upiUrl,
-        qrCode,
-        comments,
-      },
-    ];
-
-    // 🔟 UPDATE COUPON USAGE
-    if (coupon) {
-      coupon.usedCount++;
-      const used = coupon.usedBy.find((u) => u.user.toString() === userId.toString());
-
-      if (used) used.count++;
-      else coupon.usedBy.push({ user: userId, count: 1 });
-
-      if (coupon.totalUsageLimit && coupon.usedCount >= coupon.totalUsageLimit)
-        coupon.status = "Expired";
-
-      await coupon.save();
-    }
-
-    // 1️⃣1️⃣ REMOVE ITEMS OF SELECTED VENDOR
+    /* ===============================
+       1️⃣2️⃣ CLEAN CART
+    =============================== */
     await Cart.updateOne(
       { user: userId },
-      {
-        $pull: {
-          items: { vendor: selectedVendorId },
-        },
-      }
+      { $pull: { items: { vendor: selectedVendorId } } }
     );
 
-    // 1️⃣2️⃣ RESPONSE
+    /* ===============================
+       1️⃣3️⃣ RESPONSE (UNCHANGED)
+    =============================== */
     return res.json({
       success: true,
       message: "Delivery order created. Complete UPI payment to confirm.",
       orderIds: [newOrder._id],
-      totalAmount: grandTotal,
-      discount: totalDiscount,
+      totalAmount: summary.totalAmount,
+      discount: summary.discount || 0,
       paymentMethod,
       address: shippingAddress,
-      payments,
+      payments: [
+        {
+          orderId: newOrder._id,
+          vendorName: vendor.name,
+          upiId: vendor.upiId,
+          amount: summary.totalAmount,
+          upiUrl,
+          qrCode,
+          comments,
+        },
+      ],
     });
+
   } catch (error) {
     console.error("Delivery Order Error:", error);
     return res.status(500).json({
@@ -2479,21 +2504,26 @@ const placeOrder = asyncHandler(async (req, res) => {
 
 
 
+
 const reviewOrder = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
-  // 1️⃣ Fetch saved preference
+  /* ===============================
+     1️⃣ FETCH DELIVERY PREFERENCE
+  =============================== */
   const pref = await DeliveryPreference.findOne({ user: userId }).lean();
   if (!pref) {
     return res.status(400).json({
       success: false,
-      message: "Select delivery type first."
+      message: "Select delivery type first.",
     });
   }
 
   const { addressId, couponCode: prefCoupon } = pref;
 
-  // 2️⃣ Delivery requires address
+  /* ===============================
+     2️⃣ DELIVERY ADDRESS
+  =============================== */
   if (!addressId) {
     return res.status(400).json({
       success: false,
@@ -2509,7 +2539,9 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // 3️⃣ Fetch cart
+  /* ===============================
+     3️⃣ FETCH CART
+  =============================== */
   const cart = await Cart.findOne({ user: userId })
     .populate({
       path: "items.product",
@@ -2528,7 +2560,9 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // ⭐ AUTO SELECT WHEN CART HAS ONLY ONE VENDOR
+  /* ===============================
+     4️⃣ AUTO / MANUAL VENDOR SELECTION
+  =============================== */
   const uniqueVendors = [
     ...new Set(cart.items.map(i => i.product?.vendor?._id.toString()))
   ];
@@ -2536,10 +2570,9 @@ const reviewOrder = asyncHandler(async (req, res) => {
   let selectedVendors = cart.selectedVendors?.map(v => v.toString()) || [];
 
   if (uniqueVendors.length === 1) {
-    selectedVendors = [uniqueVendors[0]]; // Auto selected vendor
+    selectedVendors = [uniqueVendors[0]];
   }
 
-  // ⭐ FILTER ITEMS FOR SELECTED VENDOR
   let validItems = cart.items.filter(i => i.product);
 
   if (selectedVendors.length > 0) {
@@ -2555,33 +2588,44 @@ const reviewOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  // ⭐ FINAL COUPON — CART > PREF
+  /* ===============================
+     5️⃣ FINAL COUPON
+  =============================== */
   const finalCouponCode = cart.couponCode || prefCoupon || null;
 
-  // 4️⃣ Calculate summary
+  /* ===============================
+     6️⃣ ORDER SUMMARY
+  =============================== */
   const { summary, items: updatedItems } = await calculateOrderSummary(
     {
       items: validItems,
-      user: userId
+      user: userId,
     },
     finalCouponCode,
     "Delivery"
   );
 
-  // 5️⃣ Build response items
-  const buyer = await User.findById(userId)
-    .select("address location")
-    .lean();
-
+  /* ===============================
+     7️⃣ BUILD RESPONSE ITEMS
+  =============================== */
   let categoryIds = new Set();
 
   const finalItems = updatedItems.map((i) => {
     const p = i.product;
     const vendor = p.vendor;
 
-    if (p.category?._id) categoryIds.add(p.category._id.toString());
+    if (p.category?._id) {
+      categoryIds.add(p.category._id.toString());
+    }
 
-    const est = calculateEstimatedDelivery(vendor, buyer);
+    // ✅ FIX: correct buyer object + correct return field
+    const est = calculateEstimatedDelivery(
+      vendor,
+      {
+        location: deliveryAddress.location,
+        address: deliveryAddress,
+      }
+    );
 
     return {
       id: p._id,
@@ -2592,7 +2636,9 @@ const reviewOrder = asyncHandler(async (req, res) => {
       quantity: i.quantity,
       unit: p.unit || "",
       category: p.category?.name || "",
-      deliveryText: est.deliveryText,
+
+      // ✅ SAME KEY – frontend safe
+      deliveryText: est.formatted || "Delivery estimate unavailable",
 
       itemMRP: i.itemMRP,
       discount: i.discount,
@@ -2602,15 +2648,17 @@ const reviewOrder = asyncHandler(async (req, res) => {
         id: vendor._id,
         name: vendor.name,
         address: vendor.address,
-        location: vendor.vendorDetails?.location
-      }
+        location: vendor.vendorDetails?.location,
+      },
     };
   });
 
-  // 6️⃣ Similar products
+  /* ===============================
+     8️⃣ SIMILAR PRODUCTS
+  =============================== */
   const similarProductsRaw = await Product.find({
     category: { $in: [...categoryIds] },
-    _id: { $nin: finalItems.map((x) => x.id) },
+    _id: { $nin: finalItems.map(x => x.id) },
   })
     .select("name price images unit rating weightPerPiece vendor")
     .limit(12)
@@ -2628,7 +2676,9 @@ const reviewOrder = asyncHandler(async (req, res) => {
     weightPerPiece: p.weightPerPiece,
   }));
 
-  // 7️⃣ FINAL RESPONSE
+  /* ===============================
+     9️⃣ FINAL RESPONSE (UNCHANGED)
+  =============================== */
   return res.json({
     success: true,
     data: {
@@ -2667,26 +2717,29 @@ const reviewOrder = asyncHandler(async (req, res) => {
 
 
 
+
 const saveDeliveryAddress = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   let { addressId } = req.body;
 
-  /** ⭐ 1️⃣ addressId nahi aaya → auto select */
+  /* ===============================
+     1️⃣ AUTO PICK ADDRESS (IF NOT SENT)
+  =============================== */
   if (!addressId) {
-    // 🔹 pehle DEFAULT address lo
+    // 🔹 First preference: DEFAULT address
     let address = await Address.findOne({
       user: userId,
       isDefault: true,
     }).lean();
 
-    // 🔹 agar default nahi mila → latest uploaded address
+    // 🔹 Fallback: latest created address
     if (!address) {
       address = await Address.findOne({ user: userId })
         .sort({ createdAt: -1 })
         .lean();
     }
 
-    // ❌ agar user ke paas koi address hi nahi
+    // ❌ No address exists
     if (!address) {
       return res.status(400).json({
         success: false,
@@ -2694,10 +2747,12 @@ const saveDeliveryAddress = asyncHandler(async (req, res) => {
       });
     }
 
-    addressId = address._id; // ✅ auto picked
+    addressId = address._id; // ✅ auto selected
   }
 
-  /** ✅ 2️⃣ validate address (safety check) */
+  /* ===============================
+     2️⃣ VALIDATE ADDRESS OWNERSHIP
+  =============================== */
   const addressExists = await Address.findOne({
     _id: addressId,
     user: userId,
@@ -2710,7 +2765,9 @@ const saveDeliveryAddress = asyncHandler(async (req, res) => {
     });
   }
 
-  /** ✅ 3️⃣ Save delivery preference */
+  /* ===============================
+     3️⃣ SAVE DELIVERY PREFERENCE
+  =============================== */
   const pref = await DeliveryPreference.findOneAndUpdate(
     { user: userId },
     {
@@ -2719,15 +2776,22 @@ const saveDeliveryAddress = asyncHandler(async (req, res) => {
         addressId,
       },
     },
-    { new: true, upsert: true }
+    {
+      new: true,
+      upsert: true,
+    }
   );
 
+  /* ===============================
+     4️⃣ RESPONSE (UNCHANGED)
+  =============================== */
   return res.json({
     success: true,
     message: "Delivery address saved (auto selected if not provided)",
     data: pref,
   });
 });
+
 
 
 
