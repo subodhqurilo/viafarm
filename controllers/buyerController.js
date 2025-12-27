@@ -3247,15 +3247,21 @@ const selectVendorInCart = asyncHandler(async (req, res) => {
 
 
 
+
 const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
   const { vendorId } = req.params;
   let { buyerLat, buyerLng, category } = req.query;
 
-  // 🟢 Step 1: Fetch Vendor
+  /* =========================
+     1️⃣ FETCH VENDOR
+  ========================= */
   const vendor = await User.findById(vendorId)
     .where("role").equals("Vendor")
     .where("status").equals("Active")
-    .select("name profilePicture address vendorDetails location rating comments mobileNumber");
+    .select(
+      "name profilePicture address vendorDetails location rating comments mobileNumber"
+    )
+    .lean();
 
   if (!vendor) {
     return res.status(404).json({
@@ -3264,13 +3270,15 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     });
   }
 
-  // 📏 Step 2: Distance Helper (FIXED)
+  /* =========================
+     2️⃣ DISTANCE HELPER
+  ========================= */
   const getDistanceKm = (lat1, lon1, lat2, lon2) => {
     const toRad = (v) => (v * Math.PI) / 180;
-    const R = 6371; // km
+    const R = 6371;
 
     const dLat = toRad(lat2 - lat1);
-    const dLon = toRad(lon2 - lon1); // ✅ FIX HERE
+    const dLon = toRad(lon2 - lon1);
 
     const a =
       Math.sin(dLat / 2) ** 2 +
@@ -3282,11 +3290,14 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     return R * c;
   };
 
-  // 🟢 Step 3: Auto-fetch Buyer Location
+  /* =========================
+     3️⃣ BUYER LOCATION
+  ========================= */
   let buyerHasLocation = false;
 
   if ((!buyerLat || !buyerLng) && req.user?._id) {
-    const buyer = await User.findById(req.user._id).select("location");
+    const buyer = await User.findById(req.user._id).select("location").lean();
+
     if (buyer?.location?.coordinates?.length === 2) {
       buyerLng = buyer.location.coordinates[0];
       buyerLat = buyer.location.coordinates[1];
@@ -3296,7 +3307,9 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     buyerHasLocation = true;
   }
 
-  // 🟢 Step 4: Distance Text
+  /* =========================
+     4️⃣ DISTANCE TEXT
+  ========================= */
   let distanceText = "Please update your delivery address to view distance.";
 
   if (buyerHasLocation && vendor.location?.coordinates?.length === 2) {
@@ -3310,19 +3323,27 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     );
 
     if (!isNaN(distance)) {
-      distanceText = `${distance.toFixed(2)} km away`; // ✅ REQUIRED FORMAT
+      distanceText = `${distance.toFixed(2)} km away`;
     }
   }
 
-  // 🟢 Step 5: Vendor Products
-  const vendorProducts = await Product.find({ vendor: vendorId }).select("_id");
+  /* =========================
+     5️⃣ VENDOR PRODUCT IDS
+  ========================= */
+  const vendorProducts = await Product.find({ vendor: vendorId })
+    .select("_id")
+    .lean();
+
   const productIds = vendorProducts.map((p) => p._id);
 
-  // 🟢 Step 6: Reviews
+  /* =========================
+     6️⃣ REVIEWS
+  ========================= */
   const reviewsRaw = await Review.find({ product: { $in: productIds } })
     .populate("user", "name profilePicture")
     .sort({ createdAt: -1 })
-    .limit(5);
+    .limit(5)
+    .lean();
 
   const reviews = reviewsRaw.map((r) => ({
     _id: r._id,
@@ -3338,7 +3359,9 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     product: { $in: productIds },
   });
 
-  // 🟢 Step 7: Rating
+  /* =========================
+     7️⃣ RATING CALCULATION
+  ========================= */
   const ratingAgg = await Review.aggregate([
     { $match: { product: { $in: productIds } } },
     { $group: { _id: null, avgRating: { $avg: "$rating" } } },
@@ -3350,7 +3373,9 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
 
   await User.findByIdAndUpdate(vendorId, { rating: vendorFinalRating });
 
-  // 🟢 Step 8: Products
+  /* =========================
+     8️⃣ LISTED PRODUCTS
+  ========================= */
   const productFilter = { vendor: vendorId, status: "In Stock" };
   if (category) productFilter.category = category;
 
@@ -3358,7 +3383,8 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     .select("name category variety price quantity unit images rating weightPerPiece")
     .populate("category", "name image")
     .sort({ rating: -1 })
-    .limit(20);
+    .limit(20)
+    .lean();
 
   const listedProducts = listedProductsRaw.map((p) => ({
     id: p._id,
@@ -3375,13 +3401,22 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     categoryImage: p.category?.image || null,
   }));
 
-  // 🟢 Step 9: Categories
+  /* =========================
+     9️⃣ AVAILABLE CATEGORIES
+  ========================= */
   const categoryIds = await Product.distinct("category", { vendor: vendorId });
-  const availableCategories = await Category.find({ _id: { $in: categoryIds } })
-    .select("_id name image");
 
-  // 🟢 Step 10: Address
+  const availableCategories = await Category.find({
+    _id: { $in: categoryIds },
+  })
+    .select("_id name image")
+    .lean();
+
+  /* =========================
+     🔟 ADDRESS FORMAT
+  ========================= */
   const addr = vendor.address || {};
+
   const fullAddressText = [
     addr.houseNumber,
     addr.street,
@@ -3394,8 +3429,10 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     .filter(Boolean)
     .join(", ");
 
-  // 🟢 Step 11: Response
-  res.status(200).json({
+  /* =========================
+     1️⃣1️⃣ FINAL RESPONSE (UNCHANGED)
+  ========================= */
+  return res.status(200).json({
     success: true,
     data: {
       vendor: {
@@ -3423,6 +3460,9 @@ const getVendorProfileForBuyer = asyncHandler(async (req, res) => {
     },
   });
 });
+
+
+
 
 
 
