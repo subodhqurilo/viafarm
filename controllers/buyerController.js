@@ -594,7 +594,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
     deliveryCharge = await getDeliveryCharge(
       req.user._id,
       product.vendor._id,
-      1, // single product preview
+      1,        // single product preview
       null
     );
   }
@@ -610,7 +610,20 @@ const getProductDetails = asyncHandler(async (req, res) => {
   }
 
   /* =========================
-     7️⃣ RECOMMENDED PRODUCTS
+     7️⃣ FIX VENDOR ADDRESS (STATE ISSUE)
+  ========================= */
+  const vendorAddress = product.vendor.address
+    ? {
+        ...product.vendor.address,
+        state:
+          product.vendor.address.state ||
+          product.vendor.vendorDetails?.state ||
+          "",
+      }
+    : null;
+
+  /* =========================
+     8️⃣ RECOMMENDED PRODUCTS
   ========================= */
   const recQuery = {
     _id: { $ne: product._id },
@@ -633,7 +646,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
     .lean();
 
   /* =========================
-     8️⃣ FINAL RESPONSE (UNCHANGED)
+     9️⃣ FINAL RESPONSE (UNCHANGED)
   ========================= */
   return res.status(200).json({
     success: true,
@@ -663,6 +676,10 @@ const getProductDetails = asyncHandler(async (req, res) => {
         mobileNumber: product.vendor.mobileNumber,
         profilePicture: product.vendor.profilePicture,
         rating: product.vendor.rating || 0,
+
+        address: vendorAddress,                // ✅ STATE FIXED
+        location: product.vendor.location || null,
+
         distance: distanceText,
         deliveryCharge,
         estimatedDeliveryDate,
@@ -687,6 +704,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
     },
   });
 });
+
 
 
 
