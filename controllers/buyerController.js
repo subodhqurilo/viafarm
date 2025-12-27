@@ -30,6 +30,7 @@ const Product = require("../models/Product");   // ✅ Product also imported
 const { calculateDistanceKm } = require("../utils/distance");
 const { getDistanceText } = require("../utils/distance");
 const { parseWeightToKg } = require("../utils/orderUtils"); 
+const { calculateEstimatedDelivery,formatDeliveryDate } = require("../utils/deliveryUtils");
 
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
@@ -120,79 +121,80 @@ async function geocodeAddress({
  * 🟡 Same state but out of region: +2 days
  * 🔴 Different state: +3 days
  */
-const calculateEstimatedDelivery = (vendor, buyer, orderTime = new Date()) => {
-  let deliveryDate = new Date(orderTime);
 
-  const vendorCoords = vendor?.location?.coordinates;
-  const buyerCoords = buyer?.location?.coordinates;
+// const calculateEstimatedDelivery = (vendor, buyer, orderTime = new Date()) => {
+//   let deliveryDate = new Date(orderTime);
 
-  // ❗ Guard: location missing
-  if (
-    !vendorCoords || vendorCoords.length !== 2 ||
-    !buyerCoords || buyerCoords.length !== 2
-  ) {
-    deliveryDate.setDate(deliveryDate.getDate() + 3);
+//   const vendorCoords = vendor?.location?.coordinates;
+//   const buyerCoords = buyer?.location?.coordinates;
 
-    const fallbackDate = deliveryDate
-      .toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })
-      .replace(",", "");
+//   // ❗ Guard: location missing
+//   if (
+//     !vendorCoords || vendorCoords.length !== 2 ||
+//     !buyerCoords || buyerCoords.length !== 2
+//   ) {
+//     deliveryDate.setDate(deliveryDate.getDate() + 3);
 
-    return {
-      formatted: fallbackDate,
-      deliveryText: `Delivery by ${fallbackDate}`,
-    };
-  }
+//     const fallbackDate = deliveryDate
+//       .toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })
+//       .replace(",", "");
 
-  const vendorLat = vendorCoords[1];
-  const vendorLng = vendorCoords[0];
-  const buyerLat = buyerCoords[1];
-  const buyerLng = buyerCoords[0];
+//     return {
+//       formatted: fallbackDate,
+//       deliveryText: `Delivery by ${fallbackDate}`,
+//     };
+//   }
 
-  const distanceKm = calculateDistanceKm(
-    vendorLat,
-    vendorLng,
-    buyerLat,
-    buyerLng
-  );
+//   const vendorLat = vendorCoords[1];
+//   const vendorLng = vendorCoords[0];
+//   const buyerLat = buyerCoords[1];
+//   const buyerLng = buyerCoords[0];
 
-  const normalize = (s) =>
-    s?.trim()?.toLowerCase().replace(/\s+/g, "");
+//   const distanceKm = calculateDistanceKm(
+//     vendorLat,
+//     vendorLng,
+//     buyerLat,
+//     buyerLng
+//   );
 
-  const vendorState = normalize(vendor?.address?.state);
-  const buyerState = normalize(buyer?.address?.state);
+//   const normalize = (s) =>
+//     s?.trim()?.toLowerCase().replace(/\s+/g, "");
 
-  let deliveryDays = 0;
+//   const vendorState = normalize(vendor?.address?.state);
+//   const buyerState = normalize(buyer?.address?.state);
 
-  const regionKm =
-    vendor?.vendorDetails?.deliveryRegion ||
-    vendor?.deliveryRegion ||
-    0;
+//   let deliveryDays = 0;
 
-  if (distanceKm <= regionKm) {
-    if (orderTime.getHours() >= 17) {
-      deliveryDays = 1;
-    }
-  } else if (vendorState && buyerState && vendorState === buyerState) {
-    deliveryDays = 2;
-  } else {
-    deliveryDays = 3;
-  }
+//   const regionKm =
+//     vendor?.vendorDetails?.deliveryRegion ||
+//     vendor?.deliveryRegion ||
+//     0;
 
-  deliveryDate.setDate(deliveryDate.getDate() + deliveryDays);
+//   if (distanceKm <= regionKm) {
+//     if (orderTime.getHours() >= 17) {
+//       deliveryDays = 1;
+//     }
+//   } else if (vendorState && buyerState && vendorState === buyerState) {
+//     deliveryDays = 2;
+//   } else {
+//     deliveryDays = 3;
+//   }
 
-  const formattedDate = deliveryDate
-    .toLocaleDateString("en-US", {
-      month: "short",
-      day: "2-digit",
-      year: "numeric",
-    })
-    .replace(",", "");
+//   deliveryDate.setDate(deliveryDate.getDate() + deliveryDays);
 
-  return {
-    formatted: formattedDate,
-    deliveryText: `Delivery by ${formattedDate}`,
-  };
-};
+//   const formattedDate = deliveryDate
+//     .toLocaleDateString("en-US", {
+//       month: "short",
+//       day: "2-digit",
+//       year: "numeric",
+//     })
+//     .replace(",", "");
+
+//   return {
+//     formatted: formattedDate,
+//     deliveryText: `Delivery by ${formattedDate}`,
+//   };
+// };
 
 
 
@@ -243,18 +245,18 @@ const formatCategories = async (vendorId) => {
 
 
 
-const formatDeliveryDate = (date) => {
-  if (!date) return "N/A";
+// const formatDeliveryDate = (date) => {
+//   if (!date) return "N/A";
 
-  const d = new Date(date);
-  if (isNaN(d.getTime())) return "N/A";
+//   const d = new Date(date);
+//   if (isNaN(d.getTime())) return "N/A";
 
-  return d.toLocaleDateString("en-US", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-};
+//   return d.toLocaleDateString("en-US", {
+//     day: "2-digit",
+//     month: "short",
+//     year: "numeric",
+//   });
+// };
 
 
 const generateUpiPaymentUrl = (upiId, name, amount, transactionId) => {
@@ -506,7 +508,9 @@ const getProductDetails = asyncHandler(async (req, res) => {
   const { id } = req.params;
   let { buyerLat, buyerLng } = req.query;
 
-  // Validate product ID
+  /* =========================
+     1️⃣ VALIDATE PRODUCT ID
+  ========================= */
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return res.status(400).json({
       success: false,
@@ -514,13 +518,16 @@ const getProductDetails = asyncHandler(async (req, res) => {
     });
   }
 
-  // Fetch product
+  /* =========================
+     2️⃣ FETCH PRODUCT
+  ========================= */
   const product = await Product.findById(id)
     .populate(
       "vendor",
       "name address mobileNumber rating location profilePicture vendorDetails"
     )
-    .populate("category", "name image");
+    .populate("category", "name image")
+    .lean();
 
   if (!product) {
     return res.status(404).json({
@@ -531,54 +538,84 @@ const getProductDetails = asyncHandler(async (req, res) => {
 
   const categoryName = product.category?.name || null;
 
-  // ============================
-  // ✅ DISTANCE CALCULATION (FIXED)
-  // ============================
-
-  let distanceText = "Please update your delivery address to view distance.";
-
+  /* =========================
+     3️⃣ BUYER LOCATION
+  ========================= */
   let buyerCoords = null;
+  let buyerData = null;
 
-  // 1️⃣ buyerLat/buyerLng from query
+  // from query
   if (buyerLat && buyerLng) {
-    buyerCoords = [parseFloat(buyerLng), parseFloat(buyerLat)]; // [lng, lat]
+    buyerCoords = [Number(buyerLng), Number(buyerLat)];
   }
 
-  // 2️⃣ fallback → buyer saved location
+  // fallback → logged-in buyer
   if (!buyerCoords && req.user?._id) {
-    const buyer = await User.findById(req.user._id).select("location");
+    const buyer = await User.findById(req.user._id)
+      .select("location address")
+      .lean();
+
     if (buyer?.location?.coordinates?.length === 2) {
-      buyerCoords = buyer.location.coordinates; // [lng, lat]
+      buyerCoords = buyer.location.coordinates;
+      buyerData = buyer;
     }
   }
 
-  const vendorCoords = product.vendor?.location?.coordinates; // [lng, lat]
+  const vendorCoords = product.vendor?.location?.coordinates || null;
 
-  // 3️⃣ calculate distance
+  /* =========================
+     4️⃣ DISTANCE
+  ========================= */
+  let distanceText = "Please update your delivery address to view distance.";
+  let distanceKm = null;
+
   if (
     buyerCoords?.length === 2 &&
     vendorCoords?.length === 2 &&
     buyerCoords[0] !== 0 &&
     vendorCoords[0] !== 0
   ) {
-    const distanceKm = calculateDistanceKm(
-      buyerCoords[1],  // buyer LAT
-      buyerCoords[0],  // buyer LNG
-      vendorCoords[1], // vendor LAT
-      vendorCoords[0]  // vendor LNG
+    distanceKm = calculateDistanceKm(
+      buyerCoords[1],
+      buyerCoords[0],
+      vendorCoords[1],
+      vendorCoords[0]
     );
 
     distanceText = `${distanceKm.toFixed(2)} km away`;
   }
 
-  // ============================
-  // RECOMMENDED PRODUCTS
-  // ============================
+  /* =========================
+     5️⃣ DELIVERY CHARGE
+  ========================= */
+  let deliveryCharge = null;
 
+  if (req.user?._id && distanceKm !== null) {
+    deliveryCharge = await getDeliveryCharge(
+      req.user._id,
+      product.vendor._id,
+      1, // single product preview
+      null
+    );
+  }
+
+  /* =========================
+     6️⃣ ESTIMATED DELIVERY
+  ========================= */
+  let estimatedDeliveryDate = null;
+
+  if (buyerData) {
+    const est = calculateEstimatedDelivery(product.vendor, buyerData);
+    estimatedDeliveryDate = est?.formatted || null;
+  }
+
+  /* =========================
+     7️⃣ RECOMMENDED PRODUCTS
+  ========================= */
   const recQuery = {
     _id: { $ne: product._id },
     status: "In Stock",
-    $or: [{ vendor: product.vendor?._id }],
+    $or: [{ vendor: product.vendor._id }],
   };
 
   if (product.category?._id) {
@@ -592,13 +629,13 @@ const getProductDetails = asyncHandler(async (req, res) => {
     .limit(6)
     .select(
       "name category vendor price unit quantity images rating status allIndiaDelivery"
-    );
+    )
+    .lean();
 
-  // ============================
-  // ✅ FINAL RESPONSE (UNCHANGED)
-  // ============================
-
-  res.status(200).json({
+  /* =========================
+     8️⃣ FINAL RESPONSE (UNCHANGED)
+  ========================= */
+  return res.status(200).json({
     success: true,
     data: {
       product: {
@@ -626,12 +663,20 @@ const getProductDetails = asyncHandler(async (req, res) => {
         mobileNumber: product.vendor.mobileNumber,
         profilePicture: product.vendor.profilePicture,
         rating: product.vendor.rating || 0,
-        distance: distanceText, // ✅ SAME FIELD, CORRECT VALUE
-        address: product.vendor.address,
-        location: product.vendor.location,
+        distance: distanceText,
+        deliveryCharge,
+        estimatedDeliveryDate,
         deliveryRegion: product.vendor.vendorDetails?.deliveryRegion || null,
         about: product.vendor.vendorDetails?.about || "",
       },
+
+      buyer: buyerData
+        ? {
+            id: buyerData._id,
+            address: buyerData.address || null,
+            location: buyerData.location || null,
+          }
+        : null,
 
       reviews: {
         totalCount: 0,
@@ -642,6 +687,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
     },
   });
 });
+
 
 
 
