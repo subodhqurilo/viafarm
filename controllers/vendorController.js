@@ -2239,9 +2239,10 @@ const updateLocationDetails = asyncHandler(async (req, res) => {
       deliveryRegion
     } = req.body;
 
-    const updateFields = {};
-
-    // --- 1️⃣ Validate & Parse Delivery Region (Optional) ---
+    /* ===============================
+       1️⃣ DELIVERY REGION
+    =============================== */
+    const userUpdate = {};
     if (deliveryRegion !== undefined) {
       const region = parseFloat(deliveryRegion);
       if (isNaN(region) || region <= 0) {
@@ -2250,14 +2251,18 @@ const updateLocationDetails = asyncHandler(async (req, res) => {
           message: 'Delivery region must be a positive number.'
         });
       }
-      updateFields['vendorDetails.deliveryRegion'] = region;
+      userUpdate['vendorDetails.deliveryRegion'] = region;
     }
 
-    // --- 2️⃣ Handle Reverse Geocoding if Coordinates Provided ---
-    let lat, lng;
+    /* ===============================
+       2️⃣ ADDRESS UPSERT
+    =============================== */
+    let addressUpdate = {};
+    let locationPoint = null;
+
     if (latitude && longitude) {
-      lat = parseFloat(latitude);
-      lng = parseFloat(longitude);
+      const lat = parseFloat(latitude);
+      const lng = parseFloat(longitude);
 
       if (isNaN(lat) || isNaN(lng)) {
         return res.status(400).json({
@@ -2266,80 +2271,65 @@ const updateLocationDetails = asyncHandler(async (req, res) => {
         });
       }
 
-      try {
-        const geoResponse = await axios.get(
-          `https://nominatim.openstreetmap.org/reverse`,
-          {
-            params: {
-              lat,
-              lon: lng,
-              format: 'json',
-              addressdetails: 1
-            },
-            headers: { 'User-Agent': 'ViaFarm/1.0 (viafarm.app)' }
-          }
-        );
-
-        const addr = geoResponse.data?.address || {};
-        pinCode = pinCode || addr.postcode || '';
-        city = city || addr.city || addr.town || addr.village || '';
-        district = district || addr.state_district || addr.county || '';
-        locality =
-          locality ||
-          addr.suburb ||
-          addr.neighbourhood ||
-          addr.road ||
-          addr.hamlet ||
-          '';
-
-        updateFields['address.latitude'] = lat;
-        updateFields['address.longitude'] = lng;
-        updateFields['location'] = { type: 'Point', coordinates: [lng, lat] };
-      } catch (geoErr) {
-        console.warn('⚠️ Reverse geocoding failed:', geoErr.message);
-        // Still set raw coordinates if geocoding fails
-        updateFields['address.latitude'] = lat;
-        updateFields['address.longitude'] = lng;
-        updateFields['location'] = { type: 'Point', coordinates: [lng, lat] };
-      }
+      locationPoint = { type: 'Point', coordinates: [lng, lat] };
     }
 
-    // --- 3️⃣ Apply Only Provided Fields ---
-    if (pinCode) updateFields['address.pinCode'] = pinCode;
-    if (houseNumber) updateFields['address.houseNumber'] = houseNumber;
-    if (locality) updateFields['address.locality'] = locality;
-    if (city) updateFields['address.city'] = city;
-    if (district) updateFields['address.district'] = district;
+    if (pinCode) addressUpdate.pinCode = pinCode;
+    if (houseNumber) addressUpdate.houseNumber = houseNumber;
+    if (locality) addressUpdate.locality = locality;
+    if (city) addressUpdate.city = city;
+    if (district) addressUpdate.district = district;
+    if (locationPoint) addressUpdate.location = locationPoint;
 
-    // --- 4️⃣ Prevent Empty Updates ---
-    if (Object.keys(updateFields).length === 0) {
+    if (
+      Object.keys(userUpdate).length === 0 &&
+      Object.keys(addressUpdate).length === 0
+    ) {
       return res.status(400).json({
         success: false,
         message: 'No fields provided for update.'
       });
     }
 
-    // --- 5️⃣ Update Database ---
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user._id,
-      { $set: updateFields },
-      { new: true, runValidators: true }
-    ).select('-password');
+    /* ===============================
+       3️⃣ UPDATE / CREATE ADDRESS
+    =============================== */
+    let address = await Address.findOne({
+      user: req.user._id,
+      isDefault: true
+    });
 
-    if (!updatedUser) {
-      return res.status(404).json({
-        success: false,
-        message: 'Vendor not found.'
+    if (!address) {
+      address = await Address.create({
+        user: req.user._id,
+        isDefault: true,
+        ...addressUpdate
       });
+    } else if (Object.keys(addressUpdate).length) {
+      Object.assign(address, addressUpdate);
+      await address.save();
     }
 
-    // --- 6️⃣ Response ---
+    /* ===============================
+       4️⃣ UPDATE USER (LOCATION + REGION)
+    =============================== */
+    if (locationPoint) userUpdate.location = locationPoint;
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: userUpdate },
+      { new: true }
+    );
+
+    /* ===============================
+       5️⃣ RESPONSE (UNCHANGED)
+    =============================== */
     res.status(200).json({
       success: true,
       message: 'Location and delivery details updated successfully.',
       data: {
-        address: updatedUser.address,
-        location: updatedUser.location,
+        address: address || null,
+        location: updatedUser.location || null,
         deliveryRegion: updatedUser.vendorDetails?.deliveryRegion
           ? `${updatedUser.vendorDetails.deliveryRegion} km`
           : null
@@ -2356,39 +2346,37 @@ const updateLocationDetails = asyncHandler(async (req, res) => {
 });
 
 
+
 const getLocationDetails = asyncHandler(async (req, res) => {
   try {
     const user = await User.findById(req.user._id)
-      .select('address location vendorDetails role');
+      .select('location vendorDetails role');
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'Vendor not found.',
-      });
-    }
-
-    if (user.role !== 'Vendor') {
+    if (!user || user.role !== 'Vendor') {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can access location details.',
+        message: 'Only vendors can access location details.'
       });
     }
+
+    const address =
+      await Address.findOne({ user: req.user._id, isDefault: true }).lean() ||
+      await Address.findOne({ user: req.user._id }).sort({ createdAt: -1 }).lean();
 
     res.status(200).json({
       success: true,
       data: {
-        address: user.address || null,
+        address: address || null,
         location: user.location || null,
-        deliveryRegion: user.vendorDetails?.deliveryRegion ?? null,
-      },
+        deliveryRegion: user.vendorDetails?.deliveryRegion ?? null
+      }
     });
   } catch (error) {
     console.error('❌ Error fetching location details:', error);
     res.status(500).json({
       success: false,
       message: 'Server error while fetching location details.',
-      error: error.message,
+      error: error.message
     });
   }
 });
@@ -2396,34 +2384,41 @@ const getLocationDetails = asyncHandler(async (req, res) => {
 
 
 
+
 const getVendorLocationDetails = asyncHandler(async (req, res) => {
-    // Ensure the user is a Vendor (though route middleware should enforce this)
-    if (req.user.role !== 'Vendor') {
-        return res.status(403).json({ success: false, message: 'Access denied. Must be a vendor.' });
-    }
-
-    // Fetch the vendor and select the required fields
-    const vendor = await User.findById(req.user._id).select('name address location vendorDetails');
-
-    if (!vendor) {
-        return res.status(404).json({ success: false, message: 'Vendor profile not found.' });
-    }
-
-    res.status(200).json({
-        success: true,
-        data: {
-            // Address fields
-            address: vendor.address || null,
-            // GeoJSON location
-            location: vendor.location || null,
-            // Delivery settings with " km" appended
-            deliveryRegion: vendor.vendorDetails?.deliveryRegion
-                ? `${Number(vendor.vendorDetails.deliveryRegion)} km`
-                : null
-        }
+  if (req.user.role !== 'Vendor') {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Must be a vendor.'
     });
+  }
 
+  const vendor = await User.findById(req.user._id)
+    .select('location vendorDetails');
+
+  if (!vendor) {
+    return res.status(404).json({
+      success: false,
+      message: 'Vendor profile not found.'
+    });
+  }
+
+  const address =
+    await Address.findOne({ user: req.user._id, isDefault: true }).lean() ||
+    await Address.findOne({ user: req.user._id }).sort({ createdAt: -1 }).lean();
+
+  res.status(200).json({
+    success: true,
+    data: {
+      address: address || null,
+      location: vendor.location || null,
+      deliveryRegion: vendor.vendorDetails?.deliveryRegion
+        ? `${vendor.vendorDetails.deliveryRegion} km`
+        : null
+    }
+  });
 });
+
 
 const updateUserLanguage = asyncHandler(async (req, res) => {
     const user = await User.findById(req.user._id);
