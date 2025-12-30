@@ -2356,6 +2356,42 @@ const updateLocationDetails = asyncHandler(async (req, res) => {
 });
 
 
+const getLocationDetails = asyncHandler(async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id)
+      .select('address location vendorDetails role');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'Vendor not found.',
+      });
+    }
+
+    if (user.role !== 'Vendor') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only vendors can access location details.',
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        address: user.address || null,
+        location: user.location || null,
+        deliveryRegion: user.vendorDetails?.deliveryRegion ?? null,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Error fetching location details:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while fetching location details.',
+      error: error.message,
+    });
+  }
+});
 
 
 
@@ -2452,7 +2488,7 @@ module.exports = {
     getUserProfile,
     updateUserProfile,
     getRecentListings,
-    getProductById, getVendorLocationDetails,
+    getProductById, getVendorLocationDetails,getLocationDetails,
     changePassword, getVendorProductsByCategory,
     logout,
     uploadProfileImage,

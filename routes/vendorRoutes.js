@@ -65,7 +65,8 @@ router.put(
 
 router.put('/update-language', vendorController.updateUserLanguage);
 router.put('/update-location', vendorController.updateLocationDetails);
-router.get('/update-location', vendorController.getVendorLocationDetails);
+
+router.get('/update-location', vendorController.getLocationDetails);
 
 router.post('/change-password', vendorController.changePassword);
 router.post('/logout', vendorController.logout);
