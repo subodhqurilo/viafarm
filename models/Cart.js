@@ -20,11 +20,17 @@ const CartItemSchema = new mongoose.Schema(
     },
 
     quantity: {
-      type: Number,
-      required: true,
-      default: 1,
-      min: 1,
+  type: Number,
+  required: true,
+  default: 1,
+  min: 0.1,              // ✅ allow decimal
+  validate: {
+    validator: function (v) {
+      return v > 0;
     },
+    message: "Quantity must be greater than 0",
+  },
+},
 
     // ⭐ This field is REQUIRED for multi-vendor cart
     vendor: {

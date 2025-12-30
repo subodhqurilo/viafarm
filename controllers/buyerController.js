@@ -3025,27 +3025,24 @@ const addItemToCart = asyncHandler(async (req, res) => {
         cart = await Cart.create({ user: userId, items: [] });
     }
 
-    // ❌❌ Vendor restriction REMOVED completely
-    // ----------------------------------------------------
-    // const existingVendors = cart.items.map(i => i.vendor?.toString()).filter(Boolean);
-    // if (existingVendors.length > 0 && existingVendors[0] !== product.vendor.toString()) {
-    //     return res.status(400).json({ message: 'Only one vendor allowed' });
-    // }
-    // ----------------------------------------------------
-
-    // 3️⃣ Add or update product
+    // 3️⃣ Add or update product (🔥 UPDATED LOGIC)
     const existingItemIndex = cart.items.findIndex(
         i => i.product && i.product.toString() === productId
     );
 
     if (existingItemIndex > -1) {
-        cart.items[existingItemIndex].quantity += Number(quantity);
+        const currentQty = Number(cart.items[existingItemIndex].quantity);
+
+        // ✅ integer part increases, decimal preserved
+        cart.items[existingItemIndex].quantity =
+            increaseQuantityPreserveDecimal(currentQty, Number(quantity));
+
         cart.items[existingItemIndex].price = product.price;
     } else {
         cart.items.push({
             product: product._id,
             vendor: product.vendor,
-            quantity: Number(quantity),
+            quantity: Number(quantity), // 2.2, 4.9 allowed
             price: product.price
         });
     }
@@ -3070,7 +3067,7 @@ const addItemToCart = asyncHandler(async (req, res) => {
         "Delivery"
     );
 
-    // 5️⃣ Final client response
+    // 5️⃣ Final client response (❌ NO CHANGE)
     const populatedCart = await Cart.findById(cart._id)
         .populate("items.product", "name price variety images unit vendor")
         .lean();
@@ -3095,6 +3092,7 @@ const addItemToCart = asyncHandler(async (req, res) => {
         }
     });
 });
+
 
 
 
@@ -3146,8 +3144,11 @@ const updateCartItemQuantity = asyncHandler(async (req, res) => {
     const { quantity } = req.body;
     const { id } = req.params;
 
-    if (!quantity || quantity < 1) {
-        return res.status(400).json({ success: false, message: 'Quantity must be at least 1.' });
+    if (!quantity || quantity <= 0) {
+        return res.status(400).json({
+            success: false,
+            message: 'Quantity must be greater than 0.'
+        });
     }
 
     const cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
@@ -3155,18 +3156,31 @@ const updateCartItemQuantity = asyncHandler(async (req, res) => {
         return res.status(404).json({ success: false, message: 'Cart not found' });
     }
 
-    const itemIndex = cart.items.findIndex((i) => i.product._id.toString() === id);
+    const itemIndex = cart.items.findIndex(
+        (i) => i.product && i.product._id.toString() === id
+    );
+
     if (itemIndex === -1) {
         return res.status(404).json({ success: false, message: 'Item not found in cart' });
     }
 
-    cart.items[itemIndex].quantity = quantity;
-    cart.totalPrice = cart.items.reduce((t, i) => t + i.price * i.quantity, 0);
+    // ✅ allow decimal set directly
+    cart.items[itemIndex].quantity = Number(Number(quantity).toFixed(2));
+
+    cart.totalPrice = cart.items.reduce(
+        (t, i) => t + i.price * i.quantity,
+        0
+    );
 
     await cart.save();
 
-    res.json({ success: true, message: 'Cart updated', data: cart });
+    res.json({
+        success: true,
+        message: 'Cart updated',
+        data: cart
+    });
 });
+
 
 const selectVendorInCart = asyncHandler(async (req, res) => {
   const userId = req.user._id;
