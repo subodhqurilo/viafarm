@@ -17,6 +17,8 @@ const {
   adminSignup,
   adminRequestPasswordOtp,
   adminResetPasswordByOtp,
+  
+  verifyAdminPasswordOtp ,
   logout,
   NewPassword,
 } = require('../controllers/authController');
@@ -40,7 +42,9 @@ router.post('/admin-signup', adminSignup);
 
 // Admin Password Reset via OTP
 router.post('/request-password-otp', adminRequestPasswordOtp);
-router.post('/reset-password-otp', adminResetPasswordByOtp);
+router.post('/verify-otp-admin',verifyAdminPasswordOtp);
+router.post('/set-password-admin',adminResetPasswordByOtp);
+
 
 // Reset Password Page Rendering
 router.get('/reset-password/:token', (req, res) => {

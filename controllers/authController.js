@@ -5,6 +5,7 @@ const otpService = require('../services/otpService');
 const axios = require('axios');
 const NotificationSettings = require('../models/NotificationSettings');
 
+const nodemailer = require('nodemailer');
 
 const asyncHandler = require('express-async-handler');
 const crypto = require('crypto');
@@ -633,51 +634,116 @@ exports.logout = asyncHandler(async (req, res) => {
 exports.adminRequestPasswordOtp = asyncHandler(async (req, res) => {
   const { email } = req.body;
 
-  if (!email)
-    return res.status(400).json({ success: false, message: "Email is required." });
+  if (!email) {
+    return res.status(400).json({
+      success: false,
+      message: "Email is required",
+    });
+  }
 
+  // ✅ Find Admin
   const user = await User.findOne({ email, role: "Admin" });
-  const genericMsg = "If an admin account with that email exists, an OTP has been sent.";
 
-  if (!user)
-    return res.status(200).json({ success: true, message: genericMsg });
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: "Admin email not found",
+    });
+  }
 
-  // 🔢 Generate 4-digit OTP
+  // ✅ Generate 4-digit OTP
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
 
+  // ✅ Save OTP (schema fields)
   user.passwordResetOtp = otp;
-  user.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+  user.passwordResetOtpExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+  user.isVerified = false;
+
   await user.save();
 
   try {
-    // ✅ Send OTP email using Resend API function
-    const sent = await sendEmailOTP(user.email, otp);
-
-    if (!sent) {
-      throw new Error("Email send failed");
-    }
-
-    // ✅ Include OTP in response for testing only
-    res.status(200).json({
-      success: true,
-      message: "OTP sent to your email address.",
-      otp,
-      expiresIn: "10 minutes",
+    // ✅ Gmail Nodemailer setup
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS, // Gmail App Password
+      },
     });
 
-  } catch (err) {
-    // rollback fields
+    const mailOptions = {
+      from: `"Admin Support" <${process.env.EMAIL_USER}>`,
+      to: user.email,
+      subject: "Admin Password Reset OTP",
+      text: `Hello Admin,
+
+Your OTP is: ${otp}
+
+This OTP is valid for 10 minutes.
+Do not share this OTP with anyone.
+
+Thanks,
+Team`,
+    };
+
+    // 📧 Send mail
+    await transporter.sendMail(mailOptions);
+
+    return res.json({
+      success: true,
+      message: "OTP sent to registered email",
+      otp, // ⚠️ remove in production
+    });
+
+  } catch (mailError) {
+    // 🔁 Rollback if email fails
     user.passwordResetOtp = undefined;
-    user.passwordResetExpires = undefined;
+    user.passwordResetOtpExpires = undefined;
     await user.save();
 
-    console.error("❌ Failed to send OTP email:", err.message);
-    res.status(500).json({
+    console.error("❌ OTP email failed:", mailError.message);
+
+    return res.status(500).json({
       success: false,
-      message: "Failed to send OTP email.",
-      error: err.message,
+      message: "Failed to send OTP email",
     });
   }
+});
+
+
+
+
+exports.verifyAdminPasswordOtp = asyncHandler(async (req, res) => {
+  const { otp } = req.body;
+
+  if (!otp) {
+    return res.status(400).json({
+      success: false,
+      message: "OTP is required",
+    });
+  }
+
+  const user = await User.findOne({
+    role: "Admin",
+    passwordResetOtp: otp,
+    passwordResetOtpExpires: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid or expired OTP",
+    });
+  }
+
+  // ✅ Mark verified (temporary session)
+  user.isVerified = true;
+  await user.save();
+
+  res.json({
+    success: true,
+    message: "OTP verified successfully. You can now reset password.",
+  });
 });
 
 
@@ -685,59 +751,50 @@ exports.adminRequestPasswordOtp = asyncHandler(async (req, res) => {
 
 // controllers/authController.js (or wherever you keep auth controllers)
 exports.adminResetPasswordByOtp = asyncHandler(async (req, res) => {
-  const { email, otp, password } = req.body;
+  const { newPassword, confirmPassword } = req.body;
 
-  // --- Validate inputs ---
-  if (!email || !otp || !password) {
+  if (!newPassword || !confirmPassword) {
     return res.status(400).json({
       success: false,
-      message: "Email, OTP, and password are required.",
+      message: "Both password fields are required",
     });
   }
 
-  // --- Find admin user by email ---
-  const user = await User.findOne({ email, role: "Admin" });
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({
+      success: false,
+      message: "Passwords do not match",
+    });
+  }
+
+  const user = await User.findOne({
+    role: "Admin",
+    isVerified: true,
+  });
 
   if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: "Admin not found with this email.",
-    });
-  }
-
-  // --- Verify OTP ---
-  if (user.passwordResetOtp !== otp) {
     return res.status(400).json({
       success: false,
-      message: "Invalid OTP.",
+      message: "OTP session expired. Please verify OTP again.",
     });
   }
 
-  // --- Check expiry ---
-  if (!user.passwordResetExpires || user.passwordResetExpires < Date.now()) {
-    // cleanup expired fields
-    user.passwordResetOtp = undefined;
-    user.passwordResetExpires = undefined;
-    await user.save().catch(() => {});
-    return res.status(400).json({
-      success: false,
-      message: "OTP expired. Please request a new one.",
-    });
-  }
+  // 🔐 Update password (hashed automatically)
+  user.password = newPassword;
 
-  // --- Update password (hash via pre-save hook) ---
-  user.password = password;
+  // 🧹 Cleanup
+  user.isVerified = false;
   user.passwordResetOtp = undefined;
-  user.passwordResetExpires = undefined;
+  user.passwordResetOtpExpires = undefined;
 
   await user.save();
 
-  return res.status(200).json({
+  res.json({
     success: true,
-    message: "Password has been reset successfully.",
-    email: user.email, // optional: include for clarity
+    message: "Password reset successfully",
   });
 });
+
 
 
 
