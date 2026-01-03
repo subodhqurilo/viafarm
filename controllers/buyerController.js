@@ -31,6 +31,7 @@ const { calculateDistanceKm } = require("../utils/distance");
 const { getDistanceText } = require("../utils/distance");
 const { parseWeightToKg } = require("../utils/orderUtils"); 
 const { calculateEstimatedDelivery,formatDeliveryDate } = require("../utils/deliveryUtils");
+const { addDecimalQuantity } = require("../utils/quantity");
 
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
@@ -3030,22 +3031,23 @@ const addItemToCart = asyncHandler(async (req, res) => {
         i => i.product && i.product.toString() === productId
     );
 
-    if (existingItemIndex > -1) {
-        const currentQty = Number(cart.items[existingItemIndex].quantity);
+if (existingItemIndex > -1) {
+    const currentQty = Number(cart.items[existingItemIndex].quantity);
 
-        // ✅ integer part increases, decimal preserved
-        cart.items[existingItemIndex].quantity =
-            increaseQuantityPreserveDecimal(currentQty, Number(quantity));
+    // ✅ DECIMAL ADD (FIXED)
+    cart.items[existingItemIndex].quantity =
+        addDecimalQuantity(currentQty, Number(quantity));
 
-        cart.items[existingItemIndex].price = product.price;
-    } else {
-        cart.items.push({
-            product: product._id,
-            vendor: product.vendor,
-            quantity: Number(quantity), // 2.2, 4.9 allowed
-            price: product.price
-        });
-    }
+    cart.items[existingItemIndex].price = product.price;
+} else {
+    cart.items.push({
+        product: product._id,
+        vendor: product.vendor,
+        quantity: Number(quantity), // decimal allowed
+        price: product.price
+    });
+}
+
 
     await cart.save();
 

@@ -17,6 +17,12 @@ const expo = new Expo();
 
 const { sendEmailOTP } = require("../services/emailService");
 
+const sgMail = require("@sendgrid/mail");
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
+// 🔥 INIT RESEND (ONCE)
+
+
 
 
 
@@ -632,87 +638,99 @@ exports.logout = asyncHandler(async (req, res) => {
 
 
 exports.adminRequestPasswordOtp = asyncHandler(async (req, res) => {
+  console.log("🔥 adminRequestPasswordOtp HIT");
+  console.log("📥 Request body:", req.body);
+
   const { email } = req.body;
 
   if (!email) {
+    console.warn("⚠️ Email missing in request");
     return res.status(400).json({
       success: false,
       message: "Email is required",
     });
   }
 
-  // ✅ Find Admin
+  console.log("🔍 Finding admin with email:", email);
+
   const user = await User.findOne({ email, role: "Admin" });
 
   if (!user) {
+    console.warn("❌ Admin not found for email:", email);
     return res.status(404).json({
       success: false,
       message: "Admin email not found",
     });
   }
 
-  // ✅ Generate 4-digit OTP
+  console.log("✅ Admin found:", user._id.toString());
+
+  // ✅ 4-digit OTP
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
+  console.log("🔐 Generated OTP:", otp);
 
-  // ✅ Save OTP in DB
   user.passwordResetOtp = otp;
-  user.passwordResetOtpExpires = Date.now() + 10 * 60 * 1000; // 10 min
+  user.passwordResetOtpExpires = Date.now() + 10 * 60 * 1000;
   user.isVerified = false;
-  await user.save();
 
-  // 🚀 RESPOND IMMEDIATELY (no timeout on Render)
+  await user.save();
+  console.log("💾 OTP saved in DB for admin");
+
+  // 🚀 RESPONSE FIRST (Render-safe)
   res.json({
     success: true,
     message: "OTP sent to registered email",
-    otp, // ⚠️ testing only
+    otp, // ⚠️ testing only — remove in production
   });
 
-  // 🔥 SEND EMAIL IN BACKGROUND (NO await)
+  console.log("📤 Response sent to client");
+
+  // 🔥 SENDGRID EMAIL (BACKGROUND)
   try {
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS, // App Password
-  },
-  connectionTimeout: 8000,
-  greetingTimeout: 8000,
-  socketTimeout: 8000,
-});
+    console.log("📧 Preparing SendGrid email…");
 
+    console.log(
+      "🔑 SendGrid env check:",
+      "KEY exists:", !!process.env.SENDGRID_API_KEY,
+      "FROM:", process.env.SENDGRID_FROM_EMAIL
+    );
 
-    const mailOptions = {
-      from: `"Admin Support" <${process.env.EMAIL_USER}>`,
-      to: user.email,
+    const msg = {
+      to: user.email, // ✅ dynamic user email
+      from: process.env.SENDGRID_FROM_EMAIL, // ✅ verified single sender
       subject: "Admin Password Reset OTP",
-      text: `Hello Admin,
-
-Your OTP is: ${otp}
-
-This OTP is valid for 10 minutes.
-Do not share this OTP with anyone.
-
-Thanks,
-Team`,
+      html: `
+        <h3>OTP Verification</h3>
+        <p>Your OTP is <b>${otp}</b></p>
+        <p>This OTP is valid for 10 minutes.</p>
+      `,
     };
 
-    transporter.sendMail(mailOptions)
-      .then(() => {
-        console.log("✅ OTP email sent");
+    sgMail
+      .send(msg)
+      .then((response) => {
+        console.log("✅ OTP email sent via SendGrid");
+        console.log("📨 SendGrid response status:", response[0]?.statusCode);
       })
       .catch(async (err) => {
-        console.error("❌ OTP email failed:", err.message);
+        console.error("❌ SendGrid email failed:", err.message);
 
-        // 🔁 Optional rollback if email fails
+        // optional rollback
         user.passwordResetOtp = undefined;
         user.passwordResetOtpExpires = undefined;
         await user.save();
+        console.log("↩️ OTP rolled back due to email failure");
       });
 
   } catch (err) {
-    console.error("❌ Email background error:", err.message);
+    console.error("❌ SendGrid background error:", err.message);
   }
 });
+
+
+
+
+
 
 
 
