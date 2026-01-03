@@ -669,13 +669,17 @@ exports.adminRequestPasswordOtp = asyncHandler(async (req, res) => {
 
   // 🔥 SEND EMAIL IN BACKGROUND (NO await)
   try {
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS, // Gmail App Password
-      },
-    });
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS, // App Password
+  },
+  connectionTimeout: 8000,
+  greetingTimeout: 8000,
+  socketTimeout: 8000,
+});
+
 
     const mailOptions = {
       from: `"Admin Support" <${process.env.EMAIL_USER}>`,
