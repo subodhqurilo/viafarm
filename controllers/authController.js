@@ -654,15 +654,21 @@ exports.adminRequestPasswordOtp = asyncHandler(async (req, res) => {
   // ✅ Generate 4-digit OTP
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
 
-  // ✅ Save OTP (schema fields)
+  // ✅ Save OTP in DB
   user.passwordResetOtp = otp;
-  user.passwordResetOtpExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+  user.passwordResetOtpExpires = Date.now() + 10 * 60 * 1000; // 10 min
   user.isVerified = false;
-
   await user.save();
 
+  // 🚀 RESPOND IMMEDIATELY (no timeout on Render)
+  res.json({
+    success: true,
+    message: "OTP sent to registered email",
+    otp, // ⚠️ testing only
+  });
+
+  // 🔥 SEND EMAIL IN BACKGROUND (NO await)
   try {
-    // ✅ Gmail Nodemailer setup
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
@@ -686,29 +692,24 @@ Thanks,
 Team`,
     };
 
-    // 📧 Send mail
-    await transporter.sendMail(mailOptions);
+    transporter.sendMail(mailOptions)
+      .then(() => {
+        console.log("✅ OTP email sent");
+      })
+      .catch(async (err) => {
+        console.error("❌ OTP email failed:", err.message);
 
-    return res.json({
-      success: true,
-      message: "OTP sent to registered email",
-      otp, // ⚠️ remove in production
-    });
+        // 🔁 Optional rollback if email fails
+        user.passwordResetOtp = undefined;
+        user.passwordResetOtpExpires = undefined;
+        await user.save();
+      });
 
-  } catch (mailError) {
-    // 🔁 Rollback if email fails
-    user.passwordResetOtp = undefined;
-    user.passwordResetOtpExpires = undefined;
-    await user.save();
-
-    console.error("❌ OTP email failed:", mailError.message);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to send OTP email",
-    });
+  } catch (err) {
+    console.error("❌ Email background error:", err.message);
   }
 });
+
 
 
 
