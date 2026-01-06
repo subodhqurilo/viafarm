@@ -32,6 +32,7 @@ const { getDistanceText } = require("../utils/distance");
 const { parseWeightToKg } = require("../utils/orderUtils"); 
 const { calculateEstimatedDelivery,formatDeliveryDate } = require("../utils/deliveryUtils");
 const { addDecimalQuantity } = require("../utils/quantity");
+const { getCartQuantityMap } = require("../utils/cartUtils");
 
 const { createAndSendNotification } = require('../utils/notificationUtils');
 const { Expo } = require("expo-server-sdk");
@@ -530,7 +531,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
     .populate("category", "name image")
     .lean();
 
-  if (!product) {
+  if (!product || !product.vendor) {
     return res.status(404).json({
       success: false,
       message: "Product not found.",
@@ -545,12 +546,10 @@ const getProductDetails = asyncHandler(async (req, res) => {
   let buyerCoords = null;
   let buyerData = null;
 
-  // from query
   if (buyerLat && buyerLng) {
     buyerCoords = [Number(buyerLng), Number(buyerLat)];
   }
 
-  // fallback → logged-in buyer
   if (!buyerCoords && req.user?._id) {
     const buyer = await User.findById(req.user._id)
       .select("location address")
@@ -562,7 +561,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
     }
   }
 
-  const vendorCoords = product.vendor?.location?.coordinates || null;
+  const vendorCoords = product.vendor.location?.coordinates || null;
 
   /* =========================
      4️⃣ DISTANCE
@@ -595,7 +594,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
     deliveryCharge = await getDeliveryCharge(
       req.user._id,
       product.vendor._id,
-      1,        // single product preview
+      1,
       null
     );
   }
@@ -611,7 +610,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
   }
 
   /* =========================
-     7️⃣ FIX VENDOR ADDRESS (STATE ISSUE)
+     7️⃣ FIX VENDOR ADDRESS (STATE)
   ========================= */
   const vendorAddress = product.vendor.address
     ? {
@@ -624,7 +623,28 @@ const getProductDetails = asyncHandler(async (req, res) => {
     : null;
 
   /* =========================
-     8️⃣ RECOMMENDED PRODUCTS
+     8️⃣ CART QUANTITY (SAFE)
+  ========================= */
+  let inCartQuantity = 0;
+
+  if (req.user?._id) {
+    const cart = await Cart.findOne({ user: req.user._id })
+      .select("items")
+      .lean();
+
+    if (cart?.items?.length) {
+      const cartItem = cart.items.find(
+        (i) => i.product?.toString() === product._id.toString()
+      );
+
+      if (cartItem) {
+        inCartQuantity = Number(cartItem.quantity) || 0;
+      }
+    }
+  }
+
+  /* =========================
+     9️⃣ RECOMMENDED PRODUCTS
   ========================= */
   const recQuery = {
     _id: { $ne: product._id },
@@ -647,7 +667,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
     .lean();
 
   /* =========================
-     9️⃣ FINAL RESPONSE (UNCHANGED)
+     🔟 FINAL RESPONSE (SAFE)
   ========================= */
   return res.status(200).json({
     success: true,
@@ -669,6 +689,9 @@ const getProductDetails = asyncHandler(async (req, res) => {
         ratingCount: product.ratingCount,
         nutritionalValue: product.nutritionalValue || {},
         datePosted: product.datePosted,
+
+        // ✅ SAFE ADDITION
+        inCartQuantity,
       },
 
       vendor: {
@@ -677,10 +700,8 @@ const getProductDetails = asyncHandler(async (req, res) => {
         mobileNumber: product.vendor.mobileNumber,
         profilePicture: product.vendor.profilePicture,
         rating: product.vendor.rating || 0,
-
-        address: vendorAddress,                // ✅ STATE FIXED
+        address: vendorAddress,
         location: product.vendor.location || null,
-
         distance: distanceText,
         deliveryCharge,
         estimatedDeliveryDate,
@@ -705,6 +726,8 @@ const getProductDetails = asyncHandler(async (req, res) => {
     },
   });
 });
+
+
 
 
 
