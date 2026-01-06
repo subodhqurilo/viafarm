@@ -22,7 +22,7 @@ const CartItemSchema = new mongoose.Schema(
     quantity: {
   type: Number,
   required: true,
-  default: 1,
+  default: 0.1,
   min: 0.1,              // ✅ allow decimal
   validate: {
     validator: function (v) {
