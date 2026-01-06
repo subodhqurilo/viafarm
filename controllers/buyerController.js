@@ -691,7 +691,7 @@ const getProductDetails = asyncHandler(async (req, res) => {
         datePosted: product.datePosted,
 
         // ✅ SAFE ADDITION
-        inCartQuantity,
+       quantity: inCartQuantity,
       },
 
       vendor: {
