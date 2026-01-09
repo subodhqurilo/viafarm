@@ -31,7 +31,7 @@ const { calculateDistanceKm } = require("../utils/distance");
 const { getDistanceText } = require("../utils/distance");
 const { parseWeightToKg } = require("../utils/orderUtils"); 
 const { calculateEstimatedDelivery,formatDeliveryDate } = require("../utils/deliveryUtils");
-const { addDecimalQuantity } = require("../utils/quantity");
+const {increaseToNextInteger,decreaseToPrevInteger} = require("../utils/quantity");
 const { getCartQuantityMap } = require("../utils/cartUtils");
 
 const { createAndSendNotification } = require('../utils/notificationUtils');
@@ -3049,28 +3049,28 @@ const addItemToCart = asyncHandler(async (req, res) => {
         cart = await Cart.create({ user: userId, items: [] });
     }
 
-    // 3️⃣ Add or update product (🔥 UPDATED LOGIC)
+    // 3️⃣ Add or update product (🔥 FIXED AS PER REQUIREMENT)
     const existingItemIndex = cart.items.findIndex(
         i => i.product && i.product.toString() === productId
     );
 
-if (existingItemIndex > -1) {
-    const currentQty = Number(cart.items[existingItemIndex].quantity);
+    if (existingItemIndex > -1) {
+        const currentQty = Number(cart.items[existingItemIndex].quantity);
 
-    // ✅ DECIMAL ADD (FIXED)
-    cart.items[existingItemIndex].quantity =
-        addDecimalQuantity(currentQty, Number(quantity));
+        // ✅ PLUS BUTTON → NEXT INTEGER ONLY
+        cart.items[existingItemIndex].quantity =
+            increaseToNextInteger(currentQty);
 
-    cart.items[existingItemIndex].price = product.price;
-} else {
-    cart.items.push({
-        product: product._id,
-        vendor: product.vendor,
-        quantity: Number(quantity), // decimal allowed
-        price: product.price
-    });
-}
-
+        cart.items[existingItemIndex].price = product.price;
+    } else {
+        // ✅ FIRST TIME ADD → DECIMAL ALLOWED (0.1, 0.5, 2.7 etc.)
+        cart.items.push({
+            product: product._id,
+            vendor: product.vendor,
+            quantity: Number(quantity),
+            price: product.price
+        });
+    }
 
     await cart.save();
 
@@ -3117,6 +3117,7 @@ if (existingItemIndex > -1) {
         }
     });
 });
+
 
 
 
@@ -3189,7 +3190,7 @@ const updateCartItemQuantity = asyncHandler(async (req, res) => {
         return res.status(404).json({ success: false, message: 'Item not found in cart' });
     }
 
-    // ✅ allow decimal set directly
+    // ✅ MANUAL SET → decimal allowed
     cart.items[itemIndex].quantity = Number(Number(quantity).toFixed(2));
 
     cart.totalPrice = cart.items.reduce(
@@ -3205,6 +3206,7 @@ const updateCartItemQuantity = asyncHandler(async (req, res) => {
         data: cart
     });
 });
+
 
 
 const selectVendorInCart = asyncHandler(async (req, res) => {
